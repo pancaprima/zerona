@@ -3541,6 +3541,38 @@ fn slash_steer_side_chunk(text: &str) -> bool {
     (text.contains('⏩') && text.contains("Steer queued")) || text.contains("No active turn")
 }
 
+/// Hermes `/steer` ack chunks are harness-internal. When filtering is active
+/// (call in flight or just settled), swallow them and record "no active turn".
+fn swallow_slash_steer_ack_notification(
+    method: &str,
+    params: &Value,
+    ack_filter_active: bool,
+    slash_steer_no_active: &mut bool,
+) -> bool {
+    if !ack_filter_active {
+        return false;
+    }
+    if method != "session/update" {
+        return false;
+    }
+    let Some(update) = params.get("update") else {
+        return false;
+    };
+    if update.get("sessionUpdate").and_then(Value::as_str) != Some("agent_message_chunk") {
+        return false;
+    }
+    let Some(text) = crate::acp::normalize::chunk_text(update) else {
+        return false;
+    };
+    if !slash_steer_side_chunk(&text) {
+        return false;
+    }
+    if text.contains("No active turn") {
+        *slash_steer_no_active = true;
+    }
+    true
+}
+
 /// Hermes `/steer`: a side `session/prompt` while the real turn stays open.
 fn slash_steer_call_future(
     client: &RpcClient,
@@ -4188,13 +4220,63 @@ async fn run_session(session: Session) {
                         queued_steers.push_back(next_text);
                     }
                 }
+                let slash_steer_ack_filter = slash_steer_call.is_some();
                 if let Some((text, mut fut)) = slash_steer_call.take() {
-                    let injected = match tokio::time::timeout(
+                    let settled = tokio::time::timeout(
                         Duration::from_millis(1000),
                         &mut fut,
                     )
-                    .await
-                    {
+                    .await;
+                    let mut consumer_gone = false;
+                    while let Ok(inc) = incoming.try_recv() {
+                        match inc {
+                            Incoming::Notification { method, params } => {
+                                if swallow_slash_steer_ack_notification(
+                                    &method,
+                                    &params,
+                                    slash_steer_ack_filter,
+                                    &mut slash_steer_no_active,
+                                ) {
+                                    continue;
+                                }
+                                let events = session_update_events(
+                                    &method,
+                                    &params,
+                                    &session_id,
+                                    &mut subagents,
+                                );
+                                for ev in events {
+                                    if !send(&event_tx, ev).await {
+                                        consumer_gone = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            Incoming::Request { id, method, params } => {
+                                for ev in handle_server_request_live(
+                                    &client,
+                                    id,
+                                    &method,
+                                    &params,
+                                    &request_input,
+                                    &session_id,
+                                ) {
+                                    if !send(&event_tx, ev).await {
+                                        consumer_gone = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                        if consumer_gone {
+                            break;
+                        }
+                    }
+                    if consumer_gone {
+                        break 'main;
+                    }
+                    let injected = match settled {
                         Ok(Ok(resp)) => {
                             !slash_steer_no_active
                                 && resp
@@ -4231,6 +4313,14 @@ async fn run_session(session: Session) {
                 while let Ok(inc) = incoming.try_recv() {
                     match inc {
                         Incoming::Notification { method, params } => {
+                            if swallow_slash_steer_ack_notification(
+                                &method,
+                                &params,
+                                slash_steer_ack_filter,
+                                &mut slash_steer_no_active,
+                            ) {
+                                continue;
+                            }
                             let events =
                                 session_update_events(&method, &params, &session_id, &mut subagents);
                             for ev in events {
@@ -4444,18 +4534,12 @@ async fn run_session(session: Session) {
                             }));
                         }
                     }
-                    // Hermes `/steer` ack lines are harness-internal.
-                    if slash_steer_call.is_some()
-                        && method == "session/update"
-                        && let Some(update) = params.get("update")
-                        && update.get("sessionUpdate").and_then(Value::as_str)
-                            == Some("agent_message_chunk")
-                        && let Some(text) = crate::acp::normalize::chunk_text(update)
-                        && slash_steer_side_chunk(&text)
-                    {
-                        if text.contains("No active turn") {
-                            slash_steer_no_active = true;
-                        }
+                    if swallow_slash_steer_ack_notification(
+                        &method,
+                        &params,
+                        slash_steer_call.is_some(),
+                        &mut slash_steer_no_active,
+                    ) {
                         continue;
                     }
                     // Other notifications (other sessions, agent noise) are
@@ -4703,7 +4787,53 @@ async fn run_session(session: Session) {
             res = async { slash_steer_call.as_mut().expect("guarded by if").1.as_mut().await },
                 if slash_steer_call.is_some() =>
             {
+                let slash_steer_ack_filter = true;
                 let (text, _) = slash_steer_call.take().expect("guarded by if");
+                let mut consumer_gone = false;
+                while let Ok(inc) = incoming.try_recv() {
+                    match inc {
+                        Incoming::Notification { method, params } => {
+                            if swallow_slash_steer_ack_notification(
+                                &method,
+                                &params,
+                                slash_steer_ack_filter,
+                                &mut slash_steer_no_active,
+                            ) {
+                                continue;
+                            }
+                            let events =
+                                session_update_events(&method, &params, &session_id, &mut subagents);
+                            for ev in events {
+                                if !send(&event_tx, ev).await {
+                                    consumer_gone = true;
+                                    break;
+                                }
+                            }
+                        }
+                        Incoming::Request { id, method, params } => {
+                            for ev in handle_server_request_live(
+                                &client,
+                                id,
+                                &method,
+                                &params,
+                                &request_input,
+                                &session_id,
+                            ) {
+                                if !send(&event_tx, ev).await {
+                                    consumer_gone = true;
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    if consumer_gone {
+                        break;
+                    }
+                }
+                if consumer_gone {
+                    break 'main;
+                }
                 let injected = !slash_steer_no_active
                     && res.as_ref().ok().and_then(|r| r.get("stopReason")).and_then(|s| s.as_str())
                         == Some("end_turn");
@@ -4712,10 +4842,18 @@ async fn run_session(session: Session) {
                     // The run is winding down: abandon like any queued steer.
                 } else if injected && turn.is_some() {
                     starve_deadline = None;
-                    let mut consumer_gone = false;
+                    consumer_gone = false;
                     while let Ok(inc) = incoming.try_recv() {
                         match inc {
                             Incoming::Notification { method, params } => {
+                                if swallow_slash_steer_ack_notification(
+                                    &method,
+                                    &params,
+                                    slash_steer_ack_filter,
+                                    &mut slash_steer_no_active,
+                                ) {
+                                    continue;
+                                }
                                 let events =
                                     session_update_events(&method, &params, &session_id, &mut subagents);
                                 for ev in events {
