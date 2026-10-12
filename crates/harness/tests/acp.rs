@@ -2590,6 +2590,9 @@ async fn slash_steer_no_active_turn_falls_back_to_turn_boundary() {
         })
         .await
         .unwrap();
+    // Close the mailbox so the persistent session ends once the boundary
+    // prompt settles; otherwise `collect` waits on the stream forever.
+    drop(steer);
     let events = tokio::time::timeout(
         Duration::from_secs(10),
         stream.map(|r| r.expect("stream event")).collect::<Vec<_>>(),
