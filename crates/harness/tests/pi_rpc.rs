@@ -218,6 +218,7 @@ async fn steers_confirm_on_consumption_and_interrupt_is_terminal_once() {
         message_id: Some("user-id".into()),
         attachments: Vec::new(),
         config: None,
+        immediate: false,
     })
     .await
     .unwrap();
@@ -268,6 +269,7 @@ async fn idle_mailbox_starts_another_turn_without_restarting_process() {
                             message_id: None,
                             attachments: Vec::new(),
                             config: None,
+                            immediate: false,
                         })
                         .await
                         .unwrap();
@@ -517,6 +519,7 @@ async fn steering_burst_reaches_one_model_step_and_confirms_each_message_on_cons
                 message_id: Some(format!("user-{i}")),
                 attachments: Vec::new(),
                 config: None,
+                immediate: false,
             })
             .await
             .unwrap();
@@ -598,6 +601,7 @@ async fn handled_input_between_steers_keeps_its_own_delivery_receipt() {
                 message_id: None,
                 attachments: Vec::new(),
                 config: None,
+                immediate: false,
             })
             .await
             .unwrap();
@@ -738,6 +742,7 @@ async fn late_extension_notifications_do_not_reopen_completed_turns() {
         message_id: None,
         attachments: Vec::new(),
         config: None,
+        immediate: false,
     })
     .await
     .unwrap();

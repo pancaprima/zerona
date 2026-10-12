@@ -191,6 +191,7 @@ async fn steer_after_done_becomes_the_next_turn() {
                             message_id: None,
                             attachments: Vec::new(),
                             config: None,
+                            immediate: false,
                         })
                         .await
                         .expect("steer sent");
@@ -344,6 +345,7 @@ async fn followup_crash_is_not_hidden_by_a_previous_completed_turn() {
                             message_id: None,
                             attachments: Vec::new(),
                             config: None,
+                            immediate: false,
                         })
                         .await
                         .unwrap();
@@ -401,6 +403,7 @@ async fn steering_spam_preserves_every_turn_in_order_and_closes_cleanly() {
                         message_id: None,
                         attachments: Vec::new(),
                         config: None,
+                        immediate: false,
                     })
                     .await
                     .unwrap();
@@ -470,6 +473,7 @@ async fn cancelling_a_native_steering_burst_stops_without_starting_another_turn(
                     message_id: None,
                     attachments: Vec::new(),
                     config: None,
+                    immediate: false,
                 })
                 .await
                 .unwrap();

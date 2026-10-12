@@ -365,6 +365,24 @@ impl SessionsEngine {
             .is_some_and(HarnessDescriptor::steers_mid_turn)
     }
 
+    /// Whether the live catalog marks this harness for on-demand `/steer` injection.
+    pub fn harness_on_demand_steer(&self, harness: HarnessId) -> bool {
+        self.inner
+            .registry
+            .descriptors()
+            .iter()
+            .find(|d| d.id == harness)
+            .is_some_and(HarnessDescriptor::steers_on_demand)
+    }
+
+    /// Whether the chat's live run uses a harness that supports on-demand steer.
+    pub fn chat_supports_on_demand_steer(&self, chat_id: &str) -> bool {
+        lock(&self.inner.runs)
+            .get(chat_id)
+            .map(|h| h.runtime_config.harness_id)
+            .is_some_and(|harness| self.harness_on_demand_steer(harness))
+    }
+
     /// Whether this chat has a turn in flight — streaming, or parked on a
     /// question it is still owed an answer to (see [`is_active`]). A persistent
     /// session parked BETWEEN turns is not: it holds a warm child with nothing
@@ -622,6 +640,7 @@ impl SessionsEngine {
                     // A changed model/effort/option the live process adopts
                     // in place: replacing it killed its background work.
                     config: reconfigure.then(|| Box::new(request.clone())),
+                    immediate: false,
                 };
                 if let Ok(permit) = steer_tx.reserve().await {
                     // Commit the reserved slot atomically with the update
@@ -892,7 +911,7 @@ impl SessionsEngine {
         prompt: &str,
         message_id: Option<String>,
     ) -> Result<SteerOutcome, EngineError> {
-        self.steer_at(chat_id, prompt, message_id, now_ms()).await
+        self.steer_at(chat_id, prompt, message_id, false, now_ms()).await
     }
 
     pub(crate) async fn steer_at(
@@ -900,6 +919,7 @@ impl SessionsEngine {
         chat_id: &str,
         prompt: &str,
         message_id: Option<String>,
+        immediate: bool,
         issued_at: i64,
     ) -> Result<SteerOutcome, EngineError> {
         let target = lock(&self.inner.runs)
@@ -939,6 +959,7 @@ impl SessionsEngine {
             message_id: Some(user_id.clone()),
             attachments: Vec::new(),
             config: None,
+            immediate,
         };
         // Saturation is backpressure, not a dead runtime. Waiting for room
         // preserves the live process and every accepted message in a burst.

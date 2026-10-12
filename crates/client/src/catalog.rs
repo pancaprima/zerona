@@ -20,6 +20,8 @@ pub struct HarnessInfo {
     #[serde(default)]
     pub steering_mode: Option<String>,
     #[serde(default)]
+    pub on_demand_steer: Option<bool>,
+    #[serde(default)]
     pub reasoning_levels: Vec<String>,
     /// CLI present on the listing device (absent on old engines ⇒ true).
     #[serde(default = "default_true")]
@@ -40,6 +42,7 @@ impl HarnessInfo {
             label: label.into(),
             supports_steering: None,
             steering_mode: None,
+            on_demand_steer: None,
             reasoning_levels: Vec::new(),
             installed: true,
             enabled: None,

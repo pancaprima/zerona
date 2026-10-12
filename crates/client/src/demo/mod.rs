@@ -912,6 +912,7 @@ impl DemoHost {
             label: "OpenCode".into(),
             supports_steering: Some(false),
             steering_mode: Some("turn-boundary".into()),
+            on_demand_steer: None,
             reasoning_levels: Vec::new(),
             installed: true,
             enabled: Some(true),

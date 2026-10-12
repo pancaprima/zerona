@@ -148,6 +148,8 @@ struct AcpAgentSpec {
     /// A prompt cancelled before it produced anything vanishes from the
     /// agent's history (Grok, verified live); preemption re-sends its text.
     drops_unstarted_cancelled_prompt: bool,
+    /// Mid-turn injection via `session/prompt` `/steer <text>` (Hermes).
+    slash_steer: bool,
 }
 
 fn identity_transform(_reasoning: Option<ReasoningLevel>, text: &str) -> String {
@@ -266,6 +268,7 @@ fn grok_spec() -> AcpAgentSpec {
         skill_dirs: Vec::new,
         hidden_commands: &[],
         drops_unstarted_cancelled_prompt: true,
+        slash_steer: false,
     }
 }
 
@@ -343,6 +346,7 @@ fn devin_spec() -> AcpAgentSpec {
         skill_dirs: Vec::new,
         hidden_commands: &[],
         drops_unstarted_cancelled_prompt: false,
+        slash_steer: false,
     }
 }
 
@@ -398,7 +402,8 @@ fn hermes_spec() -> AcpAgentSpec {
                 },
             ]
         },
-        // No `_session/steering` extension: steers deliver at turn boundaries.
+        // No `_session/steering` extension: queued steers deliver at turn
+        // boundaries; immediate steers use `/steer` on the live turn.
         steering_mode: SteeringMode::TurnBoundary,
         // Hermes exposes no effort config over ACP today (hybrid reasoning is
         // model-internal); revisit when the adapter advertises a ladder.
@@ -414,6 +419,7 @@ fn hermes_spec() -> AcpAgentSpec {
         skill_dirs: Vec::new,
         hidden_commands: &[],
         drops_unstarted_cancelled_prompt: false,
+        slash_steer: true,
     }
 }
 
@@ -1122,6 +1128,7 @@ fn antigravity_spec() -> AcpAgentSpec {
         skill_dirs: antigravity_skill_dirs,
         hidden_commands: &[],
         drops_unstarted_cancelled_prompt: false,
+        slash_steer: false,
     }
 }
 
@@ -2171,6 +2178,9 @@ impl Harness for AcpHarness {
     fn steering_mode(&self) -> SteeringMode {
         self.spec.steering_mode
     }
+    fn on_demand_steer(&self) -> bool {
+        self.spec.slash_steer
+    }
     fn reasoning_levels(&self) -> &[ReasoningLevel] {
         self.spec.reasoning_levels
     }
@@ -2406,6 +2416,7 @@ impl Harness for AcpHarness {
             effort_values: self.spec.effort_values,
             prompt_complete_extension: self.spec.prompt_complete_extension,
             preempt_steers: self.spec.steering_mode == SteeringMode::StepBoundary,
+            slash_steer: self.spec.slash_steer,
             devin_selection,
             devin_catalog,
             resend_unstarted: self.spec.drops_unstarted_cancelled_prompt,
@@ -2450,6 +2461,8 @@ struct Session {
     prompt_complete_extension: bool,
     /// Steers preempt the generation (descriptor: mid-turn steering).
     preempt_steers: bool,
+    /// Mid-turn `/steer` side prompts (Hermes).
+    slash_steer: bool,
     /// Devin: the requested model's catalog group (see `devin_models`).
     devin_selection: Option<devin_models::Selection>,
     /// Devin: the catalog a later model switch selects its group from.
@@ -3524,6 +3537,23 @@ fn steering_call_future(
     prompt_like_request(client.clone(), "_session/steering", params)
 }
 
+fn slash_steer_side_chunk(text: &str) -> bool {
+    (text.contains('⏩') && text.contains("Steer queued")) || text.contains("No active turn")
+}
+
+/// Hermes `/steer`: a side `session/prompt` while the real turn stays open.
+fn slash_steer_call_future(
+    client: &RpcClient,
+    session_id: &str,
+    text: &str,
+) -> BoxFuture<'static, Result<Value, HarnessError>> {
+    let params = json!({
+        "sessionId": session_id,
+        "prompt": [{ "type": "text", "text": format!("/steer {}", text) }],
+    });
+    prompt_like_request(client.clone(), "session/prompt", params)
+}
+
 /// The per-run event loop: one task multiplexing agent messages, the pending
 /// turn, the steering mailbox, the interrupt token, and consumer liveness.
 /// Select `request`'s model, effort and model options on the session —
@@ -3706,6 +3736,7 @@ async fn run_session(session: Session) {
         agent_name,
         prompt_complete_extension,
         preempt_steers,
+        slash_steer,
         devin_selection,
         devin_catalog,
         resend_unstarted,
@@ -3978,6 +4009,9 @@ async fn run_session(session: Session) {
     // updates (the reader blocks on the channel and never parses the
     // steering response).
     let mut steering_call: Option<(String, BoxFuture<'static, Result<Value, HarnessError>>)> = None;
+    let mut slash_steer_call: Option<(String, BoxFuture<'static, Result<Value, HarnessError>>)> =
+        None;
+    let mut slash_steer_no_active = false;
     let mut steer_backlog: VecDeque<String> = VecDeque::new();
     let mut steering_open = true;
     // Immediate steering for agents without a mid-turn steering extension:
@@ -4052,6 +4086,7 @@ async fn run_session(session: Session) {
                 && cancel_flush_deadline.is_none()
                 && queued_steers.is_empty()
                 && steering_call.is_none()
+                && slash_steer_call.is_none()
                 && steer_backlog.is_empty()
                 && open_tools.is_empty()
                 && !(last_update_at.elapsed() < BUSY_RECENT
@@ -4151,6 +4186,42 @@ async fn run_session(session: Session) {
                     // to inject into anymore: boundary delivery.
                     while let Some(next_text) = steer_backlog.pop_front() {
                         queued_steers.push_back(next_text);
+                    }
+                }
+                if let Some((text, mut fut)) = slash_steer_call.take() {
+                    let injected = match tokio::time::timeout(
+                        Duration::from_millis(1000),
+                        &mut fut,
+                    )
+                    .await
+                    {
+                        Ok(Ok(resp)) => {
+                            !slash_steer_no_active
+                                && resp
+                                    .get("stopReason")
+                                    .and_then(Value::as_str)
+                                    == Some("end_turn")
+                        }
+                        Ok(Err(_)) | Err(_) => false,
+                    };
+                    slash_steer_no_active = false;
+                    if interrupted || stopping {
+                        // Winding down; abandoned like any queued steer.
+                    } else if injected {
+                        let (prev, next) = rotate(&mut assistant_message_id);
+                        if !send(
+                            &event_tx,
+                            AgentEvent::Steered {
+                                assistant_message_id: Some(prev),
+                                next_assistant_message_id: Some(next),
+                            },
+                        )
+                        .await
+                        {
+                            break 'main;
+                        }
+                    } else {
+                        queued_steers.push_back(text);
                     }
                 }
                 // Updates streamed before the prompt response are already
@@ -4372,6 +4443,20 @@ async fn run_session(session: Session) {
                                 Ok(json!({ "stopReason": stop }))
                             }));
                         }
+                    }
+                    // Hermes `/steer` ack lines are harness-internal.
+                    if slash_steer_call.is_some()
+                        && method == "session/update"
+                        && let Some(update) = params.get("update")
+                        && update.get("sessionUpdate").and_then(Value::as_str)
+                            == Some("agent_message_chunk")
+                        && let Some(text) = crate::acp::normalize::chunk_text(update)
+                        && slash_steer_side_chunk(&text)
+                    {
+                        if text.contains("No active turn") {
+                            slash_steer_no_active = true;
+                        }
+                        continue;
                     }
                     // Other notifications (other sessions, agent noise) are
                     // tolerated by design.
@@ -4600,11 +4685,125 @@ async fn run_session(session: Session) {
                 }
                 while let Some(next_text) = steer_backlog.pop_front() {
                     if turn.is_some() && !interrupted {
-                        let fut = steering_call_future(&client, &session_id, &next_text);
-                        steering_call = Some((next_text, fut));
+                        if slash_steer {
+                            slash_steer_no_active = false;
+                            let fut = slash_steer_call_future(&client, &session_id, &next_text);
+                            slash_steer_call = Some((next_text, fut));
+                        } else {
+                            let fut = steering_call_future(&client, &session_id, &next_text);
+                            steering_call = Some((next_text, fut));
+                        }
                         break;
                     }
                     // No live turn to inject into: boundary delivery.
+                    queued_steers.push_back(next_text);
+                }
+            },
+
+            res = async { slash_steer_call.as_mut().expect("guarded by if").1.as_mut().await },
+                if slash_steer_call.is_some() =>
+            {
+                let (text, _) = slash_steer_call.take().expect("guarded by if");
+                let injected = !slash_steer_no_active
+                    && res.as_ref().ok().and_then(|r| r.get("stopReason")).and_then(|s| s.as_str())
+                        == Some("end_turn");
+                slash_steer_no_active = false;
+                if interrupted || stopping {
+                    // The run is winding down: abandon like any queued steer.
+                } else if injected && turn.is_some() {
+                    starve_deadline = None;
+                    let mut consumer_gone = false;
+                    while let Ok(inc) = incoming.try_recv() {
+                        match inc {
+                            Incoming::Notification { method, params } => {
+                                let events =
+                                    session_update_events(&method, &params, &session_id, &mut subagents);
+                                for ev in events {
+                                    if !send(&event_tx, ev).await {
+                                        consumer_gone = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            Incoming::Request { id, method, params } => {
+                                for ev in handle_server_request_live(
+                                    &client,
+                                    id,
+                                    &method,
+                                    &params,
+                                    &request_input,
+                                    &session_id,
+                                ) {
+                                    if !send(&event_tx, ev).await {
+                                        consumer_gone = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                        if consumer_gone {
+                            break;
+                        }
+                    }
+                    if consumer_gone {
+                        break 'main;
+                    }
+                    let (prev, next) = rotate(&mut assistant_message_id);
+                    if !send(
+                        &event_tx,
+                        AgentEvent::Steered {
+                            assistant_message_id: Some(prev),
+                            next_assistant_message_id: Some(next),
+                        },
+                    )
+                    .await
+                    {
+                        break 'main;
+                    }
+                } else if turn.is_some() {
+                    queued_steers.push_back(text);
+                } else {
+                    let (prev, next) = rotate(&mut assistant_message_id);
+                    if !send(
+                        &event_tx,
+                        AgentEvent::Steered {
+                            assistant_message_id: Some(prev),
+                            next_assistant_message_id: Some(next),
+                        },
+                    )
+                    .await
+                    {
+                        break 'main;
+                    }
+                    done_current = false;
+                    open_tools.clear();
+                    last_update_at = tokio::time::Instant::now();
+                    prompt_seq += 1;
+                    current_prompt_id =
+                        prompt_complete_extension.then(|| format!("zeron-p{prompt_seq}"));
+                    prompt_stall_deadline =
+                        prompt_stall.map(|d| tokio::time::Instant::now() + d);
+                    current_prompt_text = text.clone();
+                    turn = Some(prompt_turn(
+                        client.clone(),
+                        session_id.clone(),
+                        text,
+                        current_prompt_id.clone(),
+                    ));
+                }
+                while let Some(next_text) = steer_backlog.pop_front() {
+                    if turn.is_some() && !interrupted {
+                        if slash_steer {
+                            slash_steer_no_active = false;
+                            let fut = slash_steer_call_future(&client, &session_id, &next_text);
+                            slash_steer_call = Some((next_text, fut));
+                        } else {
+                            let fut = steering_call_future(&client, &session_id, &next_text);
+                            steering_call = Some((next_text, fut));
+                        }
+                        break;
+                    }
                     queued_steers.push_back(next_text);
                 }
             },
@@ -4798,6 +4997,7 @@ async fn run_session(session: Session) {
                     // Same transform as the initial prompt: Claude's
                     // Ultrathink prefix rides every steer too.
                     let text = prompt_transform(request.reasoning, &msg.prompt);
+                    let immediate = msg.immediate;
                     if turn.is_none() && cancel_flush_deadline.is_some() {
                         // A busy-session cancel is already in flight: this
                         // steer lines up behind it and dispatches at flush.
@@ -4852,12 +5052,20 @@ async fn run_session(session: Session) {
                         text,
                         current_prompt_id.clone(),
                     ));
+                    } else if slash_steer && immediate && turn.is_some() {
+                        if slash_steer_call.is_some() || steering_call.is_some() {
+                            steer_backlog.push_back(text);
+                        } else {
+                            slash_steer_no_active = false;
+                            let fut = slash_steer_call_future(&client, &session_id, &text);
+                            slash_steer_call = Some((text, fut));
+                        }
                     } else if steer_ext {
                         // Mid-turn injection via the `_session/steering`
                         // extension: start the call, resolved by its own
                         // select branch. One call in flight at a time;
                         // followers wait in the backlog.
-                        if steering_call.is_some() {
+                        if steering_call.is_some() || slash_steer_call.is_some() {
                             steer_backlog.push_back(text);
                         } else {
                             let fut = steering_call_future(&client, &session_id, &text);
@@ -4899,6 +5107,8 @@ async fn run_session(session: Session) {
                 // (promptRequired, once the turn is cancelled) would queue it
                 // again and run the cancelled message after all.
                 steering_call = None;
+                slash_steer_call = None;
+                slash_steer_no_active = false;
                 deferred.clear();
                 released = None;
                 preempt_pending = false;

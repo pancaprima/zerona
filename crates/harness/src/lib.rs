@@ -52,6 +52,8 @@ pub struct SteerMessage {
     /// from the live runtime's and the driver adopts it in place
     /// ([`Harness::reconfigures_in_place`]): apply it before the prompt.
     pub config: Option<Box<RunRequest>>,
+    /// Inject through a harness-specific mid-turn side path (Hermes `/steer`).
+    pub immediate: bool,
 }
 
 impl SteerMessage {
@@ -61,6 +63,7 @@ impl SteerMessage {
             message_id: None,
             attachments: Vec::new(),
             config: None,
+            immediate: false,
         }
     }
 }
@@ -165,6 +168,10 @@ pub trait Harness: Send + Sync {
     fn display_name(&self) -> &str;
     fn supports_steering(&self) -> bool;
     fn steering_mode(&self) -> SteeringMode;
+    /// Queued rows may offer "Steer now" while a turn runs (Hermes `/steer`).
+    fn on_demand_steer(&self) -> bool {
+        false
+    }
     fn reasoning_levels(&self) -> &[ReasoningLevel];
     /// Whether the agent's own CLI is present on this device — the settings
     /// gate for enabling the harness. Version probes are cached by executable identity.

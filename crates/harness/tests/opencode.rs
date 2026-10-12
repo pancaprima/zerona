@@ -579,6 +579,7 @@ async fn steer_queues_mid_turn_and_delivers_at_idle() {
             message_id: None,
             attachments: Vec::new(),
             config: None,
+            immediate: false,
         })
         .await
         .unwrap();
@@ -794,6 +795,7 @@ async fn images_sent_mid_turn_ride_the_queued_prompt() {
                 message_id: None,
                 attachments: vec![image.into()],
                 config: None,
+                immediate: false,
             })
             .await
             .unwrap();

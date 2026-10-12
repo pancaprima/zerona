@@ -384,6 +384,7 @@ async fn ultrathink_preserves_selected_commands_on_initial_and_steered_sends() {
                     message_id: None,
                     attachments: Vec::new(),
                     config: None,
+                    immediate: false,
                 })
                 .await
                 .unwrap();
@@ -409,6 +410,7 @@ async fn steering_lines_are_written_to_stdin_mid_run() {
             message_id: None,
             attachments: Vec::new(),
             config: None,
+            immediate: false,
         })
         .await
         .expect("steer queued");
@@ -876,6 +878,7 @@ async fn a_replay_confirms_superseded_steers_and_the_turn_ends() {
                 message_id: None,
                 attachments: Vec::new(),
                 config: None,
+                immediate: false,
             })
             .await
             .expect("steer queued");
@@ -914,6 +917,7 @@ fn steer_msg(prompt: &str) -> SteerMessage {
         message_id: None,
         attachments: Vec::new(),
         config: None,
+        immediate: false,
     }
 }
 
@@ -1311,6 +1315,7 @@ async fn an_unreplayed_steer_releases_the_turn_end() {
             message_id: None,
             attachments: Vec::new(),
             config: None,
+            immediate: false,
         })
         .await
         .expect("steer queued");
@@ -1406,6 +1411,7 @@ async fn a_stopped_turn_keeps_the_process_and_its_background_work() {
             message_id: None,
             attachments: vec![image.to_string_lossy().into_owned()],
             config: None,
+            immediate: false,
         })
         .await
         .unwrap();

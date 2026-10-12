@@ -436,6 +436,7 @@ async fn steering_extension_injects_mid_turn() {
                         message_id: None,
                         attachments: Vec::new(),
                         config: None,
+                        immediate: false,
                     })
                     .await
                     .expect("steer sent");
@@ -484,6 +485,7 @@ async fn steer_racing_the_turn_end_never_emits_steered_after_done() {
                         message_id: None,
                         attachments: Vec::new(),
                         config: None,
+                        immediate: false,
                     })
                     .await
                     .expect("steer sent");
@@ -537,6 +539,7 @@ async fn rejected_steer_queues_and_delivers_at_the_turn_boundary() {
                         message_id: None,
                         attachments: Vec::new(),
                         config: None,
+                        immediate: false,
                     })
                     .await
                     .expect("steer sent");
@@ -786,6 +789,7 @@ fn hermes_and_pi_descriptor_surfaces_match_registry_expectations() {
     assert_eq!(hermes.display_name(), "Hermes");
     assert!(hermes.supports_steering());
     assert_eq!(hermes.steering_mode(), SteeringMode::TurnBoundary);
+    assert!(hermes.on_demand_steer());
     assert!(hermes.reasoning_levels().is_empty());
 
     let pi = zeron_harness::PiHarness::new();
@@ -2175,6 +2179,7 @@ async fn acp_boundary_steer(scenario: &str, trigger_on_done: bool) {
                         message_id: None,
                         attachments: Vec::new(),
                         config: None,
+                        immediate: false,
                     })
                     .await
                     .unwrap();
@@ -2504,4 +2509,103 @@ async fn a_stopped_turn_keeps_the_agent_for_the_next_prompt() {
     ));
     drop(steer);
     assert!(next_event(&mut stream).await.is_none());
+}
+
+fn slash_steer_fixture_path() -> PathBuf {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("fake-acp-slash-steer.sh");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+    }
+    path
+}
+
+fn slash_steer_harness() -> AcpHarness {
+    AcpHarness::hermes().with_executable(slash_steer_fixture_path())
+}
+
+#[tokio::test]
+async fn immediate_slash_steer_keeps_the_running_turn_alive() {
+    let (controls, steer, _token) = controls();
+    let mut stream = slash_steer_harness()
+        .run(request("scenario:slash-steer-immediate"), controls)
+        .await
+        .expect("run starts");
+    let mut steered = false;
+    let mut sent = false;
+    let mut texts = Vec::new();
+    let mut dones = 0;
+    while dones < 1 {
+        let event = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await
+            .expect("event in time")
+            .expect("stream open")
+            .expect("stream event");
+        match event {
+            AgentEvent::Steered { .. } => steered = true,
+            AgentEvent::ToolCall { .. } if !sent => {
+                sent = true;
+                steer
+                    .send(SteerMessage {
+                        immediate: true,
+                        ..SteerMessage::text("inject-now")
+                    })
+                    .await
+                    .unwrap();
+            }
+            AgentEvent::TextDelta { text } => {
+                assert!(
+                    !text.contains('⏩'),
+                    "slash-steer ack must not reach the transcript: {text}"
+                );
+                texts.push(text);
+            }
+            AgentEvent::Done { status, .. } => {
+                assert_eq!(status, DoneStatus::Completed);
+                dones += 1;
+            }
+            _ => {}
+        }
+    }
+    assert!(sent, "steer sent while the turn was running");
+    assert!(steered, "immediate slash steer emits a Steered boundary");
+    assert!(texts.contains(&"after-steer".into()), "{texts:?}");
+}
+
+#[tokio::test]
+async fn slash_steer_no_active_turn_falls_back_to_turn_boundary() {
+    let (controls, steer, _token) = controls();
+    let mut stream = slash_steer_harness()
+        .run(request("scenario:slash-steer-fallback"), controls)
+        .await
+        .expect("run starts");
+    steer
+        .send(SteerMessage {
+            immediate: true,
+            ..SteerMessage::text("boundary-text")
+        })
+        .await
+        .unwrap();
+    let events = tokio::time::timeout(
+        Duration::from_secs(10),
+        stream.map(|r| r.expect("stream event")).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("run finished in time");
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TextDelta { text } if text.contains("No active turn"))),
+        "{events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TextDelta { text } if text == "boundary-delivered")),
+        "{events:?}"
+    );
 }

@@ -122,6 +122,7 @@ async fn real_pi_mock_lifecycle() {
                                     message_id: None,
                                     attachments: Vec::new(),
                                     config: None,
+                                    immediate: false,
                                 })
                                 .await
                                 .unwrap();
@@ -285,6 +286,7 @@ async fn real_pi_steering_bursts_share_the_next_model_call() {
             message_id: Some(format!("burst-user-{i}")),
             attachments: Vec::new(),
             config: None,
+            immediate: false,
         })
         .await
         .unwrap();
