@@ -2600,9 +2600,9 @@ async fn slash_steer_no_active_turn_falls_back_to_turn_boundary() {
     .await
     .expect("run finished in time");
     assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::TextDelta { text } if text.contains("No active turn"))),
+        !events.iter().any(
+            |e| matches!(e, AgentEvent::TextDelta { text } if text.contains("No active turn"))
+        ),
         "{events:?}"
     );
     assert!(
