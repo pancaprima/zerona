@@ -30,7 +30,7 @@ mengunci `resolved().model == Some("gpt")` setelah katalog B (tanpa `gpt`) masuk
    - set `config.model = Some(<id default katalog device baru>)` (hasil
      `selected_catalog_model(models, None)`), dan bersihkan `config.reasoning` serta opsi
      yang terikat model lama bila ada di `config`;
-   - set `model_notice = Some("<label lama> tidak tersedia di <nama device>, pakai <label baru>")`.
+   - set `model_notice = Some("<old label> isn't available on <device name>, using <new label>")`.
    Kalau katalog `Error`, jangan reset (tetap perilaku sekarang), pending dibuang.
 3. Tampilkan `model_notice` sebagai baris info kecil di popover model (pola sama dengan
    `switch_error`, tapi warna muted, bukan danger). Bersihkan notice saat user memilih

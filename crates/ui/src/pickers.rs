@@ -1917,7 +1917,7 @@ impl Pickers {
         self.config.model = Some(new_model.id.clone());
         self.config.reasoning = None;
         self.model_notice = Some(format!(
-            "{old_label} tidak tersedia di {device_label}, pakai {new_label}",
+            "{old_label} isn't available on {device_label}, using {new_label}",
             new_label = new_model.label
         ));
     }
