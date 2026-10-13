@@ -878,6 +878,11 @@ pub struct Pickers {
     switch_task: Option<Task<()>>,
     /// Last mid-session switch failure (shown in the ref popover).
     switch_error: Option<String>,
+    /// After a device switch, catalogs landing for these harnesses may reset
+    /// the new-chat draft model when it is absent on the new host.
+    model_check_pending: HashSet<HarnessId>,
+    /// One-shot info when the draft model was swapped after a device switch.
+    model_notice: Option<String>,
     mutate_task: Option<Task<()>>,
     _search_events: Subscription,
     _state_observe: Subscription,
@@ -965,6 +970,7 @@ impl Pickers {
                 this.config.model = None;
                 this.config.reasoning = None;
                 this.switch_error = None;
+                this.model_notice = None;
             }
             // A space switch invalidates the branch draft + cache — the folder
             // (and possibly the device) changed under them.
@@ -999,6 +1005,11 @@ impl Pickers {
                 }
                 this.models.retain(|_, slot| matches!(slot, Loadable::Ready(_)));
                 this.stale_models = this.models.keys().copied().collect();
+                this.model_check_pending.extend(&this.stale_models);
+                if let Some(harness) = this.effective_harness(cx) {
+                    this.model_check_pending.insert(harness);
+                }
+                this.model_notice = None;
                 this.revalidating.clear();
                 this.model_refresh_errors.clear();
                 this.catalog_rev += 1;
@@ -1106,6 +1117,8 @@ impl Pickers {
             switching: None,
             switch_task: None,
             switch_error: None,
+            model_check_pending: HashSet::new(),
+            model_notice: None,
             mutate_task: None,
             _search_events: search_events,
             _state_observe: state_observe,
@@ -1847,7 +1860,11 @@ impl Pickers {
             cx.notify();
             return;
         }
+        let pending_device_check = self.model_check_pending.remove(&harness);
         if let Loadable::Ready(models) = &loaded {
+            if pending_device_check {
+                self.reconcile_model_after_device_catalog(harness, models, cx);
+            }
             let fresh = self
                 .defaults
                 .remember_labels(models.iter().map(|m| (m.id.as_str(), m.label.as_str())));
@@ -1866,6 +1883,46 @@ impl Pickers {
             self.active = self.selected_model_index(cx);
         }
         cx.notify();
+    }
+
+    /// New-chat canvas only: after a device switch, swap a draft model that
+    /// the new host's catalog does not offer (defaults are not rewritten).
+    fn reconcile_model_after_device_catalog(
+        &mut self,
+        harness: HarnessId,
+        models: &[Model],
+        cx: &mut Context<Self>,
+    ) {
+        if self.title.is_some() || self.state.read(cx).selected_chat.is_some() {
+            return;
+        }
+        if self.effective_harness(cx) != Some(harness) {
+            return;
+        }
+        let Some(old_id) = self.effective_model_id(cx).map(str::to_owned) else {
+            return;
+        };
+        if models.iter().any(|m| m.id == old_id) {
+            return;
+        }
+        let Some(new_model) = selected_catalog_model(models, None) else {
+            return;
+        };
+        let old_label = self
+            .selected_model_label(cx)
+            .unwrap_or_else(|| old_id.clone());
+        let device_label = self
+            .state
+            .read(cx)
+            .effective_device_id()
+            .and_then(|id| self.state.read(cx).device_name(&id))
+            .unwrap_or("device");
+        self.config.model = Some(new_model.id.clone());
+        self.config.reasoning = None;
+        self.model_notice = Some(format!(
+            "{old_label} isn't available on {device_label}, using {new_label}",
+            new_label = new_model.label
+        ));
     }
 
     /// ListRefs for the selected SPACE's folder — targeted at the space's
@@ -2043,6 +2100,7 @@ impl Pickers {
         if self.harness_locked(cx) {
             return;
         }
+        self.model_notice = None;
         if self.state.read(cx).side_chat_unsaved() && self.effective_harness(cx) != Some(harness) {
             // A side-chat draft already has a selected row. Replace its inherited
             // provider settings so both the picker and first createChat use the
@@ -2081,6 +2139,7 @@ impl Pickers {
 
     fn pick_model(&mut self, model_id: String, cx: &mut Context<Self>) {
         self.setting_menu = None;
+        self.model_notice = None;
         if self.title.is_some() {
             let settings = TitleSettings {
                 harness: self.effective_harness(cx),
@@ -4761,15 +4820,27 @@ impl Pickers {
                 .into_any_element()
         });
 
-        div()
+        let mut body = div()
             .flex()
             .flex_col()
             .child(tabs)
             .child(search_row)
             .children(refresh_error)
             .child(list_host)
-            .children(tray)
-            .into_any_element()
+            .children(tray);
+        if let Some(notice) = &self.model_notice {
+            body = body.child(
+                popover::menu_section().child(
+                    div()
+                        .px(px(Theme::SPACE_SM))
+                        .py(px(4.0))
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(notice.clone())),
+                ),
+            );
+        }
+        body.into_any_element()
     }
 
     /// One model row for the virtualized list. `ix` is the row's GLOBAL index
@@ -7604,7 +7675,281 @@ mod tests {
     }
 
     #[gpui::test]
-    fn home_pick_on_other_device_revalidates_catalog_and_keeps_explicit_model(
+    fn device_switch_resets_an_explicit_model_missing_on_the_new_host(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local"), git_space("b", "remote")]);
+            state.selected_space = Some("a".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.defaults = ComposerDefaults::default();
+            pickers.config.harness = Some(HarnessId::Codex);
+            pickers.config.model = Some("gpt".into());
+            pickers.harnesses = Loadable::Ready(vec![descriptor(HarnessId::Codex, "Codex")]);
+            pickers.apply_model_catalog(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("gpt", "GPT")]),
+                cx,
+            );
+        });
+        state.update(cx, |state, cx| state.select_device("remote".into(), cx));
+        cx.run_until_parked();
+        pickers.update(cx, |pickers, cx| {
+            pickers.land_model_reload(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("remote-default", "Remote default")]),
+                cx,
+            );
+            assert_eq!(
+                pickers.resolved(cx).model.as_deref(),
+                Some("remote-default")
+            );
+            assert_eq!(pickers.config.model.as_deref(), Some("remote-default"));
+            assert!(
+                pickers
+                    .model_notice
+                    .as_deref()
+                    .is_some_and(|n| n.contains("GPT") && n.contains("Remote default"))
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn device_switch_keeps_the_model_when_the_new_host_offers_it(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local"), git_space("b", "remote")]);
+            state.selected_space = Some("a".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.defaults = ComposerDefaults::default();
+            pickers.config.harness = Some(HarnessId::Codex);
+            pickers.config.model = Some("gpt".into());
+            pickers.harnesses = Loadable::Ready(vec![descriptor(HarnessId::Codex, "Codex")]);
+            pickers.apply_model_catalog(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("gpt", "GPT")]),
+                cx,
+            );
+        });
+        state.update(cx, |state, cx| state.select_device("remote".into(), cx));
+        cx.run_until_parked();
+        pickers.update(cx, |pickers, cx| {
+            pickers.land_model_reload(
+                HarnessId::Codex,
+                Loadable::Ready(vec![
+                    bare_model("gpt", "GPT"),
+                    bare_model("remote-default", "Remote default"),
+                ]),
+                cx,
+            );
+            assert_eq!(pickers.resolved(cx).model.as_deref(), Some("gpt"));
+            assert_eq!(pickers.config.model.as_deref(), Some("gpt"));
+            assert!(pickers.model_notice.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn device_switch_resets_a_remembered_model_missing_on_the_new_host(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local"), git_space("b", "remote")]);
+            state.selected_space = Some("a".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.defaults = ComposerDefaults::default();
+            pickers.defaults.remember_model(
+                HarnessId::Codex,
+                "gpt".into(),
+                "GPT".into(),
+            );
+            pickers.config.harness = Some(HarnessId::Codex);
+            pickers.harnesses = Loadable::Ready(vec![descriptor(HarnessId::Codex, "Codex")]);
+            pickers.apply_model_catalog(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("gpt", "GPT")]),
+                cx,
+            );
+        });
+        state.update(cx, |state, cx| state.select_device("remote".into(), cx));
+        cx.run_until_parked();
+        pickers.update(cx, |pickers, cx| {
+            pickers.land_model_reload(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("remote-default", "Remote default")]),
+                cx,
+            );
+            assert_eq!(
+                pickers.resolved(cx).model.as_deref(),
+                Some("remote-default")
+            );
+            assert!(pickers.model_notice.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn device_switch_catalog_error_does_not_reset_the_draft_model(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local"), git_space("b", "remote")]);
+            state.selected_space = Some("a".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.defaults = ComposerDefaults::default();
+            pickers.config.harness = Some(HarnessId::Codex);
+            pickers.config.model = Some("gpt".into());
+            pickers.harnesses = Loadable::Ready(vec![descriptor(HarnessId::Codex, "Codex")]);
+            pickers.apply_model_catalog(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("gpt", "GPT")]),
+                cx,
+            );
+        });
+        state.update(cx, |state, cx| state.select_device("remote".into(), cx));
+        cx.run_until_parked();
+        pickers.update(cx, |pickers, cx| {
+            pickers.land_model_reload(
+                HarnessId::Codex,
+                Loadable::Error("device offline".into()),
+                cx,
+            );
+            assert_eq!(pickers.resolved(cx).model.as_deref(), Some("gpt"));
+            assert_eq!(pickers.config.model.as_deref(), Some("gpt"));
+            assert!(pickers.model_notice.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn device_switch_does_not_reset_a_saved_chat_model(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local"), git_space("b", "remote")]);
+            state.selected_space = Some("a".into());
+            state.chats.push(serde_json::from_value(serde_json::json!({
+                "id": "saved-chat",
+                "deviceId": "local",
+                "archived": false,
+                "createdAt": "2026-09-01T00:00:00Z",
+                "config": {
+                    "harness": "codex",
+                    "model": "saved-model",
+                    "sandbox": "workspace-write"
+                }
+            }))
+            .unwrap());
+            state.selected_chat = Some("saved-chat".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.defaults = ComposerDefaults::default();
+            pickers.harnesses = Loadable::Ready(vec![descriptor(HarnessId::Codex, "Codex")]);
+            pickers.apply_model_catalog(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("saved-model", "Saved")]),
+                cx,
+            );
+        });
+        state.update(cx, |state, cx| state.select_device("remote".into(), cx));
+        cx.run_until_parked();
+        pickers.update(cx, |pickers, cx| {
+            pickers.land_model_reload(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("remote-default", "Remote default")]),
+                cx,
+            );
+            assert_eq!(pickers.resolved(cx).model.as_deref(), Some("saved-model"));
+            assert!(pickers.model_notice.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn same_device_catalog_refresh_without_a_model_does_not_reset(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local")]);
+            state.selected_space = Some("a".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.defaults = ComposerDefaults::default();
+            pickers.config.harness = Some(HarnessId::Codex);
+            pickers.harnesses = Loadable::Ready(vec![descriptor(HarnessId::Codex, "Codex")]);
+            pickers.apply_model_catalog(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("first", "First")]),
+                cx,
+            );
+            pickers.apply_model_catalog(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("second", "Second")]),
+                cx,
+            );
+            assert!(pickers.config.model.is_none());
+            assert_eq!(pickers.resolved(cx).model.as_deref(), Some("second"));
+            assert!(pickers.model_notice.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn device_switch_back_clears_a_stale_model_notice(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local"), git_space("b", "remote")]);
+            state.selected_space = Some("a".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.defaults = ComposerDefaults::default();
+            pickers.config.harness = Some(HarnessId::Codex);
+            pickers.config.model = Some("gpt".into());
+            pickers.harnesses = Loadable::Ready(vec![descriptor(HarnessId::Codex, "Codex")]);
+            pickers.apply_model_catalog(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("gpt", "GPT")]),
+                cx,
+            );
+        });
+        state.update(cx, |state, cx| state.select_device("remote".into(), cx));
+        cx.run_until_parked();
+        pickers.update(cx, |pickers, cx| {
+            pickers.land_model_reload(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("remote-default", "Remote default")]),
+                cx,
+            );
+            assert!(pickers.model_notice.is_some());
+        });
+        state.update(cx, |state, cx| state.select_device("local".into(), cx));
+        cx.run_until_parked();
+        pickers.update(cx, |pickers, _| {
+            assert!(pickers.model_notice.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn home_pick_on_other_device_swaps_an_explicit_model_missing_there(
         cx: &mut gpui::TestAppContext,
     ) {
         let state = cx.new(|_| {
@@ -7649,8 +7994,69 @@ mod tests {
                 cx,
             );
             assert!(pickers.stale_models.is_empty());
+            assert_eq!(pickers.config.model.as_deref(), Some("claude-x"));
+            assert_eq!(pickers.resolved(cx).model.as_deref(), Some("claude-x"));
+            assert_eq!(pickers.model_name(cx), ModelName::Named("X".into()));
+            assert!(
+                pickers
+                    .model_notice
+                    .as_deref()
+                    .is_some_and(|n| n.contains("GPT") && n.contains("X"))
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn home_pick_on_other_device_keeps_an_explicit_model_the_host_offers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local"), git_space("b", "remote")]);
+            state.selected_space = Some("a".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.defaults = ComposerDefaults::default();
+            pickers.config.harness = Some(HarnessId::Codex);
+            pickers.config.model = Some("gpt".into());
+            pickers.harnesses = Loadable::Ready(vec![descriptor(HarnessId::Codex, "Codex")]);
+            pickers.apply_model_catalog(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("gpt", "GPT")]),
+                cx,
+            );
+            assert_eq!(pickers.target_generation, 0);
+        });
+        pickers.update(cx, |pickers, cx| {
+            pickers.pick_device_home("remote".into(), cx);
+        });
+        cx.run_until_parked();
+        pickers.update(cx, |pickers, cx| {
+            let state = pickers.state.read(cx);
+            assert!(state.no_project);
+            assert!(state.selected_space.is_none());
+            assert_eq!(state.effective_device_id().as_deref(), Some("remote"));
+            assert_eq!(pickers.target_generation, 1);
+            assert!(pickers.harnesses_stale);
+            assert_eq!(pickers.stale_models, HashSet::from([HarnessId::Codex]));
             assert_eq!(pickers.resolved(cx).model.as_deref(), Some("gpt"));
             assert_eq!(pickers.model_name(cx), ModelName::Named("GPT".into()));
+        });
+        pickers.update(cx, |pickers, cx| {
+            pickers.land_model_reload(
+                HarnessId::Codex,
+                Loadable::Ready(vec![
+                    bare_model("gpt", "GPT"),
+                    bare_model("claude-x", "X"),
+                ]),
+                cx,
+            );
+            assert!(pickers.stale_models.is_empty());
+            assert_eq!(pickers.config.model.as_deref(), Some("gpt"));
+            assert!(pickers.model_notice.is_none());
         });
     }
 
