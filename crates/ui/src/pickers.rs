@@ -2966,6 +2966,7 @@ impl Pickers {
                                             )
                                         })
                                 };
+                                let is_home = row.home;
                                 popover::picker_row(
                                     &theme,
                                     is_selected,
@@ -2976,7 +2977,7 @@ impl Pickers {
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.pick_device_row(row.clone(), cx);
                                 }))
-                                .when(row.home, |el| {
+                                .when(is_home, |el| {
                                     el.child(
                                         popover::picker_icon_slot(
                                             crate::icons::icon(crate::icons::HOME)
