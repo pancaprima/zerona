@@ -6,9 +6,10 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use zeron_proto::{
     ListWorkspaceDirectoryRequest, ReadWorkspaceFileRequest, SearchWorkspaceContentRequest,
-    SearchWorkspaceContentResponse, SearchWorkspaceFilesRequest, WatchWorkspaceFilesRequest,
-    WorkspaceDirectoryPage, WorkspaceFileSearchMatch, WorkspaceFileText, WorkspaceTarget,
-    WriteWorkspaceFileOutcome, WriteWorkspaceFileRequest,
+    SearchWorkspaceContentResponse, SearchWorkspaceFilesRequest, SearchWorkspaceFuzzyContentRequest,
+    WarmWorkspaceSearchRequest, WarmWorkspaceSearchResult, WatchWorkspaceFilesRequest,
+    WorkspaceContentSearchResult, WorkspaceDirectoryPage, WorkspaceFileSearchMatch,
+    WorkspaceFileText, WorkspaceTarget, WriteWorkspaceFileOutcome, WriteWorkspaceFileRequest,
 };
 use zeron_rpc::{RpcError, methods};
 
@@ -56,6 +57,9 @@ pub enum FilesClientError {
     Transport(String),
     #[error("workspace request failed: {0}")]
     Request(String),
+    /// The host predates this method.
+    #[error("workspace host does not support {0}")]
+    Unsupported(String),
 }
 
 impl FilesClientError {
@@ -69,6 +73,7 @@ impl From<RpcError> for FilesClientError {
         match error {
             RpcError::Transport(message) => Self::Transport(message),
             RpcError::Closed => Self::Transport("connection closed".into()),
+            RpcError::UnknownMethod(method) => Self::Unsupported(method),
             other => Self::Request(other.to_string()),
         }
     }
@@ -121,6 +126,11 @@ impl WorkspaceFilesClient {
         context: FilesRequestContext,
     ) -> Self {
         Self { transport, context }
+    }
+
+    /// The workspace every request of this client addresses.
+    pub fn target(&self) -> &WorkspaceTarget {
+        &self.context.target
     }
 
     pub async fn list_directory(
@@ -183,8 +193,34 @@ impl WorkspaceFilesClient {
     pub async fn search_content(
         &self,
         request: SearchWorkspaceContentRequest,
-    ) -> Result<SearchWorkspaceContentResponse, FilesClientError> {
+    ) -> Result<WorkspaceContentSearchResult, FilesClientError> {
         self.call(methods::SEARCH_WORKSPACE_CONTENT, &request).await
+    }
+
+    /// Fork-only: scored literal/fuzzy content search (explorer panel).
+    pub async fn search_content_fuzzy(
+        &self,
+        request: SearchWorkspaceFuzzyContentRequest,
+    ) -> Result<SearchWorkspaceContentResponse, FilesClientError> {
+        self.call(methods::SEARCH_WORKSPACE_CONTENT_FUZZY, &request)
+            .await
+    }
+
+    /// Start or keep alive the host's search index for this workspace.
+    pub async fn warm_search(&self) -> Result<WarmWorkspaceSearchResult, FilesClientError> {
+        let request = WarmWorkspaceSearchRequest {
+            target: self.context.target.clone(),
+        };
+        self.call(methods::WARM_WORKSPACE_SEARCH, &request).await
+    }
+
+    /// [`Self::warm_search`] as a hint: failures are logged, never surfaced
+    /// (hosts that predate it are skipped silently).
+    pub async fn hint_search_warm(&self) {
+        match self.warm_search().await {
+            Ok(_) | Err(FilesClientError::Unsupported(_)) => {}
+            Err(error) => tracing::debug!(%error, "workspace search warm-up failed"),
+        }
     }
 
     pub async fn read_file(

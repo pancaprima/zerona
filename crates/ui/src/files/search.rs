@@ -18,7 +18,7 @@ use gpui::{
     AnyElement, Context, ListSizingBehavior, SharedString, Task, Window, div, list, prelude::*, px,
 };
 use zeron_proto::{
-    ListWorkspaceDirectoryRequest, SearchWorkspaceContentRequest, SearchWorkspaceFilesRequest,
+    ListWorkspaceDirectoryRequest, SearchWorkspaceFilesRequest, SearchWorkspaceFuzzyContentRequest,
     WorkspaceContentMatchMode, WorkspaceContentSearchCompletion,
     WorkspaceContentSearchIncompleteReason, WorkspaceContentSearchMatch, WorkspaceEntryKind,
     WorkspaceFileSearchMatch,
@@ -364,7 +364,7 @@ const CONTENT_SEARCH_UNSUPPORTED: &str =
     "Content search is not supported on this workspace host. Update the owning device to search file contents.";
 
 fn is_search_workspace_content_unknown_method(message: &str) -> bool {
-    message.contains("unknown method: SearchWorkspaceContent")
+    message.contains("unknown method: SearchWorkspaceContentFuzzy")
 }
 
 fn content_search_error_message(error: FilesClientError) -> SharedString {
@@ -478,7 +478,7 @@ impl FilesSurface {
                     .await
                     .map(SearchResponse::Files),
                 ExplorerSearchKind::Contents => client
-                    .search_content(SearchWorkspaceContentRequest {
+                    .search_content_fuzzy(SearchWorkspaceFuzzyContentRequest {
                         target: context.target.clone(),
                         query: query.clone(),
                         match_mode: match content_mode {
@@ -1212,8 +1212,8 @@ mod tests {
     #[test]
     fn content_search_unknown_method_is_explicit() {
         for raw in [
-            "unknown method: SearchWorkspaceContent",
-            "workspace request failed: unknown method: SearchWorkspaceContent",
+            "unknown method: SearchWorkspaceContentFuzzy",
+            "workspace request failed: unknown method: SearchWorkspaceContentFuzzy",
         ] {
             let message = content_search_error_message(FilesClientError::Request(raw.into()));
             assert!(message.contains("not supported"));
@@ -1225,7 +1225,7 @@ mod tests {
     fn content_search_other_request_errors_keep_raw_text() {
         let cases = [
             FilesClientError::Request(
-                "workspace request failed: bad params: invalid SearchWorkspaceContentRequest"
+                "workspace request failed: bad params: invalid SearchWorkspaceFuzzyContentRequest"
                     .into(),
             ),
             FilesClientError::Request(

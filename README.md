@@ -7,7 +7,7 @@ This repository is a **fork** of [zeronsh/zeron](https://github.com/zeronsh/zero
 - **Content search** across workspace files
 - **Persistent browser profiles** for harness sessions
 
-*English | [简体中文](README.zh-CN.md) | [한국어](README.ko.md) | [日本語](README.ja.md)*
+*English | [简体中文](README.zh-CN.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [Español](README.es.md)*
 
 ![Zerona desktop app](docs/media/readme/app-screenshot.jpg)
 
