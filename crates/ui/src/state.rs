@@ -2009,6 +2009,14 @@ impl AppState {
         cx.notify();
     }
 
+    /// Target a device's home (`~`) for a new session — no project checkout.
+    pub fn select_device_no_project(&mut self, device_id: String, cx: &mut Context<Self>) {
+        self.no_project = true;
+        self.selected_space = None;
+        self.selected_device = Some(device_id);
+        cx.notify();
+    }
+
     pub fn space_row(&self, space_id: &str) -> Option<&Space> {
         self.spaces.iter().find(|s| s.id == space_id)
     }
@@ -4874,6 +4882,23 @@ mod tests {
             assert!(state.selected_space_row().is_none());
             assert_eq!(state.effective_device_id().as_deref(), Some("remote"));
         }
+    }
+
+    #[gpui::test]
+    fn active_project_home_device_pick_clears_project(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, cx| {
+            state.apply_spaces(vec![
+                space("s1", "dev", "/a", 1),
+                space("s2", "remote", "/b", 2),
+            ]);
+            state.select_space(Some("s1".into()), cx);
+            state.select_device_no_project("remote".into(), cx);
+            assert!(state.no_project);
+            assert!(state.selected_space.is_none());
+            assert_eq!(state.effective_device_id().as_deref(), Some("remote"));
+            assert_eq!(state.selected_device.as_deref(), Some("remote"));
+        });
     }
 
     #[gpui::test]
