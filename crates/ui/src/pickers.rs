@@ -7750,7 +7750,11 @@ mod tests {
                 "deviceId": "local",
                 "archived": false,
                 "createdAt": "2026-09-01T00:00:00Z",
-                "config": { "harness": "codex", "model": "saved-model" }
+                "config": {
+                    "harness": "codex",
+                    "model": "saved-model",
+                    "sandbox": "workspace-write"
+                }
             }))
             .unwrap());
             state.selected_chat = Some("saved-chat".into());
@@ -7803,7 +7807,8 @@ mod tests {
                 Loadable::Ready(vec![bare_model("second", "Second")]),
                 cx,
             );
-            assert_eq!(pickers.resolved(cx).model, None);
+            assert!(pickers.config.model.is_none());
+            assert_eq!(pickers.resolved(cx).model.as_deref(), Some("second"));
             assert!(pickers.model_notice.is_none());
         });
     }
