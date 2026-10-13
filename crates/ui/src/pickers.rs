@@ -587,6 +587,9 @@ struct DeviceRow {
     space: Option<Space>,
     /// The checkout's path, when the device holds several of the project.
     detail: Option<String>,
+    /// Chat in home (`~`) on this device without a project (only listed while a
+    /// project is active on the canvas).
+    home: bool,
 }
 
 /// What names the selected model, shared by the composer chip and the
@@ -2761,6 +2764,15 @@ impl Pickers {
         self.close(cx);
     }
 
+    fn pick_device_home(&mut self, device_id: String, cx: &mut Context<Self>) {
+        self.state.update(cx, |s, cx| {
+            s.auto_selected = true;
+            s.select_device_no_project(device_id, cx);
+        });
+        self.remember_target(cx);
+        self.close(cx);
+    }
+
     /// Persist the device/project picks — the "last selected" defaults the
     /// next boot's canvas restores.
     fn remember_target(&mut self, cx: &App) {
@@ -2795,7 +2807,7 @@ impl Pickers {
         };
         if let Some(space) = state.selected_space_row() {
             let members = state.project_members(space);
-            return members
+            let mut rows: Vec<DeviceRow> = members
                 .iter()
                 .map(|member| {
                     let shared = members
@@ -2808,9 +2820,26 @@ impl Pickers {
                         name: device_name(&member.device_id),
                         space: Some((*member).clone()),
                         detail: shared.then(|| member.path.clone()),
+                        home: false,
                     }
                 })
                 .collect();
+            let mut devices: Vec<&zeron_proto::Device> = state.devices.iter().collect();
+            devices.sort_by_key(|d| {
+                (
+                    local.as_deref() != Some(d.id.as_str()),
+                    d.name.to_lowercase(),
+                    d.id.clone(),
+                )
+            });
+            rows.extend(devices.into_iter().map(|device| DeviceRow {
+                device_id: device.id.clone(),
+                name: device_name(&device.id),
+                space: None,
+                detail: None,
+                home: true,
+            }));
+            return rows;
         }
         let mut devices: Vec<&zeron_proto::Device> = state.devices.iter().collect();
         devices.sort_by_key(|d| {
@@ -2827,6 +2856,7 @@ impl Pickers {
                 name: device.name.clone(),
                 space: None,
                 detail: None,
+                home: false,
             })
             .collect()
     }
@@ -2838,9 +2868,15 @@ impl Pickers {
         let rows = self.device_rows(cx);
         let names: Vec<String> = rows
             .iter()
-            .map(|row| match &row.detail {
-                Some(detail) => format!("{} {detail}", row.name),
-                None => row.name.clone(),
+            .map(|row| {
+                if row.home {
+                    format!("Home (~) {}", row.name)
+                } else {
+                    match &row.detail {
+                        Some(detail) => format!("{} {detail}", row.name),
+                        None => row.name.clone(),
+                    }
+                }
             })
             .collect();
         popover::filter_indices(&query, &names)
@@ -2850,18 +2886,24 @@ impl Pickers {
     }
 
     fn selected_device_index(&self, cx: &App) -> usize {
-        let (selected, effective) = {
+        let (selected, effective, no_project) = {
             let state = self.state.read(cx);
             (
                 state.selected_space_row().map(|s| s.id.clone()),
                 state.effective_device_id(),
+                state.no_project,
             )
         };
         self.device_rows(cx)
             .iter()
-            .position(|row| match &row.space {
-                Some(space) => selected.as_deref() == Some(space.id.as_str()),
-                None => effective.as_deref() == Some(row.device_id.as_str()),
+            .position(|row| {
+                if row.home {
+                    return no_project && effective.as_deref() == Some(row.device_id.as_str());
+                }
+                match &row.space {
+                    Some(space) => selected.as_deref() == Some(space.id.as_str()),
+                    None => effective.as_deref() == Some(row.device_id.as_str()),
+                }
             })
             .unwrap_or(0)
     }
@@ -2869,6 +2911,10 @@ impl Pickers {
     /// A device row picks the project's checkout there, or — without a
     /// project — the device itself.
     fn pick_device_row(&mut self, row: DeviceRow, cx: &mut Context<Self>) {
+        if row.home {
+            self.pick_device_home(row.device_id, cx);
+            return;
+        }
         match row.space {
             Some(space) => self.pick_space(space.id, cx),
             None => self.pick_device(row.device_id, cx),
@@ -2882,10 +2928,11 @@ impl Pickers {
         let theme = Theme::of(cx).for_popup();
         let now = chrono::Utc::now();
         let rows = self.filtered_device_rows(cx);
-        let (selected_space, effective, local, online): (
+        let (selected_space, effective, local, no_project, online): (
             Option<String>,
             Option<String>,
             Option<String>,
+            bool,
             Vec<bool>,
         ) = {
             let state = self.state.read(cx);
@@ -2893,6 +2940,7 @@ impl Pickers {
                 state.selected_space_row().map(|s| s.id.clone()),
                 state.effective_device_id(),
                 state.local_device_id.clone(),
+                state.no_project,
                 rows.iter()
                     .map(|row| state.device_online(&row.device_id, now))
                     .collect(),
@@ -2920,14 +2968,64 @@ impl Pickers {
                         .children(rows.into_iter().zip(online).enumerate().map(
                             |(ix, (row, online))| {
                                 let is_local = local.as_deref() == Some(row.device_id.as_str());
-                                let label: SharedString = row.name.clone().into();
-                                let is_selected = match &row.space {
-                                    Some(space) => {
-                                        selected_space.as_deref() == Some(space.id.as_str())
+                                let is_selected = if row.home {
+                                    no_project
+                                        && effective.as_deref() == Some(row.device_id.as_str())
+                                } else {
+                                    match &row.space {
+                                        Some(space) => {
+                                            selected_space.as_deref() == Some(space.id.as_str())
+                                        }
+                                        None => {
+                                            effective.as_deref() == Some(row.device_id.as_str())
+                                        }
                                     }
-                                    None => effective.as_deref() == Some(row.device_id.as_str()),
                                 };
                                 let detail = row.detail.clone().map(SharedString::from);
+                                let label_row = if row.home {
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_row()
+                                        .items_baseline()
+                                        .gap(px(6.0))
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .child(SharedString::from("Home (~)")),
+                                        )
+                                        .child(
+                                            div()
+                                                .min_w_0()
+                                                .truncate()
+                                                .child(SharedString::from(row.name.clone())),
+                                        )
+                                } else {
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_row()
+                                        .items_baseline()
+                                        .gap(px(6.0))
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .child(SharedString::from(row.name.clone())),
+                                        )
+                                        .when_some(detail, |el, detail| {
+                                            el.child(
+                                                div()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_size(crate::typography::ui_rems(10.0))
+                                                    .text_color(theme.text_muted)
+                                                    .child(detail),
+                                            )
+                                        })
+                                };
+                                let is_home = row.home;
                                 popover::picker_row(
                                     &theme,
                                     is_selected,
@@ -2938,26 +3036,17 @@ impl Pickers {
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.pick_device_row(row.clone(), cx);
                                 }))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_row()
-                                        .items_baseline()
-                                        .gap(px(6.0))
-                                        .child(div().flex_none().child(label))
-                                        .when_some(detail, |el, detail| {
-                                            el.child(
-                                                div()
-                                                    .min_w_0()
-                                                    .truncate()
-                                                    .text_size(crate::typography::ui_rems(10.0))
-                                                    .text_color(theme.text_muted)
-                                                    .child(detail),
-                                            )
-                                        }),
-                                )
+                                .when(is_home, |el| {
+                                    el.child(
+                                        popover::picker_icon_slot(
+                                            crate::icons::icon(crate::icons::HOME)
+                                                .size(px(12.0))
+                                                .text_color(theme.text_muted)
+                                                .into_any_element(),
+                                        ),
+                                    )
+                                })
+                                .child(label_row)
                                 // The local device wears a muted right-aligned "You"
                                 // instead of a "(this device)" suffix in the name.
                                 .when(is_local, |el| {
@@ -3094,7 +3183,7 @@ impl Pickers {
         .id("project-none")
         .on_click(cx.listener(|this, _, _, cx| this.pick_no_project(cx)))
         .child(popover::picker_icon_slot(
-            crate::icons::icon(crate::icons::CLOSE)
+            crate::icons::icon(crate::icons::HOME)
                 .size(px(12.0))
                 .text_color(theme.text_muted)
                 .into_any_element(),
@@ -3104,7 +3193,7 @@ impl Pickers {
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .child("Don't work in a project"),
+                .child("Chat in home (~), no project"),
         );
         // Action row under a hairline: mint a project.
         let new_project = popover::picker_row(&theme, false, false, "project-new".to_string())
@@ -3731,11 +3820,19 @@ impl Pickers {
             let offline = device_id
                 .as_deref()
                 .is_some_and(|id| !state.device_online(id, chrono::Utc::now()));
-            let project_label: SharedString = state
-                .selected_space_row()
-                .map(|s| s.display_name().to_string())
-                .unwrap_or_else(|| "No project".to_string())
-                .into();
+            let project_label: SharedString = if state.no_project {
+                let device = device_id
+                    .as_deref()
+                    .and_then(|id| state.device_name(id))
+                    .unwrap_or("This device");
+                format!("~ @ {}", device).into()
+            } else {
+                state
+                    .selected_space_row()
+                    .map(|s| s.display_name().to_string())
+                    .unwrap_or_else(|| "No project".to_string())
+                    .into()
+            };
             (device_label, project_label, offline)
         };
         let device_chip = self
@@ -7852,6 +7949,272 @@ mod tests {
     }
 
     #[gpui::test]
+    fn home_pick_on_other_device_swaps_an_explicit_model_missing_there(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local"), git_space("b", "remote")]);
+            state.selected_space = Some("a".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.defaults = ComposerDefaults::default();
+            pickers.config.harness = Some(HarnessId::Codex);
+            pickers.config.model = Some("gpt".into());
+            pickers.harnesses = Loadable::Ready(vec![descriptor(HarnessId::Codex, "Codex")]);
+            pickers.apply_model_catalog(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("gpt", "GPT")]),
+                cx,
+            );
+            assert_eq!(pickers.target_generation, 0);
+        });
+        pickers.update(cx, |pickers, cx| {
+            pickers.pick_device_home("remote".into(), cx);
+        });
+        cx.run_until_parked();
+        pickers.update(cx, |pickers, cx| {
+            let state = pickers.state.read(cx);
+            assert!(state.no_project);
+            assert!(state.selected_space.is_none());
+            assert_eq!(state.effective_device_id().as_deref(), Some("remote"));
+            assert_eq!(pickers.target_generation, 1);
+            assert!(pickers.harnesses_stale);
+            assert_eq!(pickers.stale_models, HashSet::from([HarnessId::Codex]));
+            assert_eq!(pickers.resolved(cx).model.as_deref(), Some("gpt"));
+            assert_eq!(pickers.model_name(cx), ModelName::Named("GPT".into()));
+        });
+        pickers.update(cx, |pickers, cx| {
+            pickers.land_model_reload(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("claude-x", "X")]),
+                cx,
+            );
+            assert!(pickers.stale_models.is_empty());
+            assert_eq!(pickers.config.model.as_deref(), Some("claude-x"));
+            assert_eq!(pickers.resolved(cx).model.as_deref(), Some("claude-x"));
+            assert_eq!(pickers.model_name(cx), ModelName::Named("X".into()));
+            assert!(
+                pickers
+                    .model_notice
+                    .as_deref()
+                    .is_some_and(|n| n.contains("GPT") && n.contains("X"))
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn home_pick_on_other_device_keeps_an_explicit_model_the_host_offers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local"), git_space("b", "remote")]);
+            state.selected_space = Some("a".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.defaults = ComposerDefaults::default();
+            pickers.config.harness = Some(HarnessId::Codex);
+            pickers.config.model = Some("gpt".into());
+            pickers.harnesses = Loadable::Ready(vec![descriptor(HarnessId::Codex, "Codex")]);
+            pickers.apply_model_catalog(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("gpt", "GPT")]),
+                cx,
+            );
+            assert_eq!(pickers.target_generation, 0);
+        });
+        pickers.update(cx, |pickers, cx| {
+            pickers.pick_device_home("remote".into(), cx);
+        });
+        cx.run_until_parked();
+        pickers.update(cx, |pickers, cx| {
+            let state = pickers.state.read(cx);
+            assert!(state.no_project);
+            assert!(state.selected_space.is_none());
+            assert_eq!(state.effective_device_id().as_deref(), Some("remote"));
+            assert_eq!(pickers.target_generation, 1);
+            assert!(pickers.harnesses_stale);
+            assert_eq!(pickers.stale_models, HashSet::from([HarnessId::Codex]));
+            assert_eq!(pickers.resolved(cx).model.as_deref(), Some("gpt"));
+            assert_eq!(pickers.model_name(cx), ModelName::Named("GPT".into()));
+        });
+        pickers.update(cx, |pickers, cx| {
+            pickers.land_model_reload(
+                HarnessId::Codex,
+                Loadable::Ready(vec![
+                    bare_model("gpt", "GPT"),
+                    bare_model("claude-x", "X"),
+                ]),
+                cx,
+            );
+            assert!(pickers.stale_models.is_empty());
+            assert_eq!(pickers.config.model.as_deref(), Some("gpt"));
+            assert!(pickers.model_notice.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn home_pick_on_same_device_keeps_catalog(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local"), git_space("b", "remote")]);
+            state.selected_space = Some("a".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        let mut resolved_before = None;
+        pickers.update(cx, |pickers, cx| {
+            pickers.defaults = ComposerDefaults::default();
+            pickers.config.harness = Some(HarnessId::Codex);
+            pickers.harnesses = Loadable::Ready(vec![descriptor(HarnessId::Codex, "Codex")]);
+            pickers.apply_model_catalog(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("gpt", "GPT")]),
+                cx,
+            );
+            resolved_before = Some(pickers.resolved(cx));
+        });
+        pickers.update(cx, |pickers, cx| {
+            pickers.pick_device_home("local".into(), cx);
+        });
+        cx.run_until_parked();
+        pickers.update(cx, |pickers, cx| {
+            let state = pickers.state.read(cx);
+            assert!(state.no_project);
+            assert_eq!(state.effective_device_id().as_deref(), Some("local"));
+            assert_eq!(pickers.target_generation, 0);
+            assert!(!pickers.harnesses_stale && pickers.stale_models.is_empty());
+            assert_eq!(pickers.model_name(cx), ModelName::Named("GPT".into()));
+            assert_eq!(pickers.resolved(cx), resolved_before.unwrap());
+        });
+    }
+
+    #[gpui::test]
+    fn home_round_trip_local_remote_local_without_explicit_model(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local"), git_space("b", "remote")]);
+            state.selected_space = Some("a".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.defaults = ComposerDefaults::default();
+            pickers.config.harness = Some(HarnessId::Codex);
+            pickers.harnesses = Loadable::Ready(vec![descriptor(HarnessId::Codex, "Codex")]);
+            pickers.apply_model_catalog(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("gpt", "GPT")]),
+                cx,
+            );
+        });
+        pickers.update(cx, |pickers, cx| {
+            pickers.pick_device_home("remote".into(), cx);
+        });
+        cx.run_until_parked();
+        pickers.update(cx, |pickers, cx| {
+            assert_eq!(pickers.target_generation, 1);
+            assert!(pickers.harnesses_stale);
+            assert_eq!(pickers.resolved(cx).model, None);
+        });
+        pickers.update(cx, |pickers, cx| {
+            pickers.land_model_reload(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("remote-default", "Remote Default")]),
+                cx,
+            );
+            assert!(!pickers.stale_models.contains(&HarnessId::Codex));
+            assert_eq!(
+                pickers.resolved(cx).model.as_deref(),
+                Some("remote-default")
+            );
+            assert_eq!(
+                pickers.model_name(cx),
+                ModelName::Named("Remote Default".into())
+            );
+        });
+        pickers.update(cx, |pickers, cx| {
+            pickers.pick_device_home("local".into(), cx);
+        });
+        cx.run_until_parked();
+        pickers.update(cx, |pickers, cx| {
+            assert_eq!(pickers.target_generation, 2);
+            assert!(pickers.harnesses_stale);
+            assert_eq!(pickers.stale_models, HashSet::from([HarnessId::Codex]));
+            assert_eq!(pickers.resolved(cx).model, None);
+        });
+        pickers.update(cx, |pickers, cx| {
+            pickers.land_model_reload(
+                HarnessId::Codex,
+                Loadable::Ready(vec![bare_model("local-default", "Local Default")]),
+                cx,
+            );
+            assert_eq!(
+                pickers.resolved(cx).model.as_deref(),
+                Some("local-default")
+            );
+            assert_eq!(
+                pickers.model_name(cx),
+                ModelName::Named("Local Default".into())
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn home_pick_remembers_target_without_touching_model_defaults(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local"), git_space("b", "remote")]);
+            state.selected_space = Some("a".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        let mut model_defaults = None;
+        pickers.update(cx, |pickers, _cx| {
+            pickers.defaults = ComposerDefaults::default();
+            pickers.defaults.harness = Some(HarnessId::Codex);
+            pickers.defaults.remember_model(HarnessId::Codex, "gpt".into(), "GPT".into());
+            pickers.defaults.reasoning = Some(ReasoningLevel::High);
+            model_defaults = Some((
+                pickers.defaults.harness,
+                pickers.defaults.model_by_harness.clone(),
+                pickers.defaults.reasoning,
+                pickers.defaults.reasoning_by_model.clone(),
+                pickers.defaults.model_options_by_model.clone(),
+                pickers.defaults.model_labels.clone(),
+                pickers.defaults.favorites.clone(),
+            ));
+        });
+        pickers.update(cx, |pickers, cx| {
+            pickers.pick_device_home("remote".into(), cx);
+        });
+        cx.run_until_parked();
+        pickers.update(cx, |pickers, _cx| {
+            let model_defaults = model_defaults.unwrap();
+            assert!(pickers.defaults.no_project);
+            assert_eq!(pickers.defaults.device.as_deref(), Some("remote"));
+            assert!(pickers.defaults.project.is_none());
+            assert_eq!(pickers.defaults.harness, model_defaults.0);
+            assert_eq!(pickers.defaults.model_by_harness, model_defaults.1);
+            assert_eq!(pickers.defaults.reasoning, model_defaults.2);
+            assert_eq!(pickers.defaults.reasoning_by_model, model_defaults.3);
+            assert_eq!(pickers.defaults.model_options_by_model, model_defaults.4);
+            assert_eq!(pickers.defaults.model_labels, model_defaults.5);
+            assert_eq!(pickers.defaults.favorites, model_defaults.6);
+        });
+    }
+
+    #[gpui::test]
     fn same_device_refresh_failure_keeps_the_loaded_rows(cx: &mut gpui::TestAppContext) {
         let state = cx.new(|_| {
             let mut state = AppState::new();
@@ -7988,17 +8351,19 @@ mod tests {
             assert_eq!(pickers.selected_project_index(cx), 0);
             // The device picker offers only the project's checkouts; a device
             // holding two is told apart by path.
-            let devices: Vec<(String, Option<String>)> = pickers
+            let devices: Vec<(String, Option<String>, bool)> = pickers
                 .device_rows(cx)
                 .into_iter()
-                .map(|row| (row.device_id, row.detail))
+                .map(|row| (row.device_id, row.detail, row.home))
                 .collect();
             assert_eq!(
                 devices,
                 [
-                    ("mac".into(), None),
-                    ("vps".into(), Some("/vps/server".into())),
-                    ("vps".into(), Some("/vps/server-wt".into())),
+                    ("mac".into(), None, false),
+                    ("vps".into(), Some("/vps/server".into()), false),
+                    ("vps".into(), Some("/vps/server-wt".into()), false),
+                    ("mac".into(), None, true),
+                    ("vps".into(), None, true),
                 ]
             );
             let server = pickers.device_rows(cx).remove(1);
