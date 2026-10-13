@@ -1384,6 +1384,16 @@ impl Pickers {
             })
     }
 
+    pub(crate) fn steers_on_demand(&self, cx: &App) -> bool {
+        self.harnesses
+            .ready()
+            .and_then(|list| {
+                let selected = self.effective_harness(cx)?;
+                list.iter().find(|h| h.id == selected)
+            })
+            .is_some_and(|h| h.steers_on_demand())
+    }
+
     /// The fully-resolved config the composer threads into the Run request and
     /// `Mutate createChat`: concrete model + reasoning whenever the catalog is
     /// loaded (no "engine picks a default" passthrough).
@@ -8559,6 +8569,7 @@ mod tests {
             reasoning_levels: Vec::new(),
             steering_mode: zeron_proto::SteeringMode::StepBoundary,
             supports_steering: false,
+            on_demand_steer: false,
         }
     }
     #[gpui::test]
@@ -9794,6 +9805,7 @@ mod tests {
             id,
             name: name.into(),
             supports_steering: true,
+            on_demand_steer: false,
             steering_mode: zeron_proto::SteeringMode::StepBoundary,
             reasoning_levels: vec![],
             installed: true,
@@ -9821,6 +9833,7 @@ mod tests {
             id,
             name: name.into(),
             supports_steering: true,
+            on_demand_steer: false,
             steering_mode: zeron_proto::SteeringMode::StepBoundary,
             reasoning_levels: vec![],
             installed: true,
@@ -9874,6 +9887,7 @@ mod tests {
                 id,
                 name: name.into(),
                 supports_steering: true,
+                on_demand_steer: false,
                 steering_mode: zeron_proto::SteeringMode::StepBoundary,
                 reasoning_levels: vec![],
                 installed,

@@ -63,6 +63,8 @@ pub struct HarnessInfo {
     #[serde(default = "default_steering_mode")]
     pub steering_mode: SteeringMode,
     #[serde(default)]
+    pub on_demand_steer: bool,
+    #[serde(default)]
     pub reasoning_levels: Vec<ReasoningLevel>,
     #[serde(default = "default_true")]
     pub installed: bool,

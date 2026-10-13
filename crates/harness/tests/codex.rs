@@ -364,6 +364,7 @@ async fn steering_uses_turn_steer_with_expected_turn_id() {
             message_id: None,
             attachments: Vec::new(),
             config: None,
+            immediate: false,
         })
         .await
         .expect("steer queued");
@@ -559,6 +560,7 @@ async fn rejected_steer_falls_back_to_a_follow_up_turn() {
             message_id: None,
             attachments: Vec::new(),
             config: None,
+            immediate: false,
         })
         .await
         .expect("steer queued");
@@ -1203,6 +1205,7 @@ async fn live_subagent_spawn_and_followup_keep_one_transcript() {
                 message_id: None,
                 attachments: Vec::new(),
                 config: None,
+                immediate: false,
             }).await.unwrap();
         }
         if turn == 2 {
@@ -1612,6 +1615,7 @@ async fn native_command_during_a_turn_waits_for_its_boundary() {
                             message_id: None,
                             attachments: Vec::new(),
                             config: None,
+                            immediate: false,
                         })
                         .await
                         .unwrap();
@@ -1649,6 +1653,7 @@ async fn native_skill_and_file_references_survive_initial_and_steered_turns() {
             message_id: Some("skill-steer".into()),
             attachments: Vec::new(),
             config: None,
+            immediate: false,
         })
         .await
         .unwrap();
@@ -1700,6 +1705,7 @@ async fn ordinary_followup_cannot_overtake_a_queued_native_command() {
                                 message_id: None,
                                 attachments: Vec::new(),
                                 config: None,
+                                immediate: false,
                             })
                             .await
                             .unwrap();

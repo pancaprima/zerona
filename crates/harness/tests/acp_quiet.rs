@@ -162,6 +162,7 @@ async fn delayed_turn(scenario: &str) {
             prompt: "second".into(),
             attachments: Vec::new(),
             config: None,
+            immediate: false,
         })
         .await
         .unwrap();
@@ -171,6 +172,7 @@ async fn delayed_turn(scenario: &str) {
             prompt: "third".into(),
             attachments: Vec::new(),
             config: None,
+            immediate: false,
         })
         .await
         .unwrap();
@@ -215,6 +217,7 @@ async fn delayed_turn(scenario: &str) {
             prompt: "fourth".into(),
             attachments: Vec::new(),
             config: None,
+            immediate: false,
         })
         .await
         .unwrap();
@@ -281,6 +284,7 @@ async fn cancel_quiet(scenario: &str) {
             prompt: "must not run".into(),
             attachments: Vec::new(),
             config: None,
+            immediate: false,
         })
         .await
         .unwrap();

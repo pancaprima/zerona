@@ -24,6 +24,10 @@ pub struct HarnessDescriptor {
     pub name: String,
     pub supports_steering: bool,
     pub steering_mode: SteeringMode,
+    /// Queued text rows may inject mid-turn through a harness-specific side path
+    /// such as Hermes `/steer`, without changing `steering_mode`.
+    #[serde(default)]
+    pub on_demand_steer: bool,
     pub reasoning_levels: Vec<ReasoningLevel>,
     /// Whether the agent's CLI is present on the listing device (the settings
     /// enable-gate). Defaults true so catalogs from engines predating the
@@ -47,6 +51,10 @@ impl HarnessDescriptor {
     /// action exposed on an individual queued row.
     pub fn steers_mid_turn(&self) -> bool {
         self.supports_steering && self.steering_mode == SteeringMode::StepBoundary
+    }
+
+    pub fn steers_on_demand(&self) -> bool {
+        self.on_demand_steer
     }
 }
 
@@ -77,6 +85,7 @@ fn describe(harness: &dyn Harness) -> HarnessDescriptor {
         name: harness.display_name().to_string(),
         supports_steering: harness.supports_steering(),
         steering_mode: harness.steering_mode(),
+        on_demand_steer: harness.on_demand_steer(),
         reasoning_levels: harness.reasoning_levels().to_vec(),
         installed: harness.installed(),
         can_install: false,
@@ -578,6 +587,7 @@ pub fn default_registry() -> HarnessRegistry {
             id: HarnessId::ClaudeCode,
             name: "Claude Code".into(),
             supports_steering: true,
+            on_demand_steer: false,
             steering_mode: SteeringMode::StepBoundary,
             // Must mirror ClaudeHarness exactly — the descriptor-stability
             // rule (see the codex test below).
@@ -606,6 +616,7 @@ pub fn default_registry() -> HarnessRegistry {
             id: HarnessId::Codex,
             name: "Codex".into(),
             supports_steering: true,
+            on_demand_steer: false,
             steering_mode: SteeringMode::StepBoundary,
             reasoning_levels: vec![
                 ReasoningLevel::Minimal,
@@ -631,6 +642,7 @@ pub fn default_registry() -> HarnessRegistry {
             id: HarnessId::Cursor,
             name: "Cursor".into(),
             supports_steering: true,
+            on_demand_steer: false,
             steering_mode: SteeringMode::StepBoundary,
             reasoning_levels: Vec::new(),
             installed: true,
@@ -649,6 +661,7 @@ pub fn default_registry() -> HarnessRegistry {
             id: HarnessId::Devin,
             name: "Devin".into(),
             supports_steering: true,
+            on_demand_steer: false,
             steering_mode: SteeringMode::TurnBoundary,
             reasoning_levels: Vec::new(),
             installed: true,
@@ -667,6 +680,7 @@ pub fn default_registry() -> HarnessRegistry {
             id: HarnessId::Grok,
             name: "Grok".into(),
             supports_steering: true,
+            on_demand_steer: false,
             steering_mode: SteeringMode::TurnBoundary,
             reasoning_levels: vec![
                 ReasoningLevel::Low,
@@ -681,14 +695,14 @@ pub fn default_registry() -> HarnessRegistry {
         Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::grok()) as Arc<dyn Harness>)),
     );
     // Hermes Agent over ACP (`hermes acp`), same lazy pattern: the static
-    // descriptor mirrors AcpHarness::hermes() exactly. No steering extension
-    // (turn boundaries) and no effort ladder — Hermes exposes no effort
-    // config over ACP today (hybrid reasoning is model-internal).
+    // descriptor mirrors AcpHarness::hermes() exactly. Turn-boundary queue
+    // delivery with optional on-demand `/steer` injection mid-turn.
     registry.register_lazy(
         HarnessDescriptor {
             id: HarnessId::Hermes,
             name: "Hermes".into(),
             supports_steering: true,
+            on_demand_steer: true,
             steering_mode: SteeringMode::TurnBoundary,
             reasoning_levels: Vec::new(),
             installed: true,
@@ -704,6 +718,7 @@ pub fn default_registry() -> HarnessRegistry {
             id: HarnessId::Pi,
             name: "Pi".into(),
             supports_steering: true,
+            on_demand_steer: false,
             steering_mode: SteeringMode::StepBoundary,
             reasoning_levels: Vec::new(),
             installed: true,
@@ -723,6 +738,7 @@ pub fn default_registry() -> HarnessRegistry {
             id: HarnessId::Opencode,
             name: "OpenCode".into(),
             supports_steering: true,
+            on_demand_steer: false,
             steering_mode: SteeringMode::TurnBoundary,
             reasoning_levels: vec![
                 ReasoningLevel::Low,
@@ -747,6 +763,7 @@ pub fn default_registry() -> HarnessRegistry {
             id: HarnessId::Antigravity,
             name: "Antigravity".into(),
             supports_steering: true,
+            on_demand_steer: false,
             steering_mode: SteeringMode::TurnBoundary,
             reasoning_levels: Vec::new(),
             installed: true,
@@ -764,11 +781,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hermes_lazy_descriptor_matches_acp_harness_on_demand_steer() {
+        let registry = default_registry();
+        let hermes = registry
+            .descriptors()
+            .into_iter()
+            .find(|d| d.id == HarnessId::Hermes)
+            .expect("hermes slot");
+        assert!(hermes.on_demand_steer);
+        assert!(zeron_harness::AcpHarness::hermes().on_demand_steer());
+    }
+
+    #[test]
     fn mid_turn_steering_requires_support_and_a_step_boundary() {
         let mut descriptor = HarnessDescriptor {
             id: HarnessId::Mock,
             name: "Mock".into(),
             supports_steering: true,
+            on_demand_steer: false,
             steering_mode: SteeringMode::StepBoundary,
             reasoning_levels: Vec::new(),
             installed: true,
@@ -796,6 +826,7 @@ mod tests {
                 id: HarnessId::Mock,
                 name: "Lazy Mock".into(),
                 supports_steering: true,
+                on_demand_steer: false,
                 steering_mode: SteeringMode::StepBoundary,
                 reasoning_levels: vec![],
                 installed: true,
@@ -943,6 +974,7 @@ mod tests {
                 id,
                 name: format!("{id:?}"),
                 supports_steering: true,
+                on_demand_steer: false,
                 steering_mode: SteeringMode::StepBoundary,
                 reasoning_levels: vec![],
                 installed: true,
@@ -1026,6 +1058,7 @@ mod tests {
                 id: HarnessId::Grok,
                 name: "Grok".into(),
                 supports_steering: true,
+                on_demand_steer: false,
                 steering_mode: SteeringMode::TurnBoundary,
                 reasoning_levels: vec![],
                 installed: true,

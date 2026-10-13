@@ -60,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
                                         message_id: Some(format!("digit-{i}")),
                                         attachments: Vec::new(),
                                         config: None,
+                                        immediate: false,
                                     })
                                     .await
                                     .is_err()

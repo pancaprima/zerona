@@ -239,6 +239,7 @@ impl TurnWire {
                     message_id: None,
                     attachments: Vec::new(),
                     config: None,
+                    immediate: false,
                 })
                 .await
                 .unwrap();
@@ -417,6 +418,7 @@ async fn completed_turn_keeps_mailbox_alive_for_the_next_queued_request() {
             message_id: Some("second".into()),
             attachments: Vec::new(),
             config: None,
+            immediate: false,
         })
         .await
         .unwrap();

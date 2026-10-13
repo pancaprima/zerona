@@ -103,6 +103,7 @@ const QUEUE_ICON_SIZE: f32 = 13.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QueuePrimaryAction {
     Steer,
+    SteerNow,
     SendNext,
     SendNow,
 }
@@ -111,6 +112,7 @@ impl QueuePrimaryAction {
     fn tooltip(self) -> &'static str {
         match self {
             Self::Steer => "Steer (keep current work running)",
+            Self::SteerNow => "Steer now (keeps current work running)",
             Self::SendNext => "Send at the next turn (this agent cannot steer mid-turn)",
             Self::SendNow => "Send now (interrupt)",
         }
@@ -124,9 +126,12 @@ fn available_queue_primary_action(
     host_supports_actions: bool,
     has_attachments: bool,
     steers_mid_turn: bool,
+    steers_on_demand: bool,
 ) -> Option<QueuePrimaryAction> {
     (!delivery_blocked && host_supports_actions).then_some(if has_attachments {
         QueuePrimaryAction::SendNow
+    } else if steers_on_demand {
+        QueuePrimaryAction::SteerNow
     } else if steers_mid_turn {
         QueuePrimaryAction::Steer
     } else {
@@ -575,6 +580,7 @@ impl Composer {
             host_supports_actions,
             !item.attachments.is_empty(),
             self.pickers().read(cx).steers_mid_turn(cx),
+            self.pickers().read(cx).steers_on_demand(cx),
         );
         let primary_action = resolved_primary.unwrap_or(QueuePrimaryAction::SendNow);
         let primary_id = item.id.clone();
@@ -1195,6 +1201,7 @@ impl Composer {
                 div()
                     .child(match action {
                         QueuePrimaryAction::Steer => "Steer",
+                        QueuePrimaryAction::SteerNow => "Steer now",
                         QueuePrimaryAction::SendNext => "Send next",
                         QueuePrimaryAction::SendNow => "Send now",
                     })
@@ -1392,7 +1399,9 @@ impl Composer {
         cx: &mut Context<Self>,
     ) {
         match action {
-            QueuePrimaryAction::Steer | QueuePrimaryAction::SendNext => self.queue_rpc(
+            QueuePrimaryAction::Steer
+            | QueuePrimaryAction::SteerNow
+            | QueuePrimaryAction::SendNext => self.queue_rpc(
                 methods::STEER_QUEUED_MESSAGE_NOW,
                 serde_json::json!({ "id": id }),
                 "Couldn't send that message",
@@ -1432,6 +1441,7 @@ impl Composer {
             host_supports_actions,
             has_attachments,
             self.pickers().read(cx).steers_mid_turn(cx),
+            self.pickers().read(cx).steers_on_demand(cx),
         ) else {
             return;
         };
@@ -2057,23 +2067,27 @@ mod tests {
     #[test]
     fn available_primary_action_obeys_row_and_host_gates() {
         assert_eq!(
-            available_queue_primary_action(false, true, false, false),
+            available_queue_primary_action(false, true, false, false, false),
             Some(QueuePrimaryAction::SendNext)
         );
         assert_eq!(
-            available_queue_primary_action(false, true, true, true),
+            available_queue_primary_action(false, true, true, false, false),
             Some(QueuePrimaryAction::SendNow)
         );
         assert_eq!(
-            available_queue_primary_action(false, true, false, true),
+            available_queue_primary_action(false, true, false, true, false),
             Some(QueuePrimaryAction::Steer)
         );
         assert_eq!(
-            available_queue_primary_action(true, true, false, true),
+            available_queue_primary_action(false, true, false, false, true),
+            Some(QueuePrimaryAction::SteerNow)
+        );
+        assert_eq!(
+            available_queue_primary_action(true, true, false, true, false),
             None
         );
         assert_eq!(
-            available_queue_primary_action(false, false, false, true),
+            available_queue_primary_action(false, false, false, true, false),
             None
         );
     }

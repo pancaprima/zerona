@@ -3997,6 +3997,67 @@ impl DocHost {
                 "queued message is blocked for editing or review".into(),
             ));
         }
+        if candidate.attachments.is_empty()
+            && self.sessions().is_some_and(|sessions| {
+                sessions.chat_supports_on_demand_steer(chat_id)
+                    && sessions.turn_in_flight(chat_id)
+            })
+        {
+            let Some(item) = handle.doc.take_queued(id)? else {
+                return Ok(false);
+            };
+            let was_paused = handle.queue_paused.swap(false, Ordering::AcqRel);
+            handle.publish_queue();
+            let mut attachments = item.attachments.clone();
+            let held = lock(&handle.held_sends).remove(&item.id);
+            let mut prompt = if held.is_some() {
+                item.text.clone()
+            } else {
+                queued_message_prompt(&item.text, &attachments)
+            };
+            self.resolve_attachment_refs(&mut prompt, &mut attachments);
+            let message_id = item.id.clone();
+            if let Some(sessions) = self.sessions() {
+                if let Err(err) = handle.write_user_message(
+                    &message_id,
+                    &prompt,
+                    item.issued_at.min(now_ms()),
+                ) {
+                    tracing::warn!(chat = %chat_id, error = %err, "canonical user-message write failed");
+                }
+                match sessions
+                    .steer_at(
+                        chat_id,
+                        &prompt,
+                        Some(message_id),
+                        true,
+                        item.issued_at,
+                    )
+                    .await?
+                {
+                    SteerOutcome::Accepted => return Ok(true),
+                    SteerOutcome::DeferredByUpdate => {
+                        if was_paused {
+                            handle.queue_paused.store(true, Ordering::Release);
+                        }
+                        let _ = handle.doc.insert_queued(0, &item);
+                        handle.publish_queue();
+                        return Err(EngineError::Other(
+                            "agent update pending; the message remains queued".into(),
+                        ));
+                    }
+                    SteerOutcome::NotSteerable => {}
+                }
+            }
+            if was_paused {
+                handle.queue_paused.store(true, Ordering::Release);
+            }
+            let _ = handle.doc.insert_queued(0, &item);
+            handle.publish_queue();
+            return Err(EngineError::Other(
+                "on-demand steer could not reach the live run".into(),
+            ));
+        }
         if self
             .sessions()
             .is_some_and(|sessions| sessions.defers_to_turn_end(chat_id, None))
@@ -5675,7 +5736,7 @@ impl DocHost {
             tracing::warn!(chat = %chat_id, error = %err, "canonical user-message write failed");
         }
         match sessions
-            .steer_at(chat_id, &prompt, message_id.clone(), issued_at)
+            .steer_at(chat_id, &prompt, message_id.clone(), false, issued_at)
             .await?
         {
             SteerOutcome::Accepted => {
