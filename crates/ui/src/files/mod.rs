@@ -44,6 +44,15 @@ use model::{DirectoryLoadState, FileTreeModel};
 use preview::FilePreviewState;
 use search::FileSearchState;
 
+/// File links use character columns; content search reports UTF-8 bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileColumn {
+    /// One-based character column from a file link.
+    Character(u32),
+    /// Zero-based UTF-8 byte column from a content search match.
+    Byte(u64),
+}
+
 static NEXT_REVIEW_COMMENT_FLUSH_SOURCE: AtomicU64 = AtomicU64::new(1);
 use crate::surface_chrome::{
     CONTROL_RADIUS as TOOLBAR_BUTTON_RADIUS, CONTROL_SIZE as TOOLBAR_BUTTON_SIZE, toolbar,
@@ -268,8 +277,10 @@ pub enum OpenFileColumnUnit {
     /// Transcript/workspace links (`#L12C5`): columns are 1-based.
     #[default]
     OneBasedLink,
-    /// Content-search RPC: UTF-32 scalar offsets from the start of the line.
+    /// Fork explorer content search: UTF-32 scalar offsets from the start of the line.
     Utf32ScalarOffset,
+    /// cmd+K palette content search (upstream fff): 0-based UTF-8 byte offset.
+    Utf8ByteOffset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -392,8 +403,9 @@ pub struct FilesSurface {
     watch_error: Option<SharedString>,
     preview: FilePreviewState,
     tree_context_menu: crate::popover::Popup<context_menu::TreeContextMenu>,
-    pending_line_navigation: Option<(u32, Option<u32>)>,
-    pending_line_column_unit: OpenFileColumnUnit,
+    pending_line_navigation: Option<(u32, Option<FileColumn>)>,
+    /// Fork: 0-based character range of a content-search match on the target
+    /// line, selected after navigation (None for plain link jumps).
     pending_line_selection: Option<(u32, u32)>,
     pending_line_match_text: Option<String>,
     line_navigation_generation: u64,
@@ -476,7 +488,13 @@ impl FilesSurface {
                     let device = state
                         .device_name(&chat.device_id)
                         .unwrap_or(&chat.device_id);
-                    format!("Files in {} · {device}", chat.cwd.as_deref().unwrap_or("~"))
+                    // A projectless chat's folder is an implementation detail.
+                    match chat.cwd.as_deref() {
+                        Some(cwd) if !zeron_proto::projectless::is_projectless_cwd(Some(cwd)) => {
+                            format!("Files in {cwd} · {device}")
+                        }
+                        _ => format!("Files · {device}"),
+                    }
                 })
         };
         let phase = self.tree.node("").map(|root| root.load.clone());
@@ -782,7 +800,6 @@ impl FilesSurface {
             ),
             tree_context_menu: crate::popover::Popup::default(),
             pending_line_navigation: None,
-            pending_line_column_unit: OpenFileColumnUnit::default(),
             pending_line_selection: None,
             pending_line_match_text: None,
             line_navigation_generation: 0,
@@ -988,6 +1005,18 @@ impl FilesSurface {
         }
         self.started = true;
         self.load_directory(String::new(), None, cx);
+        // Opening the tree is a strong hint a search follows; start the
+        // host's index now.
+        if let (Some(engine), Some(context)) = (
+            self.state.read(cx).engine().cloned(),
+            self.request_context.clone(),
+        ) {
+            let client = WorkspaceFilesClient::new(engine, context);
+            cx.spawn(async move |_, _| {
+                client.hint_search_warm().await;
+            })
+            .detach();
+        }
     }
 
     pub fn retry_root(&mut self, cx: &mut Context<Self>) {
@@ -1038,7 +1067,6 @@ impl FilesSurface {
         self.pending_line_navigation = None;
         self.pending_line_selection = None;
         self.pending_line_match_text = None;
-        self.pending_line_column_unit = OpenFileColumnUnit::default();
         self.line_navigation_generation = self.line_navigation_generation.wrapping_add(1);
     }
 
