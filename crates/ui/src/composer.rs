@@ -15014,6 +15014,7 @@ mod tests {
                     name: name.into(),
                     harness,
                 }),
+                catalog_source: None,
             })
             .collect();
             let rows = invocation_candidates(commands, skills);
@@ -15056,6 +15057,7 @@ mod tests {
                     name: "review".into(),
                     harness,
                 }),
+                catalog_source: None,
             }];
             let rows = invocation_candidates(commands, skills);
             assert_eq!(rows.len(), 2);
@@ -15085,6 +15087,7 @@ mod tests {
                 path: "/a/SKILL.md".into(),
                 description: "A".into(),
                 enabled: true,
+                catalog_source: None,
             },
             Skill {
                 command: None,
@@ -15092,6 +15095,7 @@ mod tests {
                 path: "/b/SKILL.md".into(),
                 description: "B".into(),
                 enabled: true,
+                catalog_source: None,
             },
             Skill {
                 command: None,
@@ -15099,6 +15103,7 @@ mod tests {
                 path: "/c/SKILL.md".into(),
                 description: String::new(),
                 enabled: false,
+                catalog_source: None,
             },
         ];
         assert_eq!(invocation_candidates(commands.clone(), vec![]).len(), 1);
