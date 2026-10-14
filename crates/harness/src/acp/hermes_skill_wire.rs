@@ -328,11 +328,23 @@ pub(crate) fn parse_skill_load_meta(params: &Value) -> Option<HermesSkillLoadMet
     serde_json::from_value(skill_load.clone()).ok()
 }
 
+fn tool_call_id_from_update(update: &Value) -> Option<String> {
+    update
+        .get("toolCallId")
+        .or_else(|| update.get("tool_call_id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+}
+
 pub fn map_skill_load_from_tool_update(
     update: &Value,
     wire_session_id: &str,
 ) -> Option<AgentEvent> {
-    let meta = skill_load_meta_from_tool_update(update)?;
+    let mut meta = skill_load_meta_from_tool_update(update)?;
+    if meta.tool_call_id.is_none() {
+        meta.tool_call_id = tool_call_id_from_update(update);
+    }
     if !validate_skill_load_meta(&meta, Some(wire_session_id), None) {
         return None;
     }

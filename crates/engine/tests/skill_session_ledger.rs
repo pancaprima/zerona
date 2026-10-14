@@ -242,8 +242,8 @@ fn invalid_meta_does_not_erase_prior_history() {
     assert_eq!(ledger.snapshot().confirmed.len(), 1);
 }
 
-#[test]
-fn skill_loads_meta_persists_through_doc_host_store_reopen() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skill_loads_meta_persists_through_doc_host_store_reopen() {
     use std::sync::Arc;
     use zeron_engine::{DocHost, DocHostConfig};
     use zeron_proto::HarnessId;
@@ -278,6 +278,7 @@ fn skill_loads_meta_persists_through_doc_host_store_reopen() {
     let bytes = handle.doc().export_snapshot().unwrap();
     store.save_snapshot(CHAT, &bytes).unwrap();
     drop(handle);
+    host.shutdown_workers().await;
     drop(host);
 
     let reopened = DocHost::new(store.clone(), config);
@@ -297,6 +298,8 @@ fn skill_loads_meta_persists_through_doc_host_store_reopen() {
         rehydrated.snapshot().confirmed[0].profile_key.as_deref(),
         Some("profile-b")
     );
+    drop(handle);
+    reopened.shutdown_workers().await;
 }
 
 #[test]
@@ -350,8 +353,9 @@ fn companion_notification_and_tool_mapper_share_ledger_contract() {
             .expect("notification");
     let from_tool = hermes_skill_wire::map_skill_load_from_tool_update(&tool_update, "acp-1")
         .expect("tool meta");
-    for event in [from_notification, from_tool] {
-        let ledger = replay_events(&[event], HermesSkillLoadsCapability::WireV2Acp);
+    let wire_events = [from_notification, from_tool];
+    for event in &wire_events {
+        let ledger = replay_events(std::slice::from_ref(event), HermesSkillLoadsCapability::WireV2Acp);
         let snap = ledger.snapshot();
         assert_eq!(snap.confirmed.len(), 1);
         assert_eq!(snap.confirmed[0].status, HermesSkillLoadStatus::LoadedReference);
@@ -359,13 +363,34 @@ fn companion_notification_and_tool_mapper_share_ledger_contract() {
 
     use zeron_harness::acp::normalize::map_update;
     let mapped = map_update(&tool_update, "acp-1");
-    assert_eq!(mapped.len(), 1);
+    let skill_loads: Vec<_> = mapped
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::HermesSkillLoad { .. }))
+        .collect();
+    let tool_results: Vec<_> = mapped
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolResult { .. }))
+        .collect();
+    assert_eq!(skill_loads.len(), 1);
+    assert_eq!(tool_results.len(), 1);
+    assert!(matches!(
+        tool_results[0],
+        AgentEvent::ToolResult {
+            id,
+            is_error: false,
+            ..
+        } if id == "tc-1"
+    ));
     let ledger = replay_events(&mapped, HermesSkillLoadsCapability::WireV2Acp);
     assert_eq!(ledger.snapshot().confirmed.len(), 1);
     assert_eq!(
         ledger.snapshot().confirmed[0].profile_key.as_deref(),
         Some("profile1")
     );
+
+    let repeated = replay_events(&wire_events, HermesSkillLoadsCapability::WireV2Acp);
+    assert_eq!(repeated.snapshot().confirmed.len(), 1);
+    assert_eq!(repeated.snapshot().confirmed[0].event_id, "companion-e1");
 }
 
 #[test]

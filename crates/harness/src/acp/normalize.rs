@@ -376,6 +376,8 @@ pub fn map_update(update: &Value, wire_session_id: &str) -> Vec<AgentEvent> {
         }
         "tool_call_update" => {
             let id = str_field(update, "toolCallId");
+            let authoritative_skill =
+                super::hermes_skill_wire::map_skill_load_from_tool_update(update, wire_session_id);
             let mut events = Vec::new();
             // Refresh the call only when the update carries new SHAPE — kind,
             // title, rawInput, or a diff. Result-only content (output text)
@@ -395,9 +397,7 @@ pub fn map_update(update: &Value, wire_session_id: &str) -> Vec<AgentEvent> {
                 events.push(resolved);
             }
             let title = str_field(update, "title");
-            if let Some(authoritative) =
-                super::hermes_skill_wire::map_skill_load_from_tool_update(update, wire_session_id)
-            {
+            if let Some(authoritative) = authoritative_skill {
                 events.push(authoritative);
             } else if let Some(observed) =
                 super::hermes_skill_wire::map_observed_skill_view(update, &title)

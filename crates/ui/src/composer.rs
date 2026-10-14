@@ -7424,7 +7424,7 @@ impl Composer {
     /// File mentions and provider catalogs share a workspace target. A new
     /// side chat inherits its parent's checkout but has no persisted row until
     /// its first send, so discovery must address the parent in the meantime.
-    fn completion_workspace_params(&self, cx: &App) -> Option<serde_json::Value> {
+    pub(crate) fn completion_workspace_params(&self, cx: &App) -> Option<serde_json::Value> {
         let state = self.state.read(cx);
         if let Some(chat) = state.selected_chat_row() {
             let chat_id = chat
