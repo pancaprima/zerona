@@ -3141,6 +3141,15 @@ fn prepare_and_prompt_turn(
     if harness != HarnessId::Hermes {
         return prompt_turn(client, session_id, text, prompt_id, None).boxed();
     }
+    // `request_now` runs inside `prompt_turn` when it is called, not when its
+    // future is polled. A deferred async staging wrapper lets the main loop
+    // process `/steer` before the first scenario prompt hits the wire (see
+    // fake-acp-slash-steer.sh ordering). Skill-less Hermes turns keep the
+    // write-now contract; selected skills still stage over RPC first.
+    if hermes_skill_wire::hermes_skill_selections_from_prompt(&text).is_empty() {
+        let delivered = zeron_proto::invocation::harness_prompt(&text, harness);
+        return prompt_turn(client, session_id, delivered, prompt_id, None).boxed();
+    }
     async move {
         let wire = hermes_skill_wire::live_wire_for_session(&client, &session_id);
         let operation_id = prompt_id
@@ -5611,6 +5620,37 @@ async fn run_session(session: Session) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn hermes_skillless_prepare_queues_prompt_before_turn_future_poll() {
+        let (client, mut receiver) = RpcClient::test_writer_only();
+        let _guard = hermes_skill_wire::register_live_wire(
+            "s-hermes",
+            client.clone(),
+            zeron_proto::skill::HermesSkillLoadsCapability::WireV2Acp,
+            Some("epoch-1".into()),
+            None,
+        );
+        let _turn = prepare_and_prompt_turn(
+            HarnessId::Hermes,
+            client,
+            "s-hermes".into(),
+            "scenario:slash-steer-fallback".into(),
+            Some("zeron-p1".into()),
+        );
+        let line = receiver
+            .try_recv()
+            .expect("session/prompt must be written when prepare_and_prompt_turn returns");
+        assert!(
+            line.contains("\"method\":\"session/prompt\""),
+            "{line}"
+        );
+        assert!(line.contains("scenario:slash-steer-fallback"), "{line}");
+        assert!(
+            !line.contains("\"hermes\""),
+            "skill-less turns must not attach Hermes operation meta: {line}"
+        );
+    }
 
     #[test]
     fn unix_browser_suppression_falls_back_to_zerons_noop_mode() {

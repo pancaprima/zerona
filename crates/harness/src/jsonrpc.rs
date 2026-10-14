@@ -67,6 +67,21 @@ impl RpcClient {
         Self::with_stdout_observer(stdin, stdout, None)
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_writer_only() -> (Self, mpsc::UnboundedReceiver<String>) {
+        let (writer_tx, writer_rx) = mpsc::unbounded_channel();
+        (
+            Self {
+                next_id: Arc::new(AtomicI64::new(0)),
+                pending: Arc::default(),
+                writer: writer_tx,
+                closed: Arc::new(AtomicBool::new(false)),
+                voice_router: Arc::default(),
+            },
+            writer_rx,
+        )
+    }
+
     pub(crate) fn with_stdout_observer(
         stdin: ChildStdin,
         stdout: ChildStdout,
