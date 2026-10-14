@@ -8,8 +8,7 @@ use serde_json::{Value, json};
 
 use zeron_proto::skill::{
     HermesSkillCatalogResponse, HermesSkillLoadMeta, HermesSkillLoadsCapability,
-    HermesSkillLoadStatus, HERMES_SKILL_LOAD_SCHEMA_VERSION, ledger_status_from_meta,
-    validate_skill_load_meta,
+    HERMES_SKILL_LOAD_SCHEMA_VERSION, validate_skill_load_meta,
 };
 use zeron_proto::AgentEvent;
 
@@ -116,7 +115,7 @@ pub(crate) fn live_wire_for_session_id(
         0 => Err(HarnessError::Protocol(
             "Hermes ACP session is not connected on this device".into(),
         )),
-        1 => Ok(matches[0]),
+        1 => Ok(matches.into_iter().next().expect("len checked")),
         _ => Err(HarnessError::Protocol(
             "ambiguous Hermes ACP session wire — multiple child agents share this session id"
                 .into(),

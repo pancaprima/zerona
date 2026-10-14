@@ -17,7 +17,7 @@ pub fn skills_from_catalog(
         .collect()
 }
 
-pub fn skill_from_entry(entry: &HermesSkillCatalogEntry, harness: zeron_proto::HarnessId) -> Skill {
+pub fn skill_from_entry(entry: &HermesSkillCatalogEntry, _harness: zeron_proto::HarnessId) -> Skill {
     Skill {
         name: entry.display_name.clone(),
         path: encode_hermes_skill_uri(&entry.load_name),
