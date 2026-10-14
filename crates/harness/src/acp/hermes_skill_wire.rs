@@ -258,6 +258,18 @@ pub(crate) async fn inspect(
     .await
 }
 
+/// Inspect a Hermes skill on a live ACP session (engine/UI facade — wire stays internal).
+pub async fn inspect_skill_for_session(
+    acp_session_id: &str,
+    load_name: &str,
+) -> Result<zeron_proto::skill::HermesSkillInspectResponse, HarnessError> {
+    let wire = live_wire_for_session_id(acp_session_id)?;
+    let value = inspect(&wire.client, acp_session_id, load_name).await?;
+    serde_json::from_value(value).map_err(|error| {
+        HarnessError::Protocol(format!("invalid Hermes skill inspect response: {error}"))
+    })
+}
+
 pub(crate) async fn select_skills(
     client: &RpcClient,
     session_id: &str,
@@ -286,7 +298,7 @@ pub(crate) async fn select_skills(
     ext_method(client, "hermes/skills/select", params).await
 }
 
-pub(crate) fn map_skill_loaded_notification(
+pub fn map_skill_loaded_notification(
     params: &Value,
     session_id: &str,
 ) -> Option<AgentEvent> {
@@ -385,7 +397,7 @@ pub(crate) fn map_observed_skill_view(
     })
 }
 
-pub(crate) fn hermes_skill_selections_from_prompt(
+pub fn hermes_skill_selections_from_prompt(
     prompt: &str,
 ) -> Vec<(String, Option<String>)> {
     use zeron_proto::invocation::{invocation_links, Invocation};
@@ -407,6 +419,7 @@ pub(crate) fn hermes_skill_selections_from_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeron_proto::skill::{HermesSkillLoadStatus, ledger_status_from_meta};
 
     #[test]
     fn decode_uri_never_panics_on_unicode_slice() {

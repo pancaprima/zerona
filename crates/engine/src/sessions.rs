@@ -274,7 +274,7 @@ impl Inner {
                 .replay(chat_id, 0)
                 .unwrap_or_default()
                 .into_iter()
-                .map(|e| e.event)
+                .map(|(_, event)| event)
                 .collect::<Vec<_>>();
             let replayed =
                 crate::skill_sessions::replay_events(&events, ledger.capability);

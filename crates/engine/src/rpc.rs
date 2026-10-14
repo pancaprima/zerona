@@ -1890,10 +1890,11 @@ impl RpcService for EngineRpc {
                     path: Option<String>,
                 }
                 let p: Params = parse_params(params)?;
+                let chat_id = p.chat_id.clone();
                 let root = self
                     .catalog_root(&FileSearchParams {
                         query: String::new(),
-                        chat_id: p.chat_id,
+                        chat_id,
                         space_id: p.space_id,
                         path: p.path,
                     })
@@ -1936,10 +1937,7 @@ impl RpcService for EngineRpc {
                                 .into(),
                         )
                     })?;
-                let wire = zeron_harness::acp::hermes_skill_wire::live_wire_for_session_id(&session)
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let value = zeron_harness::acp::hermes_skill_wire::inspect(
-                    &wire.client,
+                let value = zeron_harness::acp::hermes_skill_wire::inspect_skill_for_session(
                     &session,
                     &p.load_name,
                 )
