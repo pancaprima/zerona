@@ -53,6 +53,9 @@ pub struct Skill {
     /// A provider-advertised slash invocation for this skill, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<SkillCommand>,
+    /// `authoritative` (ACP catalog) or `filesystem_degraded` (Zerona scan fallback).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,6 +234,12 @@ pub fn harness_prompt(text: &str, harness: crate::HarnessId) -> String {
                 // The catalog supplies the provider's canonical command, regardless
                 // of whether the user selected the skill through $ or /.
                 result.push_str(&format!("/{}", command.name));
+            }
+            Invocation::Skill { name, path, .. }
+                if harness == crate::HarnessId::Hermes
+                    && crate::skill::is_hermes_native_skill_path(path) =>
+            {
+                result.push_str(name);
             }
             Invocation::Skill {
                 path,

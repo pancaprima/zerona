@@ -31,6 +31,7 @@
 
 mod antigravity_paths;
 mod devin_models;
+pub mod hermes_skill_wire;
 mod normalize;
 mod subagent;
 mod subagent_devin;
@@ -42,6 +43,7 @@ use std::time::Duration;
 
 use crate::process::{ChildStdin, ChildStdout};
 use async_trait::async_trait;
+use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -65,6 +67,11 @@ use child::Child;
 use normalize::{map_update, parse_commands, preferred_allow_option};
 use subagent::SubagentTracker;
 use subagent_devin::DevinTracker;
+
+fn hermes_skill_catalog_acp_enabled() -> bool {
+    !std::env::var("ZERON_HERMES_SKILL_CATALOG_ACP")
+        .is_ok_and(|v| matches!(v.as_str(), "0" | "false" | "no"))
+}
 
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_MODEL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -2306,8 +2313,46 @@ impl Harness for AcpHarness {
             self.workspace_commands
                 .get(cwd, self.discover_commands(Some(cwd))),
         )?;
+        if self.id() == HarnessId::Hermes {
+            skills = crate::hermes::skills_catalog::degraded_filesystem_skills(skills);
+        }
         crate::skills::attach_advertised_commands(self.id(), &mut skills, &commands);
         Ok(Some(skills))
+    }
+
+    async fn skills_with_session(
+        &self,
+        acp_session_id: Option<&str>,
+        cwd: &std::path::Path,
+    ) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
+        if self.id() == HarnessId::Hermes && hermes_skill_catalog_acp_enabled() {
+            if let Some(session_id) = acp_session_id {
+                match hermes_skill_wire::live_wire_for_session_id(session_id) {
+                    Ok(wire)
+                        if wire.capability
+                            == zeron_proto::skill::HermesSkillLoadsCapability::WireV2Acp =>
+                    {
+                        match hermes_skill_wire::catalog(&wire.client, session_id).await {
+                            Ok(catalog) => {
+                                let skills = crate::hermes::skills_catalog::skills_from_catalog(
+                                    &catalog,
+                                    self.id(),
+                                );
+                                return Ok(Some(skills));
+                            }
+                            Err(error) => {
+                                tracing::debug!(%error, "Hermes ACP skill catalog failed; using degraded scan");
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::debug!(%error, "Hermes live wire unavailable for catalog");
+                    }
+                }
+            }
+        }
+        self.skills(cwd).await
     }
 
     async fn commands(&self) -> Result<Vec<SlashCommand>, HarnessError> {
@@ -2937,6 +2982,9 @@ fn session_update_events(
             subagents.observe(update);
             Vec::new()
         }
+        "_hermes/skills/loaded" => hermes_skill_wire::map_skill_loaded_notification(params, session_id)
+            .into_iter()
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -2997,17 +3045,119 @@ fn prompt_turn(
     session_id: String,
     text: String,
     prompt_id: Option<String>,
+    hermes_meta: Option<(String, String)>,
 ) -> BoxFuture<'static, Result<Value, HarnessError>> {
     let mut params = json!({
         "sessionId": session_id,
         "prompt": [{ "type": "text", "text": text }],
     });
     if let Some(id) = prompt_id {
-        params["_meta"] = json!({ "promptId": id, "requestId": id });
+        let mut meta = json!({ "promptId": id, "requestId": id });
+        if let Some((operation_id, resolver_epoch)) = hermes_meta {
+            meta["hermes"] = json!({
+                "operationId": operation_id,
+                "resolverEpoch": resolver_epoch,
+            });
+        }
+        params["_meta"] = meta;
+    } else if let Some((operation_id, resolver_epoch)) = hermes_meta {
+        params["_meta"] = json!({
+            "hermes": {
+                "operationId": operation_id,
+                "resolverEpoch": resolver_epoch,
+            }
+        });
     }
     // Written now, not on first poll: a steer's `session/cancel` issued in
     // the same loop iteration must reach the agent after this prompt.
     client.request_now("session/prompt", params)
+}
+
+async fn stage_hermes_skills_for_prompt(
+    harness: HarnessId,
+    client: &RpcClient,
+    session_id: &str,
+    prompt: &str,
+    operation_id: &str,
+    wire: Option<&hermes_skill_wire::LiveHermesSkillWire>,
+) -> Result<(), HarnessError> {
+    if harness != HarnessId::Hermes {
+        return Ok(());
+    }
+    let selections = hermes_skill_wire::hermes_skill_selections_from_prompt(prompt);
+    if selections.is_empty() {
+        return Ok(());
+    }
+    let Some(wire) = wire else {
+        return Ok(());
+    };
+    if wire.capability != zeron_proto::skill::HermesSkillLoadsCapability::WireV2Acp {
+        return Ok(());
+    }
+    let resolver_epoch = wire.resolver_epoch.as_deref();
+    hermes_skill_wire::select_skills(
+        client,
+        session_id,
+        selections,
+        operation_id,
+        resolver_epoch,
+    )
+    .await?;
+    Ok(())
+}
+
+fn hermes_turn_operation_id(session_id: &str, prompt: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    session_id.hash(&mut hasher);
+    prompt.hash(&mut hasher);
+    format!("zeron-hermes-{:016x}", hasher.finish())
+}
+
+fn hermes_prompt_meta(
+    harness: HarnessId,
+    wire: Option<&hermes_skill_wire::LiveHermesSkillWire>,
+    operation_id: &str,
+) -> Option<(String, String)> {
+    if harness != HarnessId::Hermes || operation_id.is_empty() {
+        return None;
+    }
+    let wire = wire?;
+    let epoch = wire.resolver_epoch.clone().unwrap_or_default();
+    Some((operation_id.to_string(), epoch))
+}
+
+fn prepare_and_prompt_turn(
+    harness: HarnessId,
+    client: RpcClient,
+    session_id: String,
+    text: String,
+    prompt_id: Option<String>,
+) -> BoxFuture<'static, Result<Value, HarnessError>> {
+    async move {
+        let wire = hermes_skill_wire::live_wire_for_session(&client, &session_id);
+        let operation_id = prompt_id
+            .clone()
+            .unwrap_or_else(|| hermes_turn_operation_id(&session_id, &text));
+        let meta = hermes_prompt_meta(harness, wire.as_ref(), &operation_id);
+        stage_hermes_skills_for_prompt(
+            harness,
+            &client,
+            &session_id,
+            &text,
+            &operation_id,
+            wire.as_ref(),
+        )
+        .await?;
+        let delivered = if harness == HarnessId::Hermes {
+            zeron_proto::invocation::harness_prompt(&text, harness)
+        } else {
+            text
+        };
+        prompt_turn(client, session_id, delivered, prompt_id, meta).await
+    }
+    .boxed()
 }
 
 /// Answer a server→client request. Permission requests are auto-accepted with
@@ -3807,6 +3957,11 @@ async fn run_session(session: Session) {
             .await?;
         let steer_ext = steering_supported(&init);
         let init_commands = scan_available_commands(&init);
+        let hermes_skill_cap = if harness == HarnessId::Hermes {
+            hermes_skill_wire::hermes_skill_loads_capability_from_initialize(&init)
+        } else {
+            zeron_proto::skill::HermesSkillLoadsCapability::ObservedToolsV0
+        };
 
         let session_params = json!({
             "cwd": request.cwd,
@@ -3884,15 +4039,16 @@ async fn run_session(session: Session) {
             devin_selection.clone(),
         )
         .await?;
-        Ok::<(String, bool, Vec<SlashCommand>, Value), HarnessError>((
+        Ok::<(String, bool, Vec<SlashCommand>, Value, zeron_proto::skill::HermesSkillLoadsCapability), HarnessError>((
             session_id,
             steer_ext,
             init_commands,
             session_options,
+            hermes_skill_cap,
         ))
     };
     let setup = unless_sign_in_prompted(setup, &sign_in_prompted, agent_name);
-    let (session_id, steer_ext, init_commands, mut session_options) = tokio::select! {
+    let (session_id, steer_ext, init_commands, mut session_options, hermes_skill_cap) = tokio::select! {
         res = tokio::time::timeout(handshake_timeout, setup) => {
             let res = res.unwrap_or_else(|_| {
                 // A hung handshake (agent waiting on a login it can never
@@ -3975,6 +4131,28 @@ async fn run_session(session: Session) {
         child.shutdown(kill_grace).await;
         return;
     }
+    let _live_wire_guard = if harness == HarnessId::Hermes {
+        let guard = hermes_skill_wire::register_live_wire(
+            &session_id,
+            client.clone(),
+            hermes_skill_cap,
+            None,
+            None,
+        );
+        if hermes_skill_cap == zeron_proto::skill::HermesSkillLoadsCapability::WireV2Acp
+            && let Ok(catalog) = hermes_skill_wire::catalog(&client, &session_id).await
+        {
+            hermes_skill_wire::update_wire_catalog_meta(
+                &client,
+                &session_id,
+                &catalog.resolver_epoch,
+                &catalog.profile_key,
+            );
+        }
+        Some(guard)
+    } else {
+        None
+    };
     if !init_commands.is_empty()
         && !send(
             &event_tx,
@@ -4023,14 +4201,15 @@ async fn run_session(session: Session) {
     // The text of the prompt in flight (re-sent by a preempt when the agent
     // drops an unstarted cancelled prompt).
     let mut current_prompt_text = prompt_transform(request.reasoning, &request.prompt);
-    let mut turn: Option<BoxFuture<'static, Result<Value, HarnessError>>> = Some({
-        prompt_turn(
+    let mut turn: Option<BoxFuture<'static, Result<Value, HarnessError>>> = Some(
+        prepare_and_prompt_turn(
+            harness,
             client.clone(),
             session_id.clone(),
             current_prompt_text.clone(),
             current_prompt_id.clone(),
-        )
-    });
+        ),
+    );
     // Steers waiting for the turn boundary (agents without the extension, or
     // extension steers that lost the turn-end race).
     let mut queued_steers: VecDeque<String> = VecDeque::new();
@@ -4441,12 +4620,15 @@ async fn run_session(session: Session) {
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
                     current_prompt_text = texts.join("\n\n");
-                    turn = Some(prompt_turn(
-                        client.clone(),
-                        session_id.clone(),
-                        current_prompt_text.clone(),
-                        current_prompt_id.clone(),
-                    ));
+                    turn = Some(
+                        prepare_and_prompt_turn(
+                            harness,
+                            client.clone(),
+                            session_id.clone(),
+                            current_prompt_text.clone(),
+                            current_prompt_id.clone(),
+                        ),
+                    );
                 } else if !steering_open {
                     break 'main;
                 }
@@ -4760,12 +4942,15 @@ async fn run_session(session: Session) {
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
                     current_prompt_text = text.clone();
-                    turn = Some(prompt_turn(
-                        client.clone(),
-                        session_id.clone(),
-                        text,
-                        current_prompt_id.clone(),
-                    ));
+                    turn = Some(
+                        prepare_and_prompt_turn(
+                            harness,
+                            client.clone(),
+                            session_id.clone(),
+                            text,
+                            current_prompt_id.clone(),
+                        ),
+                    );
                 }
                 while let Some(next_text) = steer_backlog.pop_front() {
                     if turn.is_some() && !interrupted {
@@ -4923,12 +5108,15 @@ async fn run_session(session: Session) {
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
                     current_prompt_text = text.clone();
-                    turn = Some(prompt_turn(
-                        client.clone(),
-                        session_id.clone(),
-                        text,
-                        current_prompt_id.clone(),
-                    ));
+                    turn = Some(
+                        prepare_and_prompt_turn(
+                            harness,
+                            client.clone(),
+                            session_id.clone(),
+                            text,
+                            current_prompt_id.clone(),
+                        ),
+                    );
                 }
                 while let Some(next_text) = steer_backlog.pop_front() {
                     if turn.is_some() && !interrupted {
@@ -4978,12 +5166,15 @@ async fn run_session(session: Session) {
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
                     current_prompt_text = text.clone();
-                    turn = Some(prompt_turn(
-                        client.clone(),
-                        session_id.clone(),
-                        text,
-                        current_prompt_id.clone(),
-                    ));
+                    turn = Some(
+                        prepare_and_prompt_turn(
+                            harness,
+                            client.clone(),
+                            session_id.clone(),
+                            text,
+                            current_prompt_id.clone(),
+                        ),
+                    );
                 } else if turn.is_none() && !steering_open {
                     // Mailbox closed while the flush waited: nothing left.
                     break 'main;
@@ -5055,12 +5246,15 @@ async fn run_session(session: Session) {
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
                     current_prompt_text = text.clone();
-                    turn = Some(prompt_turn(
-                        client.clone(),
-                        session_id.clone(),
-                        text,
-                        current_prompt_id.clone(),
-                    ));
+                    turn = Some(
+                        prepare_and_prompt_turn(
+                            harness,
+                            client.clone(),
+                            session_id.clone(),
+                            text,
+                            current_prompt_id.clone(),
+                        ),
+                    );
                 } else if !steering_open {
                     // Mirror the normal turn-settled exit: mailbox closed
                     // and nothing left to run — the session is over.
@@ -5184,12 +5378,15 @@ async fn run_session(session: Session) {
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
                     current_prompt_text = text.clone();
-                    turn = Some(prompt_turn(
-                        client.clone(),
-                        session_id.clone(),
-                        text,
-                        current_prompt_id.clone(),
-                    ));
+                    turn = Some(
+                        prepare_and_prompt_turn(
+                            harness,
+                            client.clone(),
+                            session_id.clone(),
+                            text,
+                            current_prompt_id.clone(),
+                        ),
+                    );
                     } else if slash_steer && immediate && turn.is_some() {
                         if slash_steer_call.is_some() || steering_call.is_some() {
                             steer_backlog.push_back(text);
@@ -5395,6 +5592,7 @@ async fn run_session(session: Session) {
         }
     }
 
+    let _ = _live_wire_guard;
     child.shutdown(kill_grace).await;
 }
 

@@ -131,6 +131,11 @@ impl RpcClient {
         self.closed.load(Ordering::Acquire)
     }
 
+    /// Stable identity for this stdio transport (distinct child agents in one process).
+    pub(crate) fn transport_key(&self) -> usize {
+        Arc::as_ptr(&self.pending) as usize
+    }
+
     /// Send a request and await its response (resolved by the reader task).
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, HarnessError> {
         self.request_now(method, params).await

@@ -1434,6 +1434,8 @@ fn forwardable(method: &str) -> bool {
             | methods::SET_HARNESS_ENABLED
             | methods::LIST_MODELS
             | methods::LIST_SKILLS
+            | methods::GET_SKILL_SESSION_LOADS
+            | methods::INSPECT_HERMES_SKILL
             | methods::LIST_COMMANDS
             | methods::QUEUE_COMMAND
             | methods::TAKE_PROJECT_ACTION_SETUP
@@ -1896,12 +1898,54 @@ impl RpcService for EngineRpc {
                         path: p.path,
                     })
                     .await?;
+                let acp_session = p
+                    .chat_id
+                    .as_deref()
+                    .and_then(|chat_id| self.sessions.harness_session_id(chat_id));
                 let skills = self
                     .registry
-                    .discover_skills(p.harness, &root)
+                    .discover_skills(p.harness, &root, acp_session)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&skills)
+            }
+            methods::GET_SKILL_SESSION_LOADS => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Params {
+                    chat_id: String,
+                }
+                let p: Params = parse_params(params)?;
+                RpcReply::value(&self.sessions.skill_session_loads(&p.chat_id))
+            }
+            methods::INSPECT_HERMES_SKILL => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Params {
+                    chat_id: String,
+                    load_name: String,
+                }
+                let p: Params = parse_params(params)?;
+                let session = self
+                    .sessions
+                    .harness_session_id(&p.chat_id)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| {
+                        RpcError::Failed(
+                            "Hermes skill inspect requires a live session — start a run first"
+                                .into(),
+                        )
+                    })?;
+                let wire = zeron_harness::acp::hermes_skill_wire::live_wire_for_session_id(&session)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                let value = zeron_harness::acp::hermes_skill_wire::inspect(
+                    &wire.client,
+                    &session,
+                    &p.load_name,
+                )
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&value)
             }
             methods::LIST_COMMANDS => {
                 #[derive(Deserialize)]

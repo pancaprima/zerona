@@ -204,6 +204,7 @@ impl HarnessRegistry {
         &self,
         id: HarnessId,
         cwd: &Path,
+        acp_session_id: Option<String>,
     ) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
         let cwd = cwd.to_owned();
         let lease = self.execution_lease(id).await;
@@ -212,7 +213,9 @@ impl HarnessRegistry {
             // Retain the read lease through the adapter's deadline and cleanup,
             // even when the requesting RPC is dropped.
             let _lease = lease;
-            harness.skills(&cwd).await
+            harness
+                .skills_with_session(acp_session_id.as_deref(), &cwd)
+                .await
         })
         .await
         .map_err(|error| HarnessError::Protocol(format!("skill discovery task failed: {error}")))?

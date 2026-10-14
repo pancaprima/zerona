@@ -52,6 +52,8 @@ pub mod methods {
     pub const SET_HARNESS_ENABLED: &str = "SetHarnessEnabled";
     pub const LIST_MODELS: &str = "ListModels";
     pub const LIST_SKILLS: &str = "ListSkills";
+    pub const GET_SKILL_SESSION_LOADS: &str = "GetSkillSessionLoads";
+    pub const INSPECT_HERMES_SKILL: &str = "InspectHermesSkill";
     pub const LIST_COMMANDS: &str = "ListCommands";
     pub const QUEUE_COMMAND: &str = "QueueCommand";
     pub const TAKE_PROJECT_ACTION_SETUP: &str = "TakeProjectActionSetup";

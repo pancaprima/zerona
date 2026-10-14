@@ -72,6 +72,7 @@ pub(crate) mod surface_chrome;
 pub mod syntax_cache;
 pub mod terminal;
 mod todo_panel;
+mod skill_session_panel;
 pub(crate) mod tool_images;
 pub mod theme;
 pub mod theme_library;

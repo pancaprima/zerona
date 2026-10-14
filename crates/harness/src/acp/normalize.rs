@@ -394,6 +394,10 @@ pub(crate) fn map_update(update: &Value) -> Vec<AgentEvent> {
             if let Some(resolved) = resolved_result(update, id) {
                 events.push(resolved);
             }
+            let title = str_field(update, "title");
+            if let Some(observed) = super::hermes_skill_wire::map_observed_skill_view(update, &title) {
+                events.push(observed);
+            }
             events
         }
         "plan" => {

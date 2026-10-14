@@ -228,6 +228,7 @@ struct Inner {
     /// (zeron kept the same pair on `chats.harness_session_id`). An empty
     /// session id is the "do not resume" tombstone after a rejected resume.
     harness_sessions: Mutex<HashMap<String, HarnessSessionRef>>,
+    skill_ledgers: Mutex<HashMap<String, crate::skill_sessions::SkillLoadLedger>>,
     /// Auto-titler for untitled chats (wired at engine assembly; absent in bare tests).
     titles: OnceLock<crate::titles::TitleGenerator>,
     generated_images: OnceLock<(crate::uploads::Uploads, std::path::PathBuf)>,
@@ -245,6 +246,99 @@ pub type TurnListener = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl Inner {
+    fn hydrate_skill_ledger(&self, chat_id: &str) {
+        let mut ledgers = lock(&self.skill_ledgers);
+        if ledgers.get(chat_id).is_some_and(|l| l.hydrated_from_doc) {
+            return;
+        }
+        let ledger = ledgers
+            .entry(chat_id.to_string())
+            .or_insert_with(|| {
+                crate::skill_sessions::SkillLoadLedger::new(
+                    zeron_proto::skill::HermesSkillLoadsCapability::ObservedToolsV0,
+                )
+            });
+        if let Some(host) = self.doc_host() {
+            if let Ok(handle) = host.open(chat_id) {
+                if let Some(doc) = handle.doc().skill_loads() {
+                    ledger.hydrate_from_doc(&doc);
+                }
+            }
+        }
+        if !ledger.hydrated_from_doc {
+            let events = self
+                .journal
+                .replay(chat_id, 0)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|e| e.event)
+                .collect::<Vec<_>>();
+            let replayed =
+                crate::skill_sessions::replay_events(&events, ledger.capability);
+            ledger.by_event.extend(replayed.by_event);
+            ledger.hydrated_from_doc = true;
+        }
+    }
+
+    fn persist_skill_loads(&self, chat_id: &str) {
+        self.hydrate_skill_ledger(chat_id);
+        let snapshot = lock(&self.skill_ledgers)
+            .get(chat_id)
+            .map(|ledger| ledger.snapshot())
+            .unwrap_or_else(|| {
+                crate::skill_sessions::SkillLoadLedger::new(
+                    zeron_proto::skill::HermesSkillLoadsCapability::ObservedToolsV0,
+                )
+                .snapshot()
+            });
+        let doc = zeron_proto::skill::SessionDocSkillLoads {
+            schema_version: snapshot.schema_version,
+            capability: snapshot.capability,
+            profile_key: lock(&self.skill_ledgers)
+                .get(chat_id)
+                .and_then(|l| l.profile_key.clone()),
+            records: snapshot
+                .confirmed
+                .iter()
+                .chain(snapshot.failed.iter())
+                .chain(snapshot.observed_reads.iter())
+                .cloned()
+                .collect(),
+            catalog_mode: snapshot.catalog_mode,
+            resolver_epoch: snapshot.resolver_epoch,
+        };
+        if let Some(host) = self.doc_host() {
+            if let Ok(handle) = host.open(chat_id) {
+                if let Err(err) = handle.doc().set_skill_loads(&doc) {
+                    tracing::warn!(chat = %chat_id, error = %err, "skill load doc persist failed");
+                } else {
+                    self.bump_skill_loads_generation(chat_id);
+                }
+            }
+        }
+    }
+
+    fn bump_skill_loads_generation(&self, chat_id: &str) {
+        let session = {
+            let mut statuses = lock(&self.statuses);
+            let Some(entry) = statuses.get_mut(chat_id) else {
+                return;
+            };
+            entry.skill_loads_generation = entry.skill_loads_generation.wrapping_add(1);
+            entry.updated_at = Utc::now();
+            let session = entry.clone();
+            let mut list: Vec<Session> = statuses.values().cloned().collect();
+            list.sort_by(|a, b| a.chat_id.cmp(&b.chat_id));
+            self.sessions_tx.send_replace(list);
+            session
+        };
+        if let Some(ws) = self.workspace() {
+            ws.record_session(&session);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -275,12 +369,33 @@ impl SessionsEngine {
                 sessions_tx,
                 last_requests: Mutex::new(HashMap::new()),
                 harness_sessions: Mutex::new(HashMap::new()),
+                skill_ledgers: Mutex::new(HashMap::new()),
                 titles: OnceLock::new(),
                 generated_images: OnceLock::new(),
                 scratch_root: OnceLock::new(),
                 turn_listener: OnceLock::new(),
             }),
         }
+    }
+
+    pub fn harness_session_id(&self, chat_id: &str) -> Option<String> {
+        lock(&self.inner.harness_sessions)
+            .get(chat_id)
+            .map(|r| r.session_id.clone())
+            .filter(|id| !id.is_empty())
+    }
+
+    pub fn skill_session_loads(&self, chat_id: &str) -> zeron_proto::skill::HermesSkillSessionLoads {
+        self.inner.hydrate_skill_ledger(chat_id);
+        lock(&self.inner.skill_ledgers)
+            .get(chat_id)
+            .map(|ledger| ledger.snapshot())
+            .unwrap_or_else(|| {
+                crate::skill_sessions::SkillLoadLedger::new(
+                    zeron_proto::skill::HermesSkillLoadsCapability::ObservedToolsV0,
+                )
+                .snapshot()
+            })
     }
 
     pub(crate) fn voice_manager(&self) -> crate::voice::VoiceManager {
@@ -644,11 +759,7 @@ impl SessionsEngine {
                     // OpenCode must see the canonical selection before it
                     // decodes the provider command: a project-scoped command
                     // can disappear between composer discovery and delivery.
-                    prompt: if harness_id == HarnessId::Opencode {
-                        delivered.to_owned()
-                    } else {
-                        zeron_proto::invocation::harness_prompt(delivered, harness_id)
-                    },
+                    prompt: provider_wire_prompt(delivered, harness_id),
                     message_id: Some(user_id.clone()),
                     // Images ride the mailbox too: replacing the runtime just
                     // to inline them killed its background work.
@@ -967,11 +1078,7 @@ impl SessionsEngine {
             Box::new(request)
         });
         let message = SteerMessage {
-            prompt: if harness_id == HarnessId::Opencode {
-                delivered.to_owned()
-            } else {
-                zeron_proto::invocation::harness_prompt(delivered, harness_id)
-            },
+            prompt: provider_wire_prompt(delivered, harness_id),
             message_id: Some(user_id.clone()),
             attachments: Vec::new(),
             config: None,
@@ -1522,6 +1629,7 @@ impl Inner {
                     started_at: None,
                     updated_at: now,
                     running_subagents: 0,
+                    skill_loads_generation: 0,
                 });
             // `started_at` is the elapsed-timer base and must only ever mean
             // "this turn". Entering Working from a settled state always
@@ -1835,11 +1943,19 @@ impl Inner {
 /// Whether the provider routes this prompt as a native command: its delivered
 /// text leads with `/name` (Codex `command_request`, OpenCode commands, Claude
 /// slash commands). Anything put in front of it would make it model input.
+fn provider_wire_prompt(prompt: &str, harness: HarnessId) -> String {
+    if matches!(harness, HarnessId::Cursor | HarnessId::Opencode | HarnessId::Hermes) {
+        prompt.to_string()
+    } else {
+        zeron_proto::invocation::harness_prompt(prompt, harness)
+    }
+}
+
 fn native_command(prompt: &str, harness: HarnessId) -> bool {
     let delivered = if harness == HarnessId::Codex {
         zeron_proto::invocation::invocation_prompt(prompt)
     } else {
-        zeron_proto::invocation::harness_prompt(prompt, harness)
+        provider_wire_prompt(prompt, harness)
     };
     zeron_proto::invocation::leading_command(&delivered).is_some()
 }
@@ -2290,7 +2406,8 @@ async fn drive_run(
                     listener(&chat_id, &request.cwd);
                 }
                 let mut wire_request = request;
-                if !matches!(harness_id, HarnessId::Cursor | HarnessId::Opencode) {
+                if !matches!(harness_id, HarnessId::Cursor | HarnessId::Opencode | HarnessId::Hermes)
+                {
                     wire_request.prompt =
                         zeron_proto::invocation::harness_prompt(&wire_request.prompt, harness_id);
                 }
@@ -3212,6 +3329,22 @@ async fn drive_run(
             }
             AgentEvent::InputResolved { .. } => {
                 inner.set_status(&chat_id, SessionStatus::Working, false);
+            }
+            AgentEvent::HermesSkillLoad { meta } => {
+                let wire_session = lock(&inner.harness_sessions)
+                    .get(&chat_id)
+                    .map(|r| r.session_id.clone());
+                inner.hydrate_skill_ledger(&chat_id);
+                {
+                    let mut ledgers = lock(&inner.skill_ledgers);
+                    let ledger = ledgers.entry(chat_id.clone()).or_insert_with(|| {
+                        crate::skill_sessions::SkillLoadLedger::new(
+                            zeron_proto::skill::HermesSkillLoadsCapability::ObservedToolsV0,
+                        )
+                    });
+                    ledger.apply_event(&event, wire_session.as_deref());
+                }
+                inner.persist_skill_loads(&chat_id);
             }
             _ => {}
         }
