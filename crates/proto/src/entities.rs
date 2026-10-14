@@ -321,6 +321,9 @@ pub struct Session {
     /// has not opened; read it through `view::running_subagents`.
     #[serde(default)]
     pub running_subagents: u32,
+    /// Bumps when durable `skillLoads` meta changes (Hermes load ledger).
+    #[serde(default)]
+    pub skill_loads_generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

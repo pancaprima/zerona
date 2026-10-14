@@ -100,6 +100,7 @@ pub(crate) fn attach_advertised_commands(
                     name: command.name.clone(),
                     harness,
                 }),
+                catalog_source: None,
             });
         }
     }
@@ -392,6 +393,7 @@ fn read_skill(path: &Path) -> Result<Option<Skill>, HarnessError> {
             .and_then(|v| v.as_bool())
             .unwrap_or(true),
         command: None,
+        catalog_source: None,
     }))
 }
 
@@ -558,6 +560,7 @@ mod tests {
                 description: String::new(),
                 enabled: true,
                 command: None,
+                catalog_source: None,
             }];
             let command = zeron_proto::SlashCommand {
                 name: "review".into(),
@@ -584,6 +587,7 @@ mod tests {
                 description: "Compact JSON fixtures".into(),
                 enabled: true,
                 command: None,
+                catalog_source: None,
             }];
             let command = |name: &str| zeron_proto::SlashCommand {
                 name: name.into(),

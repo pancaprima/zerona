@@ -665,6 +665,12 @@ pub enum AgentEvent {
         parent_tool_use_id: String,
         event: Box<AgentEvent>,
     },
+    /// Authoritative Hermes skill load metadata (ACP `_hermes/skills/loaded` or
+    /// tool-call `_meta.hermes.skillLoad`). Folded into session doc `skillLoads`.
+    #[serde(rename_all = "camelCase")]
+    HermesSkillLoad {
+        meta: crate::skill::HermesSkillLoadMeta,
+    },
 }
 
 #[cfg(test)]
