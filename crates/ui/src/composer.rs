@@ -6097,7 +6097,8 @@ pub struct Composer {
     pub(crate) todo_cache: crate::todo_panel::TodoCache,
     pub(crate) todo_panels: HashMap<String, crate::todo_panel::TodoPanelState>,
     pub(crate) skill_session_panels: HashMap<String, crate::skill_session_panel::SkillSessionPanelState>,
-    skill_session_loads_generation: u64,
+    skill_panel_chat: Option<String>,
+    skill_inspect_nonce: u64,
     skill_inspect: Option<SkillInspectState>,
     pub(crate) todo_scroll: gpui::ScrollHandle,
     /// Whether the modifier overlay should currently reveal the queue hint.
@@ -6392,7 +6393,8 @@ impl Composer {
             todo_cache: Default::default(),
             todo_panels: HashMap::new(),
             skill_session_panels: HashMap::new(),
-            skill_session_loads_generation: 0,
+            skill_panel_chat: None,
+            skill_inspect_nonce: 0,
             skill_inspect: None,
             todo_scroll: gpui::ScrollHandle::new(),
             queue_shortcut_revealed: false,
@@ -8287,11 +8289,15 @@ impl Composer {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
-        let request = self
-            .skill_inspect
-            .as_ref()
-            .map(|s| s.request.wrapping_add(1))
-            .unwrap_or(1);
+        self.skill_inspect_nonce = self.skill_inspect_nonce.wrapping_add(1);
+        let request = self.skill_inspect_nonce;
+        let mut rpc_params = self
+            .completion_workspace_params(cx)
+            .unwrap_or_else(|| serde_json::json!({ "chatId": chat_id }));
+        if rpc_params.get("chatId").is_none() {
+            rpc_params["chatId"] = serde_json::Value::String(chat_id.clone());
+        }
+        rpc_params["loadName"] = serde_json::Value::String(load_name.clone());
         self.skill_inspect = Some(SkillInspectState {
             chat_id: chat_id.clone(),
             load_name: load_name.clone(),
@@ -8305,10 +8311,7 @@ impl Composer {
         cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
-                .call(
-                    methods::INSPECT_HERMES_SKILL,
-                    serde_json::json!({ "chatId": chat_id, "loadName": load_name }),
-                )
+                .call(methods::INSPECT_HERMES_SKILL, rpc_params)
                 .await;
             this.update(cx, |this, cx| {
                 let Some(state) = this.skill_inspect.as_mut() else {
@@ -8364,14 +8367,14 @@ impl Composer {
                 text
             }
         };
+        let inspect_chat = state.chat_id.clone();
+        let inspect_load = state.load_name.clone();
         Some(
             crate::popover::full_width_menu_above(
                 "skill-inspect-overlay",
                 div()
                     .px(px(12.0))
                     .py(px(10.0))
-                    .max_h(px(240.0))
-                    .overflow_y_scroll()
                     .child(
                         div()
                             .flex()
@@ -8380,6 +8383,9 @@ impl Composer {
                             .child(div().text_sm().child(title))
                             .child(
                                 div()
+                                    .id(SharedString::from(format!(
+                                        "skill-inspect-close-{inspect_chat}-{inspect_load}"
+                                    )))
                                     .text_xs()
                                     .text_color(theme.text_muted)
                                     .cursor_pointer()
@@ -8391,11 +8397,19 @@ impl Composer {
                             ),
                     )
                     .child(
-                        div()
-                            .mt(px(8.0))
-                            .text_xs()
-                            .text_color(theme.text_muted)
-                            .child(body),
+                        crate::popover::menu_scroll_host("skill-inspect-scroll-host")
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "skill-inspect-scroll-{inspect_chat}-{inspect_load}"
+                                    )))
+                                    .max_h(px(240.0))
+                                    .overflow_y_scroll()
+                                    .mt(px(8.0))
+                                    .text_xs()
+                                    .text_color(theme.text_muted)
+                                    .child(body),
+                            ),
                     )
                     .into_any_element(),
                 None,
@@ -8533,17 +8547,15 @@ impl Composer {
                 let row = if let Some(load_name) = load_name {
                     row.child(
                         div()
+                            .id(SharedString::from(format!("skill-inspect-open-{load_name}")))
                             .ml(px(8.0))
                             .text_xs()
                             .text_color(theme.text_muted)
                             .cursor_pointer()
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    this.begin_skill_inspect(load_name.clone(), cx);
-                                }),
-                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.begin_skill_inspect(load_name.clone(), cx);
+                            }))
                             .child("Inspect"),
                     )
                 } else {
@@ -8596,10 +8608,10 @@ impl Composer {
     }
 
     fn on_state_changed(&mut self, cx: &mut Context<Self>) {
-        let (loads_generation, now, queue_ids) = {
+        let (selected_chat, loads_generation, now, queue_ids) = {
             let state = self.state.read(cx);
-            let loads_generation = state
-                .selected_chat
+            let selected_chat = state.selected_chat.clone();
+            let loads_generation = selected_chat
                 .as_deref()
                 .and_then(|chat_id| {
                     state
@@ -8611,11 +8623,17 @@ impl Composer {
                 .unwrap_or(0);
             let now = crate::state::clock_now();
             let queue_ids: Vec<_> = state.queue.iter().map(|item| item.id.clone()).collect();
-            (loads_generation, now, queue_ids)
+            (selected_chat, loads_generation, now, queue_ids)
         };
-        if loads_generation != self.skill_session_loads_generation {
-            self.skill_session_loads_generation = loads_generation;
+        if self.skill_panel_chat.as_deref() != selected_chat.as_deref() {
+            self.skill_panel_chat = selected_chat.clone();
             self.on_skill_session_doc_tick(cx);
+        } else if let Some(chat_id) = selected_chat {
+            let panel = self.skill_session_panels.entry(chat_id).or_default();
+            if panel.last_doc_generation != loads_generation {
+                panel.last_doc_generation = loads_generation;
+                self.on_skill_session_doc_tick(cx);
+            }
         }
         {
             let state = self.state.read(cx);

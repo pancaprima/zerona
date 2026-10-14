@@ -7,8 +7,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use zeron_proto::skill::{
-    HermesSkillCatalogResponse, HermesSkillLoadMeta, HermesSkillLoadsCapability,
-    HERMES_SKILL_LOAD_SCHEMA_VERSION, validate_skill_load_meta,
+    HermesSkillCatalogResponse, HermesSkillLoadMeta, HermesSkillSelectResponse,
+    HermesSkillLoadsCapability, HERMES_SKILL_LOAD_SCHEMA_VERSION, validate_skill_load_meta,
 };
 use zeron_proto::AgentEvent;
 
@@ -295,7 +295,16 @@ pub(crate) async fn select_skills(
     if let Some(epoch) = resolver_epoch {
         params["resolverEpoch"] = json!(epoch);
     }
-    ext_method(client, "hermes/skills/select", params).await
+    let value = ext_method(client, "hermes/skills/select", params).await?;
+    let response: HermesSkillSelectResponse = serde_json::from_value(value.clone()).map_err(|error| {
+        HarnessError::Protocol(format!("invalid Hermes skill select response: {error}"))
+    })?;
+    if !response.accepted || !response.queued_for_prompt {
+        return Err(HarnessError::Protocol(
+            "Hermes skill select was not accepted for the next prompt boundary".into(),
+        ));
+    }
+    Ok(value)
 }
 
 pub fn map_skill_loaded_notification(
@@ -317,6 +326,17 @@ pub(crate) fn parse_skill_load_meta(params: &Value) -> Option<HermesSkillLoadMet
         .pointer("/_meta/hermes/skillLoad")
         .or_else(|| params.pointer("/meta/hermes/skillLoad"))?;
     serde_json::from_value(skill_load.clone()).ok()
+}
+
+pub fn map_skill_load_from_tool_update(
+    update: &Value,
+    wire_session_id: &str,
+) -> Option<AgentEvent> {
+    let meta = skill_load_meta_from_tool_update(update)?;
+    if !validate_skill_load_meta(&meta, Some(wire_session_id), None) {
+        return None;
+    }
+    Some(AgentEvent::HermesSkillLoad { meta })
 }
 
 pub(crate) fn skill_load_meta_from_tool_update(update: &Value) -> Option<HermesSkillLoadMeta> {
@@ -425,6 +445,29 @@ mod tests {
     fn decode_uri_never_panics_on_unicode_slice() {
         let uri = "harness-skill:hermes:%E9";
         assert!(zeron_proto::skill::decode_hermes_skill_uri(uri).is_none());
+    }
+
+    #[test]
+    fn tool_update_skill_load_meta_maps_when_session_matches() {
+        let update = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "tc-1",
+            "status": "completed",
+            "_meta": { "hermes": { "skillLoad": {
+                "schemaVersion": HERMES_SKILL_LOAD_SCHEMA_VERSION,
+                "eventId": "e-tool",
+                "loadName": "demo",
+                "terminalIdentity": "primary",
+                "outcome": "success",
+                "source": "auto_load",
+                "resolverEpoch": "r1",
+                "profileKey": "p1",
+                "acpSessionId": "sess-1",
+                "processEpoch": "proc-1"
+            }}}
+        });
+        let event = map_skill_load_from_tool_update(&update, "sess-1").expect("meta");
+        assert!(matches!(event, AgentEvent::HermesSkillLoad { .. }));
     }
 
     #[test]

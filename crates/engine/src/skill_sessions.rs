@@ -6,7 +6,8 @@ use zeron_proto::skill::{
     HermesSkillLoadConfidence, HermesSkillLoadMeta, HermesSkillLoadRecord,
     HermesSkillLoadStatus, HermesSkillLoadsCapability, HermesSkillSessionLoads,
     SessionDocSkillLoads, HERMES_SKILL_LOAD_SCHEMA_VERSION, ledger_status_from_meta,
-    validate_skill_load_meta,
+    skill_load_meta_is_authoritative, skill_load_record_scope_for_meta,
+    skill_load_record_scope_for_record, validate_skill_load_meta,
 };
 use zeron_proto::AgentEvent;
 
@@ -17,7 +18,6 @@ pub struct SkillLoadLedger {
     pub generation: u64,
     pub(crate) by_event: HashMap<String, HermesSkillLoadRecord>,
     pub(crate) hydrated_from_doc: bool,
-    profile_history: Vec<String>,
 }
 
 impl SkillLoadLedger {
@@ -28,7 +28,6 @@ impl SkillLoadLedger {
             generation: 0,
             by_event: HashMap::new(),
             hydrated_from_doc: false,
-            profile_history: Vec::new(),
         }
     }
 
@@ -39,15 +38,12 @@ impl SkillLoadLedger {
         self.hydrated_from_doc = true;
         self.capability = doc.capability;
         self.profile_key = doc.profile_key.clone();
-        if let Some(key) = &doc.profile_key {
-            if !self.profile_history.contains(key) {
-                self.profile_history.push(key.clone());
-            }
-        }
+        self.generation = doc.generation;
+        self.by_event.clear();
         for rec in &doc.records {
-            self.by_event.insert(rec.event_id.clone(), rec.clone());
+            let scope = skill_load_record_scope_for_record(rec);
+            self.by_event.insert(scope, rec.clone());
         }
-        self.generation = self.generation.max(doc.records.len() as u64);
     }
 
     pub fn to_doc(&self) -> SessionDocSkillLoads {
@@ -55,10 +51,22 @@ impl SkillLoadLedger {
             schema_version: HERMES_SKILL_LOAD_SCHEMA_VERSION,
             capability: self.capability,
             profile_key: self.profile_key.clone(),
-            records: self.snapshot_records_for_active_profile(),
+            records: self.all_records(),
+            generation: self.generation,
             catalog_mode: None,
             resolver_epoch: None,
         }
+    }
+
+    fn all_records(&self) -> Vec<HermesSkillLoadRecord> {
+        let mut rows: Vec<_> = self.by_event.values().cloned().collect();
+        rows.sort_by(|a, b| {
+            skill_load_record_scope_for_record(a)
+                .cmp(&skill_load_record_scope_for_record(b))
+                .then_with(|| a.load_name.cmp(&b.load_name))
+                .then_with(|| a.event_id.cmp(&b.event_id))
+        });
+        rows
     }
 
     fn snapshot_records_for_active_profile(&self) -> Vec<HermesSkillLoadRecord> {
@@ -72,13 +80,23 @@ impl SkillLoadLedger {
             .collect()
     }
 
+    fn bound_wire_session_id<'a>(
+        wire_session_id: Option<&'a str>,
+        meta: &'a HermesSkillLoadMeta,
+    ) -> Option<&'a str> {
+        wire_session_id
+            .filter(|session| !session.is_empty())
+            .or((!meta.acp_session_id.is_empty()).then_some(meta.acp_session_id.as_str()))
+    }
+
     pub fn apply_meta(
         &mut self,
         meta: &HermesSkillLoadMeta,
         authoritative: bool,
         wire_session_id: Option<&str>,
     ) {
-        if !validate_skill_load_meta(meta, wire_session_id, self.profile_key.as_deref()) {
+        let bound_wire = Self::bound_wire_session_id(wire_session_id, meta);
+        if !validate_skill_load_meta(meta, bound_wire, self.profile_key.as_deref()) {
             return;
         }
         if meta.child_session_key.is_some() {
@@ -97,15 +115,13 @@ impl SkillLoadLedger {
             HermesSkillLoadConfidence::ToolObserved
         };
         if !meta.profile_key.is_empty() {
-            if !self.profile_history.contains(&meta.profile_key) {
-                self.profile_history.push(meta.profile_key.clone());
-            }
             if self.profile_key.is_none() {
                 self.profile_key = Some(meta.profile_key.clone());
             } else if self.profile_key.as_deref() != Some(meta.profile_key.as_str()) {
-                return;
+                self.profile_key = Some(meta.profile_key.clone());
             }
         }
+        let scope = skill_load_record_scope_for_meta(meta);
         let record = HermesSkillLoadRecord {
             event_id: meta.event_id.clone(),
             load_name: meta.load_name.clone(),
@@ -116,14 +132,19 @@ impl SkillLoadLedger {
             setup_needed: meta.setup_needed,
             historical: true,
             tool_call_id: meta.tool_call_id.clone(),
-            profile_key: Some(meta.profile_key.clone()),
+            profile_key: Some(meta.profile_key.clone()).filter(|key| !key.is_empty()),
+            acp_session_id: Some(meta.acp_session_id.clone()).filter(|session| !session.is_empty()),
+            record_scope: Some(scope.clone()),
         };
-        if let Some(existing) = self.by_event.get(&meta.event_id) {
+        if let Some(existing) = self.by_event.get(&scope) {
             if !status_monotonic(existing.status, status) {
                 return;
             }
+            if record_equivalent(existing, &record) {
+                return;
+            }
         }
-        self.by_event.insert(meta.event_id.clone(), record);
+        self.by_event.insert(scope, record);
         self.generation = self.generation.wrapping_add(1);
     }
 
@@ -134,16 +155,12 @@ impl SkillLoadLedger {
     ) {
         match event {
             AgentEvent::HermesSkillLoad { meta } => {
-                let wire_v2 = meta.schema_version == HERMES_SKILL_LOAD_SCHEMA_VERSION
-                    && !meta.process_epoch.is_empty();
-                if wire_v2 {
+                let bound_wire = Self::bound_wire_session_id(wire_session_id, meta);
+                let authoritative = skill_load_meta_is_authoritative(meta, bound_wire);
+                if authoritative {
                     self.capability = HermesSkillLoadsCapability::WireV2Acp;
                 }
-                self.apply_meta(
-                    meta,
-                    wire_v2 && meta.source != "skill_view",
-                    wire_session_id,
-                );
+                self.apply_meta(meta, authoritative, wire_session_id);
             }
             _ => {}
         }
@@ -186,6 +203,21 @@ impl SkillLoadLedger {
     }
 }
 
+fn record_equivalent(prev: &HermesSkillLoadRecord, next: &HermesSkillLoadRecord) -> bool {
+    prev.event_id == next.event_id
+        && prev.load_name == next.load_name
+        && prev.display_name == next.display_name
+        && prev.file_path == next.file_path
+        && prev.status == next.status
+        && prev.confidence == next.confidence
+        && prev.setup_needed == next.setup_needed
+        && prev.historical == next.historical
+        && prev.tool_call_id == next.tool_call_id
+        && prev.profile_key == next.profile_key
+        && prev.acp_session_id == next.acp_session_id
+        && prev.record_scope == next.record_scope
+}
+
 fn status_monotonic(prev: HermesSkillLoadStatus, next: HermesSkillLoadStatus) -> bool {
     use HermesSkillLoadStatus::*;
     let success = |s: HermesSkillLoadStatus| {
@@ -209,7 +241,9 @@ fn sort_stable_unique(rows: &mut Vec<HermesSkillLoadRecord>) {
             .cmp(&b.load_name)
             .then_with(|| a.event_id.cmp(&b.event_id))
     });
-    rows.dedup_by(|a, b| a.event_id == b.event_id);
+    rows.dedup_by(|a, b| {
+        skill_load_record_scope_for_record(a) == skill_load_record_scope_for_record(b)
+    });
 }
 
 pub fn replay_events(
@@ -218,7 +252,13 @@ pub fn replay_events(
 ) -> SkillLoadLedger {
     let mut ledger = SkillLoadLedger::new(capability);
     for event in events {
-        ledger.apply_event(event, None);
+        let wire = match event {
+            AgentEvent::HermesSkillLoad { meta } => {
+                (!meta.acp_session_id.is_empty()).then_some(meta.acp_session_id.as_str())
+            }
+            _ => None,
+        };
+        ledger.apply_event(event, wire);
     }
     ledger
 }

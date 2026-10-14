@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use gpui::{
-    AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    AnyElement, App, Context, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled, Window, div, prelude::*, px,
 };
 use zeron_proto::skill::{HermesSkillLoadRecord, HermesSkillSessionLoads};
@@ -25,6 +25,7 @@ pub(crate) struct SkillSessionPanelState {
     pub error: Option<SharedString>,
     pub request_generation: u64,
     pub last_fetch_generation: u64,
+    pub last_doc_generation: u64,
     pub degraded_hint: Option<SharedString>,
 }
 
@@ -32,7 +33,7 @@ impl Composer {
     fn hermes_skill_panel_active(&self, cx: &App) -> bool {
         panel_enabled()
             && self
-                .pickers
+                .pickers()
                 .read(cx)
                 .resolved(cx)
                 .harness
@@ -55,14 +56,14 @@ impl Composer {
         let generation = panel.request_generation;
         panel.loading = true;
         panel.error = None;
+        let mut params = self
+            .completion_workspace_params(cx)
+            .unwrap_or_else(|| serde_json::json!({ "chatId": chat_id }));
+        if params.get("chatId").is_none() {
+            params["chatId"] = serde_json::Value::String(chat_id.clone());
+        }
         cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(
-                    methods::GET_SKILL_SESSION_LOADS,
-                    serde_json::json!({ "chatId": chat_id }),
-                )
-                .await;
+            let result = engine.client().call(methods::GET_SKILL_SESSION_LOADS, params).await;
             this.update(cx, |this, cx| {
                 let panel = this.skill_session_panels.entry(chat_id.clone()).or_default();
                 if panel.request_generation != generation {
@@ -154,7 +155,9 @@ impl Composer {
             .unwrap_or_else(|| "Loaded skills".to_string());
         let body = render_body(&panel_snapshot, &theme, chat_id.clone(), cx);
         let chat = chat_id.clone();
+        let header_id = SharedString::from(format!("skill-session-panel-header-{chat_id}"));
         let header = div()
+            .id(header_id)
             .flex()
             .items_center()
             .justify_between()
@@ -227,6 +230,7 @@ fn render_body(
                 )
                 .child(
                     div()
+                        .id(SharedString::from(format!("skill-session-panel-retry-{chat}")))
                         .text_xs()
                         .text_color(theme.text_muted)
                         .cursor_pointer()
@@ -300,6 +304,7 @@ fn unique_load_names(rows: &[HermesSkillLoadRecord]) -> usize {
 
 fn group_rows(group: &[HermesSkillLoadRecord], theme: &Theme) -> Vec<AnyElement> {
     let primary = &group[0];
+    let any_historical = group.iter().any(|row| row.historical);
     let mut label = primary.load_name.clone();
     if group.len() == 1
         && primary.status == zeron_proto::skill::HermesSkillLoadStatus::LoadedReference
@@ -314,7 +319,7 @@ fn group_rows(group: &[HermesSkillLoadRecord], theme: &Theme) -> Vec<AnyElement>
     }
     let mut out = vec![row(
         &label,
-        primary.historical,
+        any_historical,
         primary.setup_needed,
         theme,
     )];
@@ -367,6 +372,8 @@ mod tests {
                 historical: false,
                 tool_call_id: None,
                 profile_key: None,
+                acp_session_id: None,
+                record_scope: None,
             },
             HermesSkillLoadRecord {
                 event_id: "b".into(),
@@ -379,6 +386,8 @@ mod tests {
                 historical: false,
                 tool_call_id: None,
                 profile_key: None,
+                acp_session_id: None,
+                record_scope: None,
             },
         ];
         assert_eq!(unique_load_names(&rows), 1);

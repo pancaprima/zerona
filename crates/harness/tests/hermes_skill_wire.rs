@@ -25,19 +25,17 @@ fn loaded_notification_maps_for_session() {
 
 #[test]
 fn selections_preserve_multiselect_order() {
-    let prompt = format!(
-        "Run {}",
-        zeron_proto::skill::encode_hermes_skill_uri("first")
-    );
-    let prompt = format!(
-        "{prompt} and {}",
-        zeron_proto::invocation::Invocation::Skill {
-            name: "second".into(),
-            path: zeron_proto::skill::encode_hermes_skill_uri("second"),
-            command: None,
-        }
-        .link()
-    );
+    let first = zeron_proto::invocation::Invocation::Skill {
+        name: "first".into(),
+        path: zeron_proto::skill::encode_hermes_skill_uri("first"),
+        command: None,
+    };
+    let second = zeron_proto::invocation::Invocation::Skill {
+        name: "second".into(),
+        path: zeron_proto::skill::encode_hermes_skill_uri("second"),
+        command: None,
+    };
+    let prompt = format!("Run {} and {}", first.link(), second.link());
     let picks = hermes_skill_wire::hermes_skill_selections_from_prompt(&prompt);
     assert_eq!(picks.len(), 2);
     assert_eq!(picks[0].0, "first");
@@ -57,6 +55,23 @@ fn sample_load() -> serde_json::Value {
         "acpSessionId": "sess-1",
         "processEpoch": "proc-1"
     })
+}
+
+#[test]
+fn bare_uri_without_invocation_link_is_not_a_selection() {
+    let prompt = format!(
+        "Run {} and {}",
+        zeron_proto::skill::encode_hermes_skill_uri("first"),
+        zeron_proto::invocation::Invocation::Skill {
+            name: "second".into(),
+            path: zeron_proto::skill::encode_hermes_skill_uri("second"),
+            command: None,
+        }
+        .link()
+    );
+    let picks = hermes_skill_wire::hermes_skill_selections_from_prompt(&prompt);
+    assert_eq!(picks.len(), 1);
+    assert_eq!(picks[0].0, "second");
 }
 
 #[test]

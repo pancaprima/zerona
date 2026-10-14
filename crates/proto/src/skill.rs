@@ -176,6 +176,35 @@ pub struct HermesSkillLoadRecord {
     pub tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_session_id: Option<String>,
+    /// Opaque dedup scope (`profileKey` + `acpSessionId` + producer `eventId`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_scope: Option<String>,
+}
+
+/// Stable scoped dedup key for ledger rows (survives doc round-trip).
+pub fn skill_load_record_scope(
+    profile_key: &str,
+    acp_session_id: &str,
+    event_id: &str,
+) -> String {
+    format!("{profile_key}\0{acp_session_id}\0{event_id}")
+}
+
+pub fn skill_load_record_scope_for_meta(meta: &HermesSkillLoadMeta) -> String {
+    skill_load_record_scope(&meta.profile_key, &meta.acp_session_id, &meta.event_id)
+}
+
+pub fn skill_load_record_scope_for_record(rec: &HermesSkillLoadRecord) -> String {
+    if let Some(scope) = &rec.record_scope {
+        return scope.clone();
+    }
+    skill_load_record_scope(
+        rec.profile_key.as_deref().unwrap_or(""),
+        rec.acp_session_id.as_deref().unwrap_or(""),
+        &rec.event_id,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -253,6 +282,9 @@ pub fn ledger_status_from_meta(meta: &HermesSkillLoadMeta) -> HermesSkillLoadSta
     if meta.outcome == "failed" {
         return HermesSkillLoadStatus::Failed;
     }
+    if meta.outcome == "dedup" || meta.dedup {
+        return HermesSkillLoadStatus::LoadedUnchanged;
+    }
     if meta.setup_needed && meta.terminal_identity == "setup_needed" {
         return HermesSkillLoadStatus::LoadedSetupNeeded;
     }
@@ -277,12 +309,16 @@ pub fn validate_skill_load_meta(
     if meta.event_id.is_empty() || meta.load_name.is_empty() {
         return false;
     }
-    if meta.outcome != "success" && meta.outcome != "failed" {
+    if meta.outcome != "success"
+        && meta.outcome != "failed"
+        && meta.outcome != "dedup"
+    {
         return false;
     }
     if meta.source != "skill_view"
         && meta.source != "prompt_select"
         && meta.source != "wire_loaded"
+        && meta.source != "auto_load"
     {
         return false;
     }
@@ -312,13 +348,39 @@ pub fn validate_skill_load_meta(
     }
     if let Some(partition) = profile_key {
         if !meta.profile_key.is_empty() && meta.profile_key != partition {
-            return false;
+            if let Some(expected) = wire_session_id.filter(|session| !session.is_empty()) {
+                if meta.acp_session_id.is_empty() || meta.acp_session_id != expected {
+                    return false;
+                }
+            } else {
+                return false;
+            }
         }
     }
     if meta.child_session_key.is_some() && meta.source != "wire_loaded" {
         return false;
     }
     true
+}
+
+/// Whether companion-structured load meta is wire-authoritative (not legacy observed).
+pub fn skill_load_meta_is_authoritative(
+    meta: &HermesSkillLoadMeta,
+    wire_session_id: Option<&str>,
+) -> bool {
+    if meta.schema_version != HERMES_SKILL_LOAD_SCHEMA_VERSION || meta.process_epoch.is_empty() {
+        return false;
+    }
+    if meta.source == "skill_view" {
+        if meta.profile_key.is_empty() || meta.acp_session_id.is_empty() {
+            return false;
+        }
+        return wire_session_id.is_none_or(|expected| meta.acp_session_id == expected);
+    }
+    matches!(
+        meta.source.as_str(),
+        "wire_loaded" | "prompt_select" | "auto_load"
+    )
 }
 
 /// Durable `SessionDoc.meta.skillLoads` projection (no SKILL.md bodies).
@@ -331,6 +393,8 @@ pub struct SessionDocSkillLoads {
     pub profile_key: Option<String>,
     #[serde(default)]
     pub records: Vec<HermesSkillLoadRecord>,
+    #[serde(default)]
+    pub generation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog_mode: Option<HermesSkillCatalogMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -356,5 +420,77 @@ mod tests {
         let meta: HermesSkillLoadMeta = serde_json::from_str(json).unwrap();
         assert_eq!(meta.event_id, "e1");
         assert!(!meta.setup_needed);
+    }
+
+    fn structured_meta(source: &str) -> HermesSkillLoadMeta {
+        HermesSkillLoadMeta {
+            schema_version: HERMES_SKILL_LOAD_SCHEMA_VERSION,
+            event_id: "e-auth".into(),
+            load_name: "demo".into(),
+            display_name: None,
+            file_path: None,
+            terminal_identity: "primary".into(),
+            outcome: "success".into(),
+            setup_needed: false,
+            dedup: false,
+            content_returned: true,
+            source: source.into(),
+            resolver_epoch: "r1".into(),
+            profile_key: "p1".into(),
+            acp_session_id: "sess-1".into(),
+            tool_call_id: None,
+            turn_epoch: 0,
+            process_epoch: "proc-1".into(),
+            child_session_key: None,
+        }
+    }
+
+    #[test]
+    fn structured_skill_view_is_authoritative_for_session() {
+        let meta = structured_meta("skill_view");
+        assert!(skill_load_meta_is_authoritative(&meta, Some("sess-1")));
+        assert!(!skill_load_meta_is_authoritative(&meta, Some("other")));
+    }
+
+    #[test]
+    fn cross_partition_requires_bound_wire_session() {
+        let mut other = structured_meta("prompt_select");
+        other.profile_key = "profile-b".into();
+        assert!(validate_skill_load_meta(&other, Some("sess-1"), Some("profile-a")));
+        other.acp_session_id = "other".into();
+        assert!(!validate_skill_load_meta(&other, Some("sess-1"), Some("profile-a")));
+    }
+
+    #[test]
+    fn skill_load_record_scope_roundtrip() {
+        let scope = skill_load_record_scope("p", "s", "e");
+        let rec = HermesSkillLoadRecord {
+            event_id: "e".into(),
+            load_name: "demo".into(),
+            display_name: None,
+            file_path: None,
+            status: HermesSkillLoadStatus::LoadedPrimary,
+            confidence: HermesSkillLoadConfidence::WireAuthoritative,
+            setup_needed: false,
+            historical: true,
+            tool_call_id: None,
+            profile_key: Some("p".into()),
+            acp_session_id: Some("s".into()),
+            record_scope: Some(scope.clone()),
+        };
+        assert_eq!(skill_load_record_scope_for_record(&rec), scope);
+    }
+
+    #[test]
+    fn auto_load_and_dedup_outcome_validate() {
+        let auto = structured_meta("auto_load");
+        assert!(validate_skill_load_meta(&auto, Some("sess-1"), None));
+        let mut dedup = structured_meta("wire_loaded");
+        dedup.outcome = "dedup".into();
+        assert!(validate_skill_load_meta(&dedup, Some("sess-1"), None));
+        assert_eq!(
+            ledger_status_from_meta(&dedup),
+            HermesSkillLoadStatus::LoadedUnchanged
+        );
     }
 }

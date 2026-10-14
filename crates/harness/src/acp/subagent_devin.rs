@@ -35,7 +35,7 @@ pub(crate) struct DevinTracker {
 }
 
 impl DevinTracker {
-    pub(crate) fn map(&mut self, update: &Value) -> Vec<AgentEvent> {
+    pub(crate) fn map(&mut self, update: &Value, wire_session_id: &str) -> Vec<AgentEvent> {
         if let Some(started) = meta(update, "cognition.ai/subagent_started") {
             let Some(agent_id) = nonempty(started, "agentId") else {
                 return Vec::new();
@@ -105,7 +105,7 @@ impl DevinTracker {
         let child_id = meta(update, "cognition.ai/subagent_context")
             .and_then(|ctx| nonempty(ctx, "parentAgentId"));
         let Some(child_id) = child_id else {
-            return map_update(update);
+            return map_update(update, wire_session_id);
         };
         if self.settled.contains(child_id) {
             return Vec::new();
@@ -115,7 +115,7 @@ impl DevinTracker {
             .get(child_id)
             .cloned()
             .unwrap_or_else(|| child_id.to_owned());
-        let events = map_update(update);
+        let events = map_update(update, wire_session_id);
         if events
             .iter()
             .any(|event| matches!(event, AgentEvent::TextDelta { .. }))
@@ -213,6 +213,7 @@ mod tests {
     #[test]
     fn correlates_spawn_child_traffic_and_completion() {
         let mut tracker = DevinTracker::default();
+        const WIRE: &str = "devin-acp-sess";
         let events = tracker.map(&json!({
             "sessionUpdate": "tool_call",
             "toolCallId": "spawn-1",
@@ -220,7 +221,7 @@ mod tests {
             "status": "in_progress",
             "rawInput": { "title": "Inspect auth", "task": "Review auth.rs" },
             "_meta": { "cognition.ai/inferenceToolName": "run_subagent" }
-        }));
+        }), WIRE);
         assert!(matches!(
             &events[0],
             AgentEvent::ToolCall { id, call: ToolCall::Unknown { name, .. } }
@@ -235,7 +236,7 @@ mod tests {
                     "_meta": { "cognition.ai/subagent_started": {
                         "agentId": "agent-7", "title": "Inspect auth", "profile": "Explore"
                     }}
-                }))
+                }), WIRE)
                 .is_empty()
         );
 
@@ -243,7 +244,7 @@ mod tests {
             "sessionUpdate": "agent_message_chunk",
             "content": { "type": "text", "text": "Found the issue" },
             "_meta": { "cognition.ai/subagent_context": { "parentAgentId": "agent-7" }}
-        }));
+        }), WIRE);
         assert_eq!(
             child,
             vec![AgentEvent::Subagent {
@@ -260,7 +261,7 @@ mod tests {
             "_meta": { "cognition.ai/subagent_completed": {
                 "agentId": "agent-7", "success": true, "summary": "Found the issue"
             }}
-        }));
+        }), WIRE);
         assert_eq!(completed.len(), 1, "streamed summary must not duplicate");
         assert!(matches!(
             &completed[0],
@@ -272,27 +273,28 @@ mod tests {
 
     #[test]
     fn completion_summary_is_a_fallback_when_child_was_quiet() {
+        const WIRE: &str = "devin-acp-sess";
         let mut tracker = DevinTracker::default();
         tracker.map(&json!({
             "sessionUpdate": "tool_call",
             "toolCallId": "spawn-2",
             "rawInput": { "title": "Quiet" },
             "_meta": { "cognition.ai/inferenceToolName": "run_subagent" }
-        }));
+        }), WIRE);
         tracker.map(&json!({
             "sessionUpdate": "tool_call_update",
             "toolCallId": "agent-8",
             "_meta": { "cognition.ai/subagent_started": {
                 "agentId": "agent-8", "title": "Quiet"
             }}
-        }));
+        }), WIRE);
         let events = tracker.map(&json!({
             "sessionUpdate": "tool_call_update",
             "toolCallId": "agent-8",
             "_meta": { "cognition.ai/subagent_completed": {
                 "agentId": "agent-8", "success": false, "summary": "Could not inspect"
             }}
-        }));
+        }), WIRE);
         assert!(matches!(
             &events[0],
             AgentEvent::Subagent { parent_tool_use_id, event }
@@ -308,20 +310,21 @@ mod tests {
 
     #[test]
     fn unfinished_children_settle_when_the_parent_run_ends() {
+        const WIRE: &str = "devin-acp-sess";
         let mut tracker = DevinTracker::default();
         tracker.map(&json!({
             "sessionUpdate": "tool_call",
             "toolCallId": "spawn-3",
             "rawInput": { "title": "Background" },
             "_meta": { "cognition.ai/inferenceToolName": "run_subagent" }
-        }));
+        }), WIRE);
         tracker.map(&json!({
             "sessionUpdate": "tool_call_update",
             "toolCallId": "agent-9",
             "_meta": { "cognition.ai/subagent_started": {
                 "agentId": "agent-9", "title": "Background"
             }}
-        }));
+        }), WIRE);
         let events = tracker.finish_open(DoneStatus::Interrupted);
         assert!(matches!(
             &events[0],

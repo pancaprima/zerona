@@ -32,7 +32,7 @@
 mod antigravity_paths;
 mod devin_models;
 pub mod hermes_skill_wire;
-mod normalize;
+pub mod normalize;
 mod subagent;
 mod subagent_devin;
 mod system_message;
@@ -2972,10 +2972,10 @@ fn session_update_events(
     let update = params.get("update").unwrap_or(&Value::Null);
     match method {
         "session/update" => match subagents {
-            SubagentObserver::Devin(tracker) => tracker.map(update),
+            SubagentObserver::Devin(tracker) => tracker.map(update, session_id),
             _ => {
                 subagents.observe(update);
-                map_update(update)
+                map_update(update, session_id)
             }
         },
         "_x.ai/session_notification" => {
@@ -3106,13 +3106,16 @@ async fn stage_hermes_skills_for_prompt(
     Ok(())
 }
 
-fn hermes_turn_operation_id(session_id: &str, prompt: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    session_id.hash(&mut hasher);
-    prompt.hash(&mut hasher);
-    format!("zeron-hermes-{:016x}", hasher.finish())
+static HERMES_PROMPT_OP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_hermes_operation_id(session_id: &str) -> String {
+    let n = HERMES_PROMPT_OP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("zeron-hermes-{session_id}-{n}")
+}
+
+fn hermes_skill_boundary_steer_required(harness: HarnessId, text: &str) -> bool {
+    harness == HarnessId::Hermes
+        && !hermes_skill_wire::hermes_skill_selections_from_prompt(text).is_empty()
 }
 
 fn hermes_prompt_meta(
@@ -3135,11 +3138,14 @@ fn prepare_and_prompt_turn(
     text: String,
     prompt_id: Option<String>,
 ) -> BoxFuture<'static, Result<Value, HarnessError>> {
+    if harness != HarnessId::Hermes {
+        return prompt_turn(client, session_id, text, prompt_id, None).boxed();
+    }
     async move {
         let wire = hermes_skill_wire::live_wire_for_session(&client, &session_id);
         let operation_id = prompt_id
             .clone()
-            .unwrap_or_else(|| hermes_turn_operation_id(&session_id, &text));
+            .unwrap_or_else(|| next_hermes_operation_id(&session_id));
         let meta = hermes_prompt_meta(harness, wire.as_ref(), &operation_id);
         stage_hermes_skills_for_prompt(
             harness,
@@ -3150,11 +3156,7 @@ fn prepare_and_prompt_turn(
             wire.as_ref(),
         )
         .await?;
-        let delivered = if harness == HarnessId::Hermes {
-            zeron_proto::invocation::harness_prompt(&text, harness)
-        } else {
-            text
-        };
+        let delivered = zeron_proto::invocation::harness_prompt(&text, harness);
         prompt_turn(client, session_id, delivered, prompt_id, meta).await
     }
     .boxed()
@@ -5330,6 +5332,7 @@ async fn run_session(session: Session) {
                     // Ultrathink prefix rides every steer too.
                     let text = prompt_transform(request.reasoning, &msg.prompt);
                     let immediate = msg.immediate;
+                    let skill_boundary_steer = hermes_skill_boundary_steer_required(harness, &text);
                     if turn.is_none() && cancel_flush_deadline.is_some() {
                         // A busy-session cancel is already in flight: this
                         // steer lines up behind it and dispatches at flush.
@@ -5387,6 +5390,15 @@ async fn run_session(session: Session) {
                             current_prompt_id.clone(),
                         ),
                     );
+                    } else if skill_boundary_steer && turn.is_some() {
+                        queued_steers.push_back(text);
+                        if preempt_steers && !preempt_sent && open_tools.is_empty() {
+                            client.notify(
+                                "session/cancel",
+                                Some(json!({ "sessionId": session_id })),
+                            );
+                            preempt_sent = true;
+                        }
                     } else if slash_steer && immediate && turn.is_some() {
                         if slash_steer_call.is_some() || steering_call.is_some() {
                             steer_backlog.push_back(text);

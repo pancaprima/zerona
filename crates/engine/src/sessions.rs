@@ -285,31 +285,10 @@ impl Inner {
 
     fn persist_skill_loads(&self, chat_id: &str) {
         self.hydrate_skill_ledger(chat_id);
-        let snapshot = lock(&self.skill_ledgers)
+        let doc = lock(&self.skill_ledgers)
             .get(chat_id)
-            .map(|ledger| ledger.snapshot())
-            .unwrap_or_else(|| {
-                crate::skill_sessions::SkillLoadLedger::new(
-                    zeron_proto::skill::HermesSkillLoadsCapability::ObservedToolsV0,
-                )
-                .snapshot()
-            });
-        let doc = zeron_proto::skill::SessionDocSkillLoads {
-            schema_version: snapshot.schema_version,
-            capability: snapshot.capability,
-            profile_key: lock(&self.skill_ledgers)
-                .get(chat_id)
-                .and_then(|l| l.profile_key.clone()),
-            records: snapshot
-                .confirmed
-                .iter()
-                .chain(snapshot.failed.iter())
-                .chain(snapshot.observed_reads.iter())
-                .cloned()
-                .collect(),
-            catalog_mode: snapshot.catalog_mode,
-            resolver_epoch: snapshot.resolver_epoch,
-        };
+            .map(|ledger| ledger.to_doc())
+            .unwrap_or_default();
         if let Some(host) = self.doc_host() {
             if let Ok(handle) = host.open(chat_id) {
                 if let Err(err) = handle.doc().set_skill_loads(&doc) {
@@ -1944,7 +1923,7 @@ impl Inner {
 /// text leads with `/name` (Codex `command_request`, OpenCode commands, Claude
 /// slash commands). Anything put in front of it would make it model input.
 fn provider_wire_prompt(prompt: &str, harness: HarnessId) -> String {
-    if matches!(harness, HarnessId::Cursor | HarnessId::Opencode | HarnessId::Hermes) {
+    if matches!(harness, HarnessId::Opencode | HarnessId::Hermes) {
         prompt.to_string()
     } else {
         zeron_proto::invocation::harness_prompt(prompt, harness)
@@ -3330,7 +3309,7 @@ async fn drive_run(
             AgentEvent::InputResolved { .. } => {
                 inner.set_status(&chat_id, SessionStatus::Working, false);
             }
-            AgentEvent::HermesSkillLoad { meta } => {
+            AgentEvent::HermesSkillLoad { .. } => {
                 let wire_session = lock(&inner.harness_sessions)
                     .get(&chat_id)
                     .map(|r| r.session_id.clone());

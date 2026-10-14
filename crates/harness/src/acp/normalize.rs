@@ -346,7 +346,7 @@ fn typed_call(update: &Value) -> ToolCall {
 /// Map one `session/update` payload's `update` object to events.
 /// Message/thought chunks are handled here too (unlike codex, ACP has no
 /// separate delta channel).
-pub(crate) fn map_update(update: &Value) -> Vec<AgentEvent> {
+pub fn map_update(update: &Value, wire_session_id: &str) -> Vec<AgentEvent> {
     let kind = update
         .get("sessionUpdate")
         .and_then(Value::as_str)
@@ -395,7 +395,13 @@ pub(crate) fn map_update(update: &Value) -> Vec<AgentEvent> {
                 events.push(resolved);
             }
             let title = str_field(update, "title");
-            if let Some(observed) = super::hermes_skill_wire::map_observed_skill_view(update, &title) {
+            if let Some(authoritative) =
+                super::hermes_skill_wire::map_skill_load_from_tool_update(update, wire_session_id)
+            {
+                events.push(authoritative);
+            } else if let Some(observed) =
+                super::hermes_skill_wire::map_observed_skill_view(update, &title)
+            {
                 events.push(observed);
             }
             events
@@ -516,7 +522,7 @@ mod tests {
             "content": { "type": "text", "text": "hello" },
         });
         assert_eq!(
-            map_update(&update),
+            map_update(&update, "wire-sess"),
             vec![AgentEvent::TextDelta {
                 text: "hello".into()
             }]
@@ -526,7 +532,7 @@ mod tests {
             "content": { "type": "text", "text": "hmm" },
         });
         assert_eq!(
-            map_update(&thought),
+            map_update(&thought, "wire-sess"),
             vec![AgentEvent::ReasoningDelta { text: "hmm".into() }]
         );
         // Non-text blocks render as nothing.
@@ -534,7 +540,7 @@ mod tests {
             "sessionUpdate": "agent_message_chunk",
             "content": { "type": "image", "data": "...", "mimeType": "image/png" },
         });
-        assert_eq!(map_update(&image), Vec::new());
+        assert_eq!(map_update(&image, "wire-sess"), Vec::new());
     }
 
     #[test]
@@ -551,7 +557,7 @@ mod tests {
             ],
         });
         assert_eq!(
-            map_update(&update),
+            map_update(&update, "wire-sess"),
             vec![
                 AgentEvent::ToolCall {
                     id: "t1".into(),
@@ -583,7 +589,7 @@ mod tests {
                 "newText": "fn new() {}",
             }],
         });
-        let events = map_update(&update);
+        let events = map_update(&update, "wire-sess");
         assert_eq!(events.len(), 2);
         assert_eq!(
             events[0],
@@ -620,7 +626,7 @@ mod tests {
             "content": [{ "type": "diff", "path": "/w/new.rs", "newText": "x" }],
         });
         assert_eq!(
-            map_update(&update),
+            map_update(&update, "wire-sess"),
             vec![AgentEvent::ToolCall {
                 id: "t3".into(),
                 call: ToolCall::WriteFile {
@@ -639,7 +645,7 @@ mod tests {
             "status": "failed",
         });
         assert_eq!(
-            map_update(&update),
+            map_update(&update, "wire-sess"),
             vec![AgentEvent::ToolResult {
                 id: "t4".into(),
                 is_error: true,
@@ -658,7 +664,7 @@ mod tests {
                 { "content": "write fix", "priority": "high", "status": "in_progress" },
             ],
         });
-        let events = map_update(&update);
+        let events = map_update(&update, "wire-sess");
         assert_eq!(
             events[0],
             AgentEvent::ToolCall {
@@ -684,7 +690,7 @@ mod tests {
             ],
         });
         assert_eq!(
-            map_update(&update),
+            map_update(&update, "wire-sess"),
             vec![AgentEvent::AvailableCommands {
                 commands: vec![
                     SlashCommand {
@@ -713,7 +719,7 @@ mod tests {
                 { "type": "content", "content": { "type": "text", "text": big } },
             ],
         });
-        let events = map_update(&update);
+        let events = map_update(&update, "wire-sess");
         // The content-bearing update refreshes the call, then resolves it.
         let Some(AgentEvent::ToolResult {
             output: Some(output),
@@ -752,7 +758,7 @@ mod tests {
             "rawInput": {},
         });
         assert_eq!(
-            map_update(&grep),
+            map_update(&grep, "wire-sess"),
             vec![AgentEvent::ToolCall {
                 id: "t1".into(),
                 call: ToolCall::Search {
@@ -770,7 +776,7 @@ mod tests {
             "rawInput": {},
         });
         assert_eq!(
-            map_update(&read),
+            map_update(&read, "wire-sess"),
             vec![AgentEvent::ToolCall {
                 id: "t2".into(),
                 call: ToolCall::ReadFile {
@@ -787,7 +793,7 @@ mod tests {
             "rawInput": {},
         });
         assert_eq!(
-            map_update(&fetch),
+            map_update(&fetch, "wire-sess"),
             vec![AgentEvent::ToolCall {
                 id: "t3".into(),
                 call: ToolCall::WebSearch {
@@ -804,7 +810,7 @@ mod tests {
             "rawInput": {},
         });
         assert_eq!(
-            map_update(&web),
+            map_update(&web, "wire-sess"),
             vec![AgentEvent::ToolCall {
                 id: "t4".into(),
                 call: ToolCall::Search {
@@ -825,7 +831,7 @@ mod tests {
             "rawInput": { "searchTerm": "multitask cli" },
         });
         assert_eq!(
-            map_update(&update),
+            map_update(&update, "wire-sess"),
             vec![AgentEvent::ToolCall {
                 id: "t1".into(),
                 call: ToolCall::WebSearch {
@@ -845,7 +851,7 @@ mod tests {
             "rawInput": {},
         });
         assert_eq!(
-            map_update(&update),
+            map_update(&update, "wire-sess"),
             vec![AgentEvent::ToolCall {
                 id: "t1".into(),
                 call: ToolCall::Exec {
@@ -869,7 +875,7 @@ mod tests {
             },
         });
         assert_eq!(
-            map_update(&update),
+            map_update(&update, "wire-sess"),
             vec![AgentEvent::ToolCall {
                 id: "t1".into(),
                 call: ToolCall::Unknown {
@@ -900,7 +906,7 @@ mod tests {
             },
         });
         assert!(matches!(
-            map_update(&update).as_slice(),
+            map_update(&update, "wire-sess").as_slice(),
             [AgentEvent::ToolCall { call: ToolCall::Unknown { name, .. }, .. }]
                 if name == "Agent: Viz probe"
         ));
@@ -919,7 +925,7 @@ mod tests {
             },
         });
         assert!(matches!(
-            map_update(&update).as_slice(),
+            map_update(&update, "wire-sess").as_slice(),
             [
                 AgentEvent::ToolCall { call: ToolCall::Unknown { name, .. }, .. },
                 AgentEvent::ToolResult { is_error: false, .. },
@@ -932,10 +938,13 @@ mod tests {
 #[test]
 fn empty_assistant_delta_does_not_open_a_segment() {
     assert!(
-        map_update(&serde_json::json!({
-            "sessionUpdate": "agent_message_chunk",
-            "content": {"type": "text", "text": ""},
-        }))
+        map_update(
+            &serde_json::json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": ""},
+            }),
+            "wire-sess",
+        )
         .is_empty()
     );
 }
