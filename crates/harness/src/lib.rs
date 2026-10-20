@@ -259,16 +259,7 @@ pub trait Harness: Send + Sync {
         if self.id() == HarnessId::Mock {
             return Ok(None);
         }
-        Ok(Some(crate::skills::discover(self.id(), cwd).await?))
-    }
-    /// Hermes ACP catalog when `acp_session_id` matches a live wire; otherwise
-    /// the default filesystem discovery path.
-    async fn skills_with_session(
-        &self,
-        _acp_session_id: Option<&str>,
-        cwd: &std::path::Path,
-    ) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
-        self.skills(cwd).await
+        skills::discover(self.id(), cwd).await.map(Some)
     }
     /// Run an isolated title request. Drivers must opt in with title-specific
     /// instructions and restrictions; never fall back to an ordinary coding run.
@@ -300,7 +291,6 @@ pub trait Harness: Send + Sync {
 }
 
 pub mod acp;
-pub mod hermes;
 pub(crate) mod adapter_install;
 pub mod archive_install;
 mod catalog;
@@ -630,70 +620,6 @@ pub fn supports_titles(id: HarnessId) -> bool {
         id,
         HarnessId::Codex | HarnessId::ClaudeCode | HarnessId::Mock
     )
-}
-
-#[cfg(test)]
-mod skills_delegate_tests {
-    use super::*;
-    use async_trait::async_trait;
-    use futures::stream::{self, BoxStream};
-    use zeron_proto::invocation::Skill;
-
-    struct SkillsOverrideHarness;
-
-    #[async_trait]
-    impl Harness for SkillsOverrideHarness {
-        fn id(&self) -> HarnessId {
-            HarnessId::Codex
-        }
-        fn display_name(&self) -> &str {
-            "skills-override-fixture"
-        }
-        fn supports_steering(&self) -> bool {
-            false
-        }
-        fn steering_mode(&self) -> SteeringMode {
-            SteeringMode::TurnBoundary
-        }
-        fn reasoning_levels(&self) -> &[ReasoningLevel] {
-            &[]
-        }
-        async fn models(&self) -> Result<Vec<Model>, HarnessError> {
-            Ok(Vec::new())
-        }
-        async fn skills(
-            &self,
-            _cwd: &std::path::Path,
-        ) -> Result<Option<Vec<Skill>>, HarnessError> {
-            Ok(Some(vec![Skill {
-                name: "override-sentinel".into(),
-                path: "/sentinel".into(),
-                description: String::new(),
-                enabled: true,
-                command: None,
-                catalog_source: None,
-            }]))
-        }
-        async fn run(
-            &self,
-            _request: RunRequest,
-            _controls: RunControls,
-        ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
-            Ok(Box::pin(stream::empty()))
-        }
-    }
-
-    #[tokio::test]
-    async fn skills_with_session_uses_skills_override() {
-        let harness = SkillsOverrideHarness;
-        let cwd = std::path::Path::new("/tmp");
-        let skills = harness.skills_with_session(None, cwd).await.unwrap();
-        assert_eq!(
-            skills.as_ref().unwrap()[0].name,
-            "override-sentinel",
-            "default skills_with_session must delegate to skills(), not bypass overrides"
-        );
-    }
 }
 
 #[cfg(test)]

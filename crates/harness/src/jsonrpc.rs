@@ -67,21 +67,6 @@ impl RpcClient {
         Self::with_stdout_observer(stdin, stdout, None)
     }
 
-    #[cfg(test)]
-    pub(crate) fn test_writer_only() -> (Self, mpsc::UnboundedReceiver<String>) {
-        let (writer_tx, writer_rx) = mpsc::unbounded_channel();
-        (
-            Self {
-                next_id: Arc::new(AtomicI64::new(0)),
-                pending: Arc::default(),
-                writer: writer_tx,
-                closed: Arc::new(AtomicBool::new(false)),
-                voice_router: Arc::default(),
-            },
-            writer_rx,
-        )
-    }
-
     pub(crate) fn with_stdout_observer(
         stdin: ChildStdin,
         stdout: ChildStdout,
@@ -144,11 +129,6 @@ impl RpcClient {
 
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
-    }
-
-    /// Stable identity for this stdio transport (distinct child agents in one process).
-    pub(crate) fn transport_key(&self) -> usize {
-        Arc::as_ptr(&self.pending) as usize
     }
 
     /// Send a request and await its response (resolved by the reader task).

@@ -375,32 +375,6 @@ impl SessionDoc {
         Ok(())
     }
 
-    pub fn skill_loads(&self) -> Option<zeron_proto::skill::SessionDocSkillLoads> {
-        let loro::ValueOrContainer::Value(LoroValue::String(value)) =
-            self.doc.get_map("meta").get("skillLoads")?
-        else {
-            return None;
-        };
-        serde_json::from_str(&value).ok()
-    }
-
-    pub fn set_skill_loads(
-        &self,
-        loads: &zeron_proto::skill::SessionDocSkillLoads,
-    ) -> Result<(), DocError> {
-        let next = serde_json::to_string(loads)?;
-        let meta = self.doc.get_map("meta");
-        let previous = match meta.get("skillLoads") {
-            Some(loro::ValueOrContainer::Value(LoroValue::String(s))) => s.to_string(),
-            _ => String::new(),
-        };
-        if previous != next {
-            meta.insert("skillLoads", next)?;
-            self.doc.commit();
-        }
-        Ok(())
-    }
-
     /// The provider session that received a fork's copied history — a side
     /// chat's bootstrap is owed to any other session it continues in.
     pub fn fork_history_session(&self) -> Option<String> {

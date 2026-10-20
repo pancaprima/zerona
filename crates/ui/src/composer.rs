@@ -5782,17 +5782,6 @@ struct InvocationCandidate {
     invocation: zeron_proto::invocation::Invocation,
 }
 
-#[derive(Debug, Clone, Default)]
-struct SkillInspectState {
-    chat_id: String,
-    load_name: String,
-    request: u64,
-    loading: bool,
-    error: Option<SharedString>,
-    excerpt: Option<String>,
-    truncated: bool,
-}
-
 fn invocation_insertion(
     invocation: &zeron_proto::invocation::Invocation,
     supported: bool,
@@ -5925,19 +5914,7 @@ fn invocation_candidates(
                     workspace_command: None,
                     input_hint: None,
                     name: s.name.clone(),
-                    description: if s.catalog_source.as_deref() == Some("filesystem_degraded") {
-                        if s.description.is_empty() {
-                            "degraded catalog (no live Hermes session)".into()
-                        } else {
-                            format!("{} · degraded", s.description)
-                        }
-                    } else if s.catalog_source.as_deref() == Some("authoritative") {
-                        if s.description.is_empty() {
-                            "authoritative catalog".into()
-                        } else {
-                            format!("{} · authoritative", s.description)
-                        }
-                    } else if zeron_proto::invocation::native_skill_identity(&s.path) {
+                    description: if zeron_proto::invocation::native_skill_identity(&s.path) {
                         s.description.clone()
                     } else {
                         format!("{} — {}", s.description, s.path)
@@ -6096,10 +6073,6 @@ pub struct Composer {
     /// per-chat open/fold state (in memory, like the right-pane flags).
     pub(crate) todo_cache: crate::todo_panel::TodoCache,
     pub(crate) todo_panels: HashMap<String, crate::todo_panel::TodoPanelState>,
-    pub(crate) skill_session_panels: HashMap<String, crate::skill_session_panel::SkillSessionPanelState>,
-    skill_panel_chat: Option<String>,
-    skill_inspect_nonce: u64,
-    skill_inspect: Option<SkillInspectState>,
     pub(crate) todo_scroll: gpui::ScrollHandle,
     /// Whether the modifier overlay should currently reveal the queue hint.
     /// The shell owns modifier tracking and clears this on window deactivation.
@@ -6392,10 +6365,6 @@ impl Composer {
             queue_removing: HashSet::new(),
             todo_cache: Default::default(),
             todo_panels: HashMap::new(),
-            skill_session_panels: HashMap::new(),
-            skill_panel_chat: None,
-            skill_inspect_nonce: 0,
-            skill_inspect: None,
             todo_scroll: gpui::ScrollHandle::new(),
             queue_shortcut_revealed: false,
             expanded_mode: false,
@@ -7424,7 +7393,7 @@ impl Composer {
     /// File mentions and provider catalogs share a workspace target. A new
     /// side chat inherits its parent's checkout but has no persisted row until
     /// its first send, so discovery must address the parent in the meantime.
-    pub(crate) fn completion_workspace_params(&self, cx: &App) -> Option<serde_json::Value> {
+    fn completion_workspace_params(&self, cx: &App) -> Option<serde_json::Value> {
         let state = self.state.read(cx);
         if let Some(chat) = state.selected_chat_row() {
             let chat_id = chat
@@ -8281,143 +8250,6 @@ impl Composer {
         self.sync_mention_controls(cx);
     }
 
-    fn begin_skill_inspect(&mut self, load_name: String, cx: &mut Context<Self>) {
-        let chat_id = self.state.read(cx).selected_chat.clone();
-        let Some(chat_id) = chat_id else {
-            return;
-        };
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        self.skill_inspect_nonce = self.skill_inspect_nonce.wrapping_add(1);
-        let request = self.skill_inspect_nonce;
-        let mut rpc_params = self
-            .completion_workspace_params(cx)
-            .unwrap_or_else(|| serde_json::json!({ "chatId": chat_id }));
-        if rpc_params.get("chatId").is_none() {
-            rpc_params["chatId"] = serde_json::Value::String(chat_id.clone());
-        }
-        rpc_params["loadName"] = serde_json::Value::String(load_name.clone());
-        self.skill_inspect = Some(SkillInspectState {
-            chat_id: chat_id.clone(),
-            load_name: load_name.clone(),
-            request,
-            loading: true,
-            error: None,
-            excerpt: None,
-            truncated: false,
-        });
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(methods::INSPECT_HERMES_SKILL, rpc_params)
-                .await;
-            this.update(cx, |this, cx| {
-                let Some(state) = this.skill_inspect.as_mut() else {
-                    return;
-                };
-                if state.request != request
-                    || this.state.read(cx).selected_chat.as_deref() != Some(state.chat_id.as_str())
-                {
-                    return;
-                }
-                state.loading = false;
-                match result {
-                    Ok(value) => {
-                        if let Ok(resp) = serde_json::from_value::<
-                            zeron_proto::skill::HermesSkillInspectResponse,
-                        >(value)
-                        {
-                            state.excerpt = Some(resp.markdown_excerpt);
-                            state.truncated = resp.excerpt_truncated;
-                            state.error = None;
-                        } else {
-                            state.error = Some("Invalid inspect response".into());
-                        }
-                    }
-                    Err(err) => state.error = Some(err.to_string().into()),
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    fn render_skill_inspect_overlay(
-        &self,
-        theme: &Theme,
-        cx: &Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        let Some(state) = &self.skill_inspect else {
-            return None;
-        };
-        let theme = theme.for_popup();
-        let title = format!("Inspect · {}", state.load_name);
-        let body = if state.loading {
-            "Loading preview…".to_string()
-        } else if let Some(err) = &state.error {
-            err.to_string()
-        } else {
-            let text = state.excerpt.clone().unwrap_or_default();
-            if state.truncated {
-                format!("{text}\n\n… truncated")
-            } else {
-                text
-            }
-        };
-        let inspect_chat = state.chat_id.clone();
-        let inspect_load = state.load_name.clone();
-        Some(
-            crate::popover::full_width_menu_above(
-                "skill-inspect-overlay",
-                div()
-                    .px(px(12.0))
-                    .py(px(10.0))
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .items_center()
-                            .child(div().text_sm().child(title))
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "skill-inspect-close-{inspect_chat}-{inspect_load}"
-                                    )))
-                                    .text_xs()
-                                    .text_color(theme.text_muted)
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.skill_inspect = None;
-                                        cx.notify();
-                                    }))
-                                    .child("Close"),
-                            ),
-                    )
-                    .child(
-                        crate::popover::menu_scroll_host("skill-inspect-scroll-host")
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "skill-inspect-scroll-{inspect_chat}-{inspect_load}"
-                                    )))
-                                    .max_h(px(240.0))
-                                    .overflow_y_scroll()
-                                    .mt(px(8.0))
-                                    .text_xs()
-                                    .text_color(theme.text_muted)
-                                    .child(body),
-                            ),
-                    )
-                    .into_any_element(),
-                None,
-            )
-            .into_any_element(),
-        )
-    }
-
     fn render_slash_popup(
         &mut self,
         theme: &Theme,
@@ -8516,52 +8348,28 @@ impl Composer {
                     }
                 }
                 let description: SharedString = description.into();
-                let hermes_skill = command.invocation.prefix() == '$'
-                    && zeron_proto::skill::is_hermes_native_skill_path(
-                        &command.invocation.detail(),
-                    );
-                let load_name = if hermes_skill {
-                    zeron_proto::skill::decode_hermes_skill_uri(&command.invocation.detail())
-                } else {
-                    None
-                };
-                let row = crate::popover::menu_row(theme, selected, format!("slash-result-{row_ix}"))
-                    .id(("slash-result", row_ix))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.slash.active = Some(row_ix);
-                        this.accept_slash(cx);
-                    }))
-                    .child(crate::popover::completion_row_content(
-                        theme,
-                        crate::icons::icon(if command.invocation.prefix() == '$' {
-                            crate::icons::MAGIC_STICK_3
-                        } else {
-                            crate::icons::COMMAND
-                        })
-                        .size(px(16.0))
-                        .text_color(theme.text_muted)
-                        .into_any_element(),
-                        name,
-                        description,
-                    ));
-                let row = if let Some(load_name) = load_name {
-                    row.child(
-                        div()
-                            .id(SharedString::from(format!("skill-inspect-open-{load_name}")))
-                            .ml(px(8.0))
-                            .text_xs()
+                rows.push(
+                    crate::popover::menu_row(theme, selected, format!("slash-result-{row_ix}"))
+                        .id(("slash-result", row_ix))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.slash.active = Some(row_ix);
+                            this.accept_slash(cx);
+                        }))
+                        .child(crate::popover::completion_row_content(
+                            theme,
+                            crate::icons::icon(if command.invocation.prefix() == '$' {
+                                crate::icons::MAGIC_STICK_3
+                            } else {
+                                crate::icons::COMMAND
+                            })
+                            .size(px(16.0))
                             .text_color(theme.text_muted)
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.begin_skill_inspect(load_name.clone(), cx);
-                            }))
-                            .child("Inspect"),
-                    )
-                } else {
-                    row
-                };
-                rows.push(row.into_any_element());
+                            .into_any_element(),
+                            name,
+                            description,
+                        ))
+                        .into_any_element(),
+                );
             }
             // Overflowing rows wheel-scroll inside a bounded viewport; the
             // floating rail mirrors the model-list scrollbar treatment.
@@ -8608,42 +8416,19 @@ impl Composer {
     }
 
     fn on_state_changed(&mut self, cx: &mut Context<Self>) {
-        let (selected_chat, loads_generation, now, queue_ids) = {
-            let state = self.state.read(cx);
-            let selected_chat = state.selected_chat.clone();
-            let loads_generation = selected_chat
-                .as_deref()
-                .and_then(|chat_id| {
-                    state
-                        .sessions
-                        .iter()
-                        .find(|session| session.chat_id == chat_id)
-                        .map(|session| session.skill_loads_generation)
-                })
-                .unwrap_or(0);
-            let now = crate::state::clock_now();
-            let queue_ids: Vec<_> = state.queue.iter().map(|item| item.id.clone()).collect();
-            (selected_chat, loads_generation, now, queue_ids)
-        };
-        if self.skill_panel_chat.as_deref() != selected_chat.as_deref() {
-            self.skill_panel_chat = selected_chat.clone();
-            self.on_skill_session_doc_tick(cx);
-        } else if let Some(chat_id) = selected_chat {
-            let panel = self.skill_session_panels.entry(chat_id).or_default();
-            if panel.last_doc_generation != loads_generation {
-                panel.last_doc_generation = loads_generation;
-                self.on_skill_session_doc_tick(cx);
-            }
-        }
         {
             let state = self.state.read(cx);
+            // AppState also notifies at clock-only transitions, so a run that
+            // goes stale drops its interrupt at the cutoff.
+            let now = crate::state::clock_now();
             retain_live_interrupts(&mut self.interrupting, |chat_id| {
                 matches!(
                     state.indicator_for(chat_id, now),
                     Indicator::Working | Indicator::AwaitingInput
                 )
             });
-            self.queue_removing.retain(|id| queue_ids.iter().any(|q| q == id));
+            self.queue_removing
+                .retain(|id| state.queue.iter().any(|item| item.id == *id));
         }
         self.interrupt_tasks
             .retain(|chat_id, _| self.interrupting.contains(chat_id));
@@ -11159,10 +10944,6 @@ impl Render for Composer {
             |el, panel| el.child(motion::fade_quick("composer-todo", div().child(panel))),
         );
         let container = container.when_some(
-            self.render_skill_session_panel(has_queue, window, cx),
-            |el, panel| el.child(motion::fade_quick("composer-skill-loads", div().child(panel))),
-        );
-        let container = container.when_some(
             self.render_queue_panel(show_queue_latest_shortcut, window, cx),
             |el, panel| {
                 el.child(motion::fade_quick(
@@ -11750,8 +11531,7 @@ impl Render for Composer {
             // Both completion popups span the full pill width above it —
             // the file-mention and slash tokens are mutually exclusive.
             .children(self.render_file_mention_popup(&theme, cx))
-            .children(self.render_slash_popup(&theme, cx))
-            .children(self.render_skill_inspect_overlay(&theme, cx));
+            .children(self.render_slash_popup(&theme, cx));
         // Restore the original chip-only selector treatment: destination at
         // the top-right, no surrounding surface. Cancel the column gap as the
         // row collapses so the pill never jumps at the route boundary.
@@ -12734,52 +12514,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn hermes_skill_inspect_does_not_accept_slash(cx: &mut gpui::TestAppContext) {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let _guard = runtime.enter();
-        let (out, _server_in) = tokio::sync::mpsc::channel::<String>(16);
-        let (_server_out, inbound) = tokio::sync::mpsc::channel::<String>(16);
-        let state = cx.new(|_| AppState::new());
-        state.update(cx, |state, _| {
-            state.set_test_engine(crate::state::EngineHandle::from_test_client(
-                zeron_rpc::RpcClient::new(out, inbound),
-            ));
-            state.selected_chat = Some("skill-inspect-chat".into());
-        });
-        let composer = cx.new(|cx| Composer::new(state, cx));
-        let uri = zeron_proto::skill::encode_hermes_skill_uri("review");
-        let invocation = zeron_proto::invocation::Invocation::Skill {
-            name: "review".into(),
-            path: uri,
-            command: None,
-        };
-        composer.update(cx, |composer, cx| {
-            composer
-                .input
-                .update(cx, |input, cx| input.set_text("/rev", cx));
-            composer.update_slash("/rev", 4, cx);
-            composer.slash_cache.insert(
-                composer.slash.context.clone(),
-                vec![InvocationCandidate {
-                    workspace_command: None,
-                    name: "review".into(),
-                    description: String::new(),
-                    input_hint: None,
-                    invocation,
-                }],
-            );
-            composer.slash.filtered = vec![0];
-            composer.slash.active = Some(0);
-            let before = composer.input.read(cx).text().to_string();
-            composer.begin_skill_inspect("review".into(), cx);
-            assert_eq!(composer.input.read(cx).text(), before);
-            assert_eq!(composer.slash.active, Some(0));
-            assert!(composer.skill_inspect.is_some());
-            assert!(composer.skill_inspect.as_ref().unwrap().loading);
-        });
-    }
-
-    #[gpui::test]
     fn projectless_composer_allows_send_and_enter_submission(cx: &mut gpui::TestAppContext) {
         let state = cx.new(|_| AppState::new());
         let composer = cx.new(|cx| Composer::new(state.clone(), cx));
@@ -12938,7 +12672,6 @@ mod tests {
                 started_at: Some(updated),
                 updated_at: updated,
                 running_subagents: 0,
-                skill_loads_generation: 0,
             }];
             state.selected_chat = Some("c".into());
             state.watch_clock_transitions(cx);
@@ -14916,7 +14649,6 @@ mod tests {
             path: "/repo/SKILL.md".into(),
             description: String::new(),
             enabled: true,
-            catalog_source: None,
         };
         let (rows, supported, warning) = merge_invocation_results(
             Ok(vec![command]),
@@ -15032,7 +14764,6 @@ mod tests {
                     name: name.into(),
                     harness,
                 }),
-                catalog_source: None,
             })
             .collect();
             let rows = invocation_candidates(commands, skills);
@@ -15075,7 +14806,6 @@ mod tests {
                     name: "review".into(),
                     harness,
                 }),
-                catalog_source: None,
             }];
             let rows = invocation_candidates(commands, skills);
             assert_eq!(rows.len(), 2);
@@ -15105,7 +14835,6 @@ mod tests {
                 path: "/a/SKILL.md".into(),
                 description: "A".into(),
                 enabled: true,
-                catalog_source: None,
             },
             Skill {
                 command: None,
@@ -15113,7 +14842,6 @@ mod tests {
                 path: "/b/SKILL.md".into(),
                 description: "B".into(),
                 enabled: true,
-                catalog_source: None,
             },
             Skill {
                 command: None,
@@ -15121,7 +14849,6 @@ mod tests {
                 path: "/c/SKILL.md".into(),
                 description: String::new(),
                 enabled: false,
-                catalog_source: None,
             },
         ];
         assert_eq!(invocation_candidates(commands.clone(), vec![]).len(), 1);

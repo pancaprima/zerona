@@ -2509,7 +2509,6 @@ fn native_skill_catalog_rejects_unrepresentable_commands() {
         description: String::new(),
         enabled: true,
         command: None,
-        catalog_source: None,
     }];
     let mut commands = vec![];
     for name in [

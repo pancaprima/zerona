@@ -436,7 +436,6 @@ pub(crate) fn seed(
             doc.upsert_session(&Session {
                 last_completed_turn: None,
                 running_subagents: 0,
-                skill_loads_generation: 0,
                 chat_id: demo.id.into(),
                 device_id: demo.device.into(),
                 status,

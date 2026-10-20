@@ -100,7 +100,6 @@ impl Harness for RecordingHarness {
             description: cwd.to_string_lossy().into_owned(),
             enabled: true,
             command: None,
-            catalog_source: None,
         }]))
     }
     async fn run(
@@ -184,9 +183,9 @@ fn expected(raw: &str, readable: &str, id: HarnessId) -> String {
             &zeron_proto::file_mentions::local_file_link("src/é file.rs", false),
             "[é file.rs](src/%C3%A9%20file.rs)",
         )
-    } else if id == HarnessId::Opencode || id == HarnessId::Hermes {
-        // OpenCode and Hermes receive canonical identity and convert locally
-        // (Hermes ACP stages `_hermes/skills/select` before prompt delivery).
+    } else if id == HarnessId::Opencode {
+        // OpenCode receives canonical identity and converts it locally so a
+        // disappearing project command cannot become ordinary slash text.
         raw.into()
     } else {
         readable.into()

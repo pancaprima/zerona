@@ -8,41 +8,11 @@ use zeron_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
     UserInputQuestion,
 };
-use zeron_proto::skill::{HermesSkillLoadMeta, HERMES_SKILL_LOAD_SCHEMA_VERSION};
 
 use crate::{Harness, HarnessError, RunControls};
 
 pub struct MockHarness {
     pub script: Vec<AgentEvent>,
-}
-
-fn mock_env_enabled(var: &str) -> bool {
-    std::env::var(var)
-        .ok()
-        .is_some_and(|v| !v.is_empty() && v != "0")
-}
-
-fn mock_hermes_skill_load_meta() -> HermesSkillLoadMeta {
-    HermesSkillLoadMeta {
-        schema_version: HERMES_SKILL_LOAD_SCHEMA_VERSION,
-        event_id: "mock-skill-load".into(),
-        load_name: "config-safety".into(),
-        display_name: Some("Config safety".into()),
-        file_path: None,
-        terminal_identity: "primary".into(),
-        outcome: "success".into(),
-        setup_needed: false,
-        dedup: false,
-        content_returned: true,
-        source: "wire_loaded".into(),
-        resolver_epoch: "mock-epoch".into(),
-        profile_key: "mock-profile".into(),
-        acp_session_id: "mock-acp".into(),
-        tool_call_id: None,
-        turn_epoch: 0,
-        process_epoch: "mock-proc".into(),
-        child_session_key: None,
-    }
 }
 
 /// The scripted question set for the `ZERON_MOCK_QUESTION` variant (exercises
@@ -595,23 +565,6 @@ impl Harness for MockHarness {
             })
             .into_iter()
             .flatten();
-        // Dev/testing knob: `ZERON_MOCK_HERMES_SKILL=1` appends authoritative
-        // skill-load metadata — the only data-side way to put the skill-session
-        // panel on screen with the mock harness.
-        let mock_hermes_skill = mock_env_enabled("ZERON_MOCK_HERMES_SKILL");
-        let hermes_skill_events = mock_hermes_skill
-            .then(|| {
-                vec![
-                    AgentEvent::TextDelta {
-                        text: "\n### Hermes skill load check\n\n".into(),
-                    },
-                    AgentEvent::HermesSkillLoad {
-                        meta: mock_hermes_skill_load_meta(),
-                    },
-                ]
-            })
-            .into_iter()
-            .flatten();
         let events: Vec<Result<AgentEvent, HarnessError>> = body
             .iter()
             .cycle()
@@ -621,7 +574,6 @@ impl Harness for MockHarness {
             .chain(code_tool_events)
             .chain(subagent_events)
             .chain(todo_events)
-            .chain(hermes_skill_events)
             .chain(code_event)
             .chain(table_event)
             .chain(mend_event)
@@ -696,41 +648,5 @@ impl Harness for MockHarness {
                 event
             })
             .boxed())
-    }
-}
-
-#[cfg(test)]
-mod agent_event_audit {
-    use super::*;
-
-    /// Every optional mock literal must stay aligned with [`AgentEvent`].
-    fn touch(event: AgentEvent) {
-        match event {
-            AgentEvent::SessionStarted { .. }
-            | AgentEvent::TextDelta { .. }
-            | AgentEvent::GeneratedImage { .. }
-            | AgentEvent::ReasoningDelta { .. }
-            | AgentEvent::ToolCall { .. }
-            | AgentEvent::ToolResult { .. }
-            | AgentEvent::AssistantMessageCompleted { .. }
-            | AgentEvent::Usage { .. }
-            | AgentEvent::ContextUsage { .. }
-            | AgentEvent::AvailableCommands { .. }
-            | AgentEvent::Error { .. }
-            | AgentEvent::InputRequested { .. }
-            | AgentEvent::InputResolved { .. }
-            | AgentEvent::Steered { .. }
-            | AgentEvent::Done { .. }
-            | AgentEvent::UserMessage { .. }
-            | AgentEvent::Subagent { .. }
-            | AgentEvent::HermesSkillLoad { .. } => {}
-        }
-    }
-
-    #[test]
-    fn optional_mock_literals_cover_hermes_skill_load() {
-        touch(AgentEvent::HermesSkillLoad {
-            meta: mock_hermes_skill_load_meta(),
-        });
     }
 }

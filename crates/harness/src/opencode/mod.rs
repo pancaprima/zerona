@@ -1193,7 +1193,6 @@ fn merge_skill_commands(skills: &mut Vec<zeron_proto::invocation::Skill>, comman
             });
         } else {
             skills.push(zeron_proto::invocation::Skill {
-                catalog_source: None,
                 name: name.into(),
                 path: format!("opencode-skill:{name}"),
                 description: command["description"].as_str().unwrap_or_default().into(),

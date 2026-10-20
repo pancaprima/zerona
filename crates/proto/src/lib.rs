@@ -10,7 +10,6 @@ pub mod change_request_assessment;
 pub mod entities;
 pub mod file_mentions;
 pub mod invocation;
-pub mod skill;
 pub mod motion;
 pub mod preview;
 pub mod projectless;
@@ -21,7 +20,6 @@ pub mod workspace;
 
 pub use agent::*;
 pub use entities::*;
-pub use skill::*;
 pub use preview::*;
 pub use sidebar_pins::*;
 pub use workspace::*;

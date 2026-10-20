@@ -265,7 +265,6 @@ mod gate_tests {
             started_at: None,
             updated_at,
             running_subagents: running,
-            skill_loads_generation: 0,
         }
     }
 
