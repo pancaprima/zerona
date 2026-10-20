@@ -553,35 +553,45 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn fixture() -> (tempfile::TempDir, ChatMedia, zeron_proto::Chat) {
-        let dir = tempfile::tempdir().unwrap();
-        let registry = std::sync::Arc::new(crate::HarnessRegistry::new());
-        let core = crate::EngineCore::assemble_with_profile(
-            crate::EngineProfile::local(dir.path()).unwrap(),
-            registry,
-            zeron_proto::HarnessId::Codex,
-            None,
-        )
-        .unwrap();
-        let cwd = dir.path().to_string_lossy().into_owned();
-        core.workspace
-            .create_chat("chat-1", None, Some(&core.device_id), None, Some(cwd))
+    fn fixture() -> (
+        tokio::runtime::Runtime,
+        tempfile::TempDir,
+        ChatMedia,
+        zeron_proto::Chat,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (dir, media, chat) = {
+            let _guard = rt.enter();
+            let dir = tempfile::tempdir().unwrap();
+            let registry = std::sync::Arc::new(crate::HarnessRegistry::new());
+            let core = crate::EngineCore::assemble_with_profile(
+                crate::EngineProfile::local(dir.path()).unwrap(),
+                registry,
+                zeron_proto::HarnessId::Codex,
+                None,
+            )
             .unwrap();
-        let chat = core.workspace.chat("chat-1").unwrap().unwrap();
-        let media = ChatMedia::new(
-            core.device_id.clone(),
-            core.workspace.clone(),
-            core.uploads.clone(),
-            core.repos.clone(),
-            core.doc_host.clone(),
-            core.sessions.clone(),
-        );
-        (dir, media, chat)
+            let cwd = dir.path().to_string_lossy().into_owned();
+            core.workspace
+                .create_chat("chat-1", None, Some(&core.device_id), None, Some(cwd))
+                .unwrap();
+            let chat = core.workspace.chat("chat-1").unwrap().unwrap();
+            let media = ChatMedia::new(
+                core.device_id.clone(),
+                core.workspace.clone(),
+                core.uploads.clone(),
+                core.repos.clone(),
+                core.doc_host.clone(),
+                core.sessions.clone(),
+            );
+            (dir, media, chat)
+        };
+        (rt, dir, media, chat)
     }
 
     #[test]
     fn allowlist_hit_and_miss() {
-        let (dir, media, chat) = fixture();
+        let (_rt, dir, media, chat) = fixture();
         let allowed = dir.path().join("ok.png");
         std::fs::write(&allowed, b"\x89PNG\r\n\x1a\nx").unwrap();
         let canonical = std::fs::canonicalize(&allowed).unwrap();
@@ -592,7 +602,7 @@ mod tests {
 
     #[test]
     fn rejects_parent_dir_escape_in_relative_path() {
-        let (dir, media, _chat) = fixture();
+        let (_rt, dir, media, _chat) = fixture();
         let err = media
             .read_image(&ReadChatImageRequest {
                 chat_id: "chat-1".into(),
@@ -613,7 +623,7 @@ mod tests {
 
     #[test]
     fn symlink_escape_is_rejected() {
-        let (dir, media, chat) = fixture();
+        let (_rt, dir, media, chat) = fixture();
         let outside = tempfile::tempdir().unwrap();
         let secret = outside.path().join("secret.png");
         std::fs::write(&secret, b"\x89PNG\r\n\x1a\nx").unwrap();
@@ -628,7 +638,7 @@ mod tests {
 
     #[test]
     fn mentioned_path_exact_match_only() {
-        let (dir, media, chat) = fixture();
+        let (_rt, dir, media, chat) = fixture();
         let file = dir.path().join("mentioned.png");
         std::fs::write(&file, b"\x89PNG\r\n\x1a\nx").unwrap();
         let path = file.to_string_lossy().into_owned();
@@ -647,7 +657,7 @@ mod tests {
 
     #[test]
     fn fake_png_extension_without_raster_bytes_is_rejected() {
-        let (dir, media, _chat) = fixture();
+        let (_rt, dir, media, _chat) = fixture();
         let fake = dir.path().join("fake.png");
         std::fs::write(&fake, b"not an image").unwrap();
         assert!(media
@@ -661,7 +671,7 @@ mod tests {
 
     #[test]
     fn oversize_file_is_rejected() {
-        let (dir, media, _chat) = fixture();
+        let (_rt, dir, media, _chat) = fixture();
         let huge = dir.path().join("huge.png");
         let mut file = std::fs::File::create(&huge).unwrap();
         let header = b"\x89PNG\r\n\x1a\n";
@@ -678,7 +688,7 @@ mod tests {
 
     #[test]
     fn unc_paths_are_rejected() {
-        let (_dir, media, _chat) = fixture();
+        let (_rt, _dir, media, _chat) = fixture();
         for path in [r"\\host\share\a.png", "//host/share/a.png", r"C:file.png"] {
             assert!(media
                 .read_image(&ReadChatImageRequest {
