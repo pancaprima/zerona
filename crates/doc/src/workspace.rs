@@ -782,8 +782,6 @@ pub(crate) struct RawSession {
     updated_at: i64,
     #[serde(default)]
     running_subagents: u32,
-    #[serde(default)]
-    skill_loads_generation: u64,
 }
 
 impl From<RawSession> for Session {
@@ -796,7 +794,6 @@ impl From<RawSession> for Session {
             started_at: raw.started_at.map(dt),
             updated_at: dt(raw.updated_at),
             running_subagents: raw.running_subagents,
-            skill_loads_generation: raw.skill_loads_generation,
         }
     }
 }
@@ -905,7 +902,6 @@ mod tests {
             started_at: Some(ts(3_000)),
             updated_at: ts(3_500),
             running_subagents: 0,
-            skill_loads_generation: 0,
         }
     }
 

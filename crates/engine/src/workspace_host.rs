@@ -1947,7 +1947,6 @@ mod tests {
             started_at: None,
             updated_at: at,
             running_subagents: 0,
-            skill_loads_generation: 0,
         }
     }
 

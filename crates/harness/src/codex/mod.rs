@@ -587,7 +587,6 @@ fn parse_skills(result: &Value) -> Vec<zeron_proto::invocation::Skill> {
                     .get("enabled")
                     .and_then(Value::as_bool)
                     .unwrap_or(true),
-                catalog_source: None,
             })
         })
         .collect()
