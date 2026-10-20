@@ -19,6 +19,7 @@ pub mod appearance;
 pub mod appshots;
 mod asset_http;
 pub mod attachments;
+mod chat_images;
 pub mod badges;
 pub mod browser;
 pub mod change_requests;

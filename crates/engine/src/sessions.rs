@@ -327,6 +327,13 @@ impl SessionsEngine {
         let _ = self.inner.generated_images.set((uploads, allowed_root));
     }
 
+    pub(crate) fn generated_images_allowed_root(&self) -> Option<std::path::PathBuf> {
+        self.inner
+            .generated_images
+            .get()
+            .map(|(_, root)| root.clone())
+    }
+
     /// Wire the chat auto-titler (called once at engine assembly). After each
     /// completed exchange the run task fires it for still-untitled chats.
     pub fn set_titles(&self, titles: crate::titles::TitleGenerator) {

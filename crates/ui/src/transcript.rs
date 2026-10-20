@@ -3325,6 +3325,9 @@ pub struct Transcript {
     diagrams: Rc<RefCell<MermaidCache>>,
     /// The media handler over `diagrams`, built once and shared by every row.
     diagram_media: Option<render::MediaUi>,
+    /// Inline markdown images (owner paths + engine-fetched URLs).
+    markdown_images: Rc<RefCell<crate::chat_images::MarkdownImageCache>>,
+    markdown_image_loads: HashMap<crate::chat_images::MarkdownImageKey, gpui::Task<()>>,
     /// The single serialized diagram render loop, while requests remain.
     diagram_worker: Option<Task<()>>,
     /// Prepared diagram shown in the lightbox: its natural size frames the
@@ -3627,6 +3630,8 @@ impl Transcript {
             attachment_preview_return_focus: None,
             diagrams: Rc::default(),
             diagram_media: None,
+            markdown_images: Rc::default(),
+            markdown_image_loads: HashMap::new(),
             diagram_worker: None,
             diagram_zoom: None,
             tool_images: Default::default(),
@@ -4712,6 +4717,7 @@ impl Transcript {
                 self.own_turn_last_tick = None;
             }
             self.chat_id = selected;
+            self.diagram_media = None;
             self.rows.clear();
             self.tool_images.clear(cx);
             self.row_cache.clear();
@@ -5902,6 +5908,7 @@ impl Transcript {
         let loader = crate::tool_images::Loader {
             engine: self.state.read(cx).engine().cloned(),
             local_device: self.state.read(cx).local_device_id.clone(),
+            chat_id: self.chat_id.clone(),
         };
         tools
             .iter()
@@ -5934,6 +5941,7 @@ impl Transcript {
                     &crate::tool_images::Loader {
                         engine: None,
                         local_device: None,
+                        chat_id: None,
                     }
                 };
                 let thumbs = self
@@ -6426,8 +6434,48 @@ impl Transcript {
     fn diagram_media(&mut self, cx: &Context<Self>) -> render::MediaUi {
         let cache = self.diagrams.clone();
         let owner = cx.weak_entity();
+        let markdown_images = self.markdown_images.clone();
+        let chat_id = self.chat_id.clone();
         let media = self.diagram_media.get_or_insert_with(|| render::MediaUi {
-            image: None,
+            image: Some(Rc::new({
+                let owner = owner.clone();
+                let markdown_images = markdown_images.clone();
+                let chat_id = chat_id.clone();
+                move |image, id, theme| {
+                    let Some(chat_id) = chat_id.clone() else {
+                        return gpui::div()
+                            .text_color(theme.text_muted)
+                            .child(image.source.clone())
+                            .into_any_element();
+                    };
+                    let key = crate::chat_images::MarkdownImageKey {
+                        chat_id,
+                        source: image.source.clone(),
+                    };
+                    let snapshot = markdown_images.borrow().get(&key).cloned();
+                    let open = snapshot.as_ref().and_then(|state| match state {
+                        crate::chat_images::MarkdownImageState::Ready(media) => {
+                            Some(media.image.clone())
+                        }
+                        _ => None,
+                    });
+                    let open_owner = owner.clone();
+                    let open_key = key.clone();
+                    crate::chat_images::render_markdown_image(
+                        snapshot.as_deref(),
+                        &image.source,
+                        &image.alt,
+                        id,
+                        theme,
+                        open,
+                        move |window, cx| {
+                            let _ = open_owner.update(cx, |this, cx| {
+                                this.open_markdown_image_preview(&open_key, window, cx);
+                            });
+                        },
+                    )
+                }
+            })),
             diagram: Some(Rc::new(move |code, id, _theme| {
                 let lookup = cache.borrow_mut().request(code, &id);
                 match lookup {
@@ -6547,6 +6595,167 @@ impl Transcript {
         if self.own_turn.is_some() {
             self.own_turn_kick = true;
         }
+        cx.notify();
+    }
+
+    /// Start a bounded owner-device fetch for one markdown image source.
+    fn ensure_markdown_image_load(
+        &mut self,
+        key: crate::chat_images::MarkdownImageKey,
+        cx: &mut Context<Self>,
+    ) {
+        if self.markdown_image_loads.contains_key(&key) {
+            return;
+        }
+        if !self.markdown_images.borrow_mut().mark_loading(key.clone()) {
+            return;
+        }
+        let chat_id = key.chat_id.clone();
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.markdown_images.borrow_mut().store_failed(key);
+            return;
+        };
+        let (chat_device, local) = {
+            let state = self.state.read(cx);
+            let chat_device = state
+                .chats
+                .iter()
+                .find(|chat| chat.id == chat_id)
+                .map(|chat| chat.device_id.clone());
+            let local = state.local_device_id.clone();
+            (chat_device, local)
+        };
+        let target = chat_device
+            .as_deref()
+            .filter(|device| local.as_deref() != Some(device))
+            .map(str::to_string);
+        let source = key.source.clone();
+        let kind = crate::chat_images::classify_markdown_image_source(&source);
+        let cache = self.markdown_images.clone();
+        let task_key = key.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let executor = cx.background_executor();
+            let bytes = match kind {
+                crate::chat_images::ImageSourceKind::Url => {
+                    crate::attachments::fetch_chat_url_image_bytes(
+                        &engine,
+                        executor,
+                        target.as_deref(),
+                        &chat_id,
+                        &source,
+                    )
+                    .await
+                }
+                crate::chat_images::ImageSourceKind::Path => {
+                    crate::attachments::read_chat_image_bytes(
+                        &engine,
+                        executor,
+                        target.as_deref(),
+                        &chat_id,
+                        &source,
+                    )
+                    .await
+                }
+            };
+            let media = if let Some((_, mime, bytes)) = bytes {
+                executor
+                    .spawn(async move {
+                        crate::image_media::decode_generated_image(
+                            bytes,
+                            &mime,
+                            zeron_proto::MAX_CHAT_IMAGE_BYTES as usize,
+                        )
+                        .ok()
+                    })
+                    .await
+            } else {
+                None
+            };
+            this.update(cx, |this, cx| {
+                this.markdown_image_loads.remove(&task_key);
+                if let Some(media) = media {
+                    this.markdown_images
+                        .borrow_mut()
+                        .store_ready(task_key, media);
+                } else {
+                    this.markdown_images.borrow_mut().store_failed(task_key);
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        self.markdown_image_loads.insert(key, task);
+    }
+
+    /// Warm the markdown image cache for every inline image in a block tree.
+    fn prefetch_markdown_images(
+        &mut self,
+        block: &crate::markdown::Block,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::markdown::Block;
+        let Some(chat_id) = self.chat_id.clone() else {
+            return;
+        };
+        fn walk_runs(
+            this: &mut Self,
+            chat_id: &str,
+            runs: &[crate::markdown::InlineRun],
+            cx: &mut Context<Self>,
+        ) {
+            for run in runs {
+                if let Some(image) = &run.style.image {
+                    let key = crate::chat_images::MarkdownImageKey {
+                        chat_id: chat_id.to_string(),
+                        source: image.source.clone(),
+                    };
+                    this.ensure_markdown_image_load(key, cx);
+                }
+            }
+        }
+        match block {
+            Block::Paragraph { runs } | Block::Heading { runs, .. } => walk_runs(self, &chat_id, runs, cx),
+            Block::Table { header, rows, .. } => {
+                for cell in header {
+                    walk_runs(self, &chat_id, cell, cx);
+                }
+                for row in rows {
+                    for cell in row {
+                        walk_runs(self, &chat_id, cell, cx);
+                    }
+                }
+            }
+            Block::BlockQuote { children } => {
+                for child in children {
+                    self.prefetch_markdown_images(child, cx);
+                }
+            }
+            Block::List { items, .. } => items
+                .iter()
+                .flatten()
+                .for_each(|child| self.prefetch_markdown_images(child, cx)),
+            Block::CodeBlock { .. } | Block::Rule => {}
+        }
+    }
+
+    fn open_markdown_image_preview(
+        &mut self,
+        key: &crate::chat_images::MarkdownImageKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let image = self.markdown_images.borrow().get(key).and_then(|state| match state {
+            crate::chat_images::MarkdownImageState::Ready(media) => Some(media.image.clone()),
+            _ => None,
+        });
+        let Some(image) = image else {
+            return;
+        };
+        self.attachment_preview_return_focus = window.focused(cx);
+        let preview = crate::attachments::PreviewImage::new(key.source.clone(), image);
+        preview.viewer.reset();
+        self.attachment_preview = Some(preview);
+        window.focus(&self.attachment_preview_focus, cx);
         cx.notify();
     }
 
@@ -7293,6 +7502,7 @@ impl Transcript {
                     return gpui::Empty.into_any_element();
                 };
                 let code = self.code_uis_for(&row.id, &top.block, *block_ix, cx);
+                self.prefetch_markdown_images(&top.block, cx);
                 let opts = RenderOptions {
                     tasks: None,
                     media: Some(self.diagram_media(cx)),
@@ -7363,6 +7573,9 @@ impl Transcript {
                     .rows
                     .get(ix + 1)
                     .is_some_and(|next| next.entry_id == row.entry_id);
+                if settled {
+                    self.prefetch_markdown_images(&top.block, cx);
+                }
                 let opts = RenderOptions {
                     tasks: None,
                     media: settled.then(|| self.diagram_media(cx)),

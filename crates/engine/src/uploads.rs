@@ -143,6 +143,19 @@ impl Uploads {
         &self.inner.dir
     }
 
+    /// Uploads dir plus historical read-only roots (import compatibility).
+    pub(crate) fn read_roots(&self) -> Vec<PathBuf> {
+        let read_only = self
+            .inner
+            .read_only_roots
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        std::iter::once(self.inner.dir.clone())
+            .chain(read_only)
+            .collect()
+    }
+
     /// Accept `root` for reads from now on (idempotent). Profile import calls
     /// this so transcripts that embed absolute paths under the local profile's
     /// uploads root keep resolving after the switch to a synced profile.
@@ -413,7 +426,7 @@ struct InspectedFile {
 /// touching the filesystem. `None` for relative or drive-relative paths and
 /// for any Windows prefix but a drive letter (UNC, `\\.\` devices, verbatim
 /// non-disk). `C:` and `\\?\C:` agree; Windows compares case-insensitively.
-fn lexical_components(path: &Path) -> Option<Vec<std::ffi::OsString>> {
+pub(crate) fn lexical_components(path: &Path) -> Option<Vec<std::ffi::OsString>> {
     use std::path::{Component, Prefix};
     if !path.is_absolute() {
         return None;
@@ -509,7 +522,7 @@ fn sanitize(file_name: &str) -> String {
     }
 }
 
-fn mime_by_ext(path: &Path) -> Option<&'static str> {
+pub(crate) fn mime_by_ext(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
@@ -746,7 +759,7 @@ pub struct ImportedImage {
 
 const MAX_GENERATED_IMAGE_BYTES: u64 = 24 * 1024 * 1024;
 
-fn raster_signature(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
+pub(crate) fn raster_signature(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some(("png", "image/png"))
     } else if bytes.starts_with(b"\xff\xd8\xff") {

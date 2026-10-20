@@ -443,7 +443,10 @@ pub fn stage_png_bytes(name: String, bytes: Vec<u8>) -> StagedAttachment {
 // Upload (state.ts uploadAttachment) + read-back (state.ts readAttachmentImage)
 // ---------------------------------------------------------------------------
 
-fn with_target(mut params: serde_json::Value, target_device_id: Option<&str>) -> serde_json::Value {
+pub(crate) fn with_target(
+    mut params: serde_json::Value,
+    target_device_id: Option<&str>,
+) -> serde_json::Value {
     if let (Some(target), Some(map)) = (target_device_id, params.as_object_mut()) {
         map.insert("targetDeviceId".into(), target.into());
     }
@@ -686,6 +689,123 @@ pub(crate) async fn read_attachment_bytes(
         .spawn(async move { BASE64.decode(b64.as_bytes()).ok() })
         .await?;
     Some((name, mime, bytes))
+}
+
+async fn read_chat_image_rpc(
+    engine: &EngineHandle,
+    executor: &BackgroundExecutor,
+    target_device_id: Option<&str>,
+    method: &'static str,
+    build_params: impl Fn(u64) -> serde_json::Value,
+) -> Option<(String, String, Vec<u8>)> {
+    let mut name = String::new();
+    let mut mime = String::new();
+    let mut b64 = String::new();
+    let mut offset = 0u64;
+    let mut done = false;
+    for _ in 0..MAX_READ_CHUNKS {
+        let params = with_target(build_params(offset), target_device_id);
+        let chunk = call_with_timeout(engine, executor, method, params, READ_CHUNK_TIMEOUT)
+            .await
+            .ok()?;
+        name = chunk.get("name")?.as_str()?.to_string();
+        mime = chunk.get("mimeType")?.as_str()?.to_string();
+        let data = chunk.get("data")?.as_str()?;
+        if b64.len().saturating_add(data.len()) > (zeron_proto::MAX_CHAT_IMAGE_BYTES as usize).div_ceil(3) * 4 {
+            return None;
+        }
+        b64.push_str(data);
+        done = chunk.get("done")?.as_bool()?;
+        if done {
+            break;
+        }
+        let next = chunk.get("nextOffset")?.as_u64()?;
+        if next <= offset {
+            return None;
+        }
+        offset = next;
+    }
+    if !done {
+        return None;
+    }
+    let bytes = executor
+        .spawn(async move { BASE64.decode(b64.as_bytes()).ok() })
+        .await?;
+    Some((name, mime, bytes))
+}
+
+pub(crate) async fn read_chat_image_bytes(
+    engine: &EngineHandle,
+    executor: &BackgroundExecutor,
+    target_device_id: Option<&str>,
+    chat_id: &str,
+    path: &str,
+) -> Option<(String, String, Vec<u8>)> {
+    let chat_id = chat_id.to_string();
+    let path = path.to_string();
+    read_chat_image_rpc(
+        engine,
+        executor,
+        target_device_id,
+        methods::READ_CHAT_IMAGE,
+        move |offset| {
+            serde_json::json!({
+                "chatId": chat_id,
+                "path": path,
+                "offset": offset,
+            })
+        },
+    )
+    .await
+}
+
+pub(crate) async fn fetch_chat_url_image_bytes(
+    engine: &EngineHandle,
+    executor: &BackgroundExecutor,
+    target_device_id: Option<&str>,
+    chat_id: &str,
+    url: &str,
+) -> Option<(String, String, Vec<u8>)> {
+    let chat_id = chat_id.to_string();
+    let url = url.to_string();
+    read_chat_image_rpc(
+        engine,
+        executor,
+        target_device_id,
+        methods::FETCH_CHAT_URL_IMAGE,
+        move |offset| {
+            serde_json::json!({
+                "chatId": chat_id,
+                "url": url,
+                "offset": offset,
+            })
+        },
+    )
+    .await
+}
+
+/// Attachment jail miss: fall back to chat-scoped owner reads when a chat id is known.
+pub(crate) async fn read_attachment_bytes_with_chat_fallback(
+    engine: &EngineHandle,
+    executor: &BackgroundExecutor,
+    target_device_id: Option<&str>,
+    chat_id: Option<&str>,
+    path: &str,
+    expected_raster_mime: Option<&str>,
+) -> Option<(String, String, Vec<u8>)> {
+    if let Some(bytes) = read_attachment_bytes(
+        engine,
+        executor,
+        target_device_id,
+        path,
+        expected_raster_mime,
+    )
+    .await
+    {
+        return Some(bytes);
+    }
+    let chat_id = chat_id?;
+    read_chat_image_bytes(engine, executor, target_device_id, chat_id, path).await
 }
 
 /// Read back a staged file of any type (a queued message restored for editing).

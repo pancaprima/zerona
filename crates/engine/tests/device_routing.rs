@@ -775,6 +775,56 @@ async fn target_device_id_routes_over_the_relay() {
             .is_err()
     );
 
+    core_b
+        .workspace
+        .create_chat("chat-img", None, Some("device-b"), None, None)
+        .expect("chat row on B");
+    let tmp_image = std::env::temp_dir().join(format!(
+        "zeron-chat-routing-{}.png",
+        std::process::id()
+    ));
+    std::fs::write(&tmp_image, b"\x89PNG\r\n\x1a\nrelay-chat-image").unwrap();
+    let local_chat_image = local_b
+        .call(
+            methods::READ_CHAT_IMAGE,
+            serde_json::json!({
+                "chatId": "chat-img",
+                "path": tmp_image,
+                "offset": 0,
+            }),
+        )
+        .await
+        .expect("local ReadChatImage");
+    let remote_chat_image = client
+        .call(
+            methods::READ_CHAT_IMAGE,
+            serde_json::json!({
+                "chatId": "chat-img",
+                "path": tmp_image,
+                "offset": 0,
+                "targetDeviceId": "device-b",
+            }),
+        )
+        .await
+        .expect("forwarded ReadChatImage");
+    assert_eq!(remote_chat_image, local_chat_image);
+    assert_eq!(remote_chat_image["mimeType"], "image/png");
+    assert!(
+        client
+            .call(
+                methods::READ_CHAT_IMAGE,
+                serde_json::json!({
+                    "chatId": "chat-img",
+                    "path": "/etc/hosts",
+                    "offset": 0,
+                    "targetDeviceId": "device-b",
+                })
+            )
+            .await
+            .is_err()
+    );
+    let _ = std::fs::remove_file(tmp_image);
+
     // The add-space picker's exact call: browse a folder ON B from A's IPC
     // surface (ListFolders + targetDeviceId, relay-forwarded).
     let browse_dir = dirs.path().join("b-folders");
