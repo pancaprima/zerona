@@ -6631,7 +6631,6 @@ impl Transcript {
             .map(str::to_string);
         let source = key.source.clone();
         let kind = crate::chat_images::classify_markdown_image_source(&source);
-        let cache = self.markdown_images.clone();
         let task_key = key.clone();
         let task = cx.spawn(async move |this, cx| {
             let executor = cx.background_executor();

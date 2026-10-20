@@ -80,8 +80,7 @@ impl ChatMedia {
         &self,
         request: &FetchChatUrlImageRequest,
     ) -> Result<ChatImageChunk, EngineError> {
-        let chat = self.require_owner_chat(&request.chat_id)?;
-        let _ = chat;
+        self.require_owner_chat(&request.chat_id)?;
         let parsed = reqwest::Url::parse(&request.url).map_err(|_| denied())?;
         if parsed.username() != "" || parsed.password().is_some() {
             return Err(denied());
@@ -317,7 +316,7 @@ fn mentioned_canonical_paths(
 ) -> Result<HashSet<PathBuf>, EngineError> {
     let cwd = resolve_chat_cwd(chat, &media.repos)?;
     let handle = media.doc_host.open(chat_id)?;
-    let entries = handle.doc.read_entries()?;
+    let entries = handle.doc().read_entries()?;
     let mut mentioned = HashSet::new();
     let mut parts_seen = 0usize;
     for entry in entries.iter().rev().take(TAIL_MESSAGE_COUNT) {
