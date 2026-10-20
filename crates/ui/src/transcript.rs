@@ -6462,7 +6462,7 @@ impl Transcript {
                     let open_owner = owner.clone();
                     let open_key = key.clone();
                     crate::chat_images::render_markdown_image(
-                        snapshot.as_deref(),
+                        snapshot.as_ref(),
                         &image.source,
                         &image.alt,
                         id,
@@ -6697,10 +6697,10 @@ impl Transcript {
             return;
         };
         fn walk_runs(
-            this: &mut Self,
+            this: &mut Transcript,
             chat_id: &str,
             runs: &[crate::markdown::InlineRun],
-            cx: &mut Context<Self>,
+            cx: &mut Context<Transcript>,
         ) {
             for run in runs {
                 if let Some(image) = &run.style.image {

@@ -3,7 +3,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use gpui::{AnyElement, SharedString};
+use gpui::{
+    AnyElement, InteractiveElement as _, IntoElement as _, ParentElement as _, SharedString,
+    Styled, prelude::*,
+};
 
 use crate::image_media::MediaImage;
 use crate::theme::Theme;
@@ -110,8 +113,7 @@ pub(crate) fn render_markdown_image(
             media,
             format!("{id}-image").into(),
             move |window, cx| on_open(window, cx),
-        )
-        .into_any_element(),
+        ),
         Some(MarkdownImageState::Failed) | None => {
             let external = classify_markdown_image_source(source) == ImageSourceKind::Url;
             gpui::div()
