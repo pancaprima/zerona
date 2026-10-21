@@ -24,9 +24,14 @@ HOST_LIB="$ROOT/target/mobile/libzeron_mobile.$([[ "$(uname)" == Darwin ]] && ec
 echo "kotlin bindings: $OUT/kotlin"
 
 if command -v cargo-ndk >/dev/null && [[ -n "${ANDROID_NDK_HOME:-}" ]]; then
-  cargo ndk -t arm64-v8a -t x86_64 -o "$OUT/jniLibs" \
+  ANDROID_ABIS="${ANDROID_ABIS:-arm64-v8a x86_64}"
+  ndk_targets=()
+  for abi in $ANDROID_ABIS; do
+    ndk_targets+=(-t "$abi")
+  done
+  cargo ndk "${ndk_targets[@]}" -o "$OUT/jniLibs" \
     build --locked -p zeron-mobile --lib --profile mobile
-  echo "jniLibs: $OUT/jniLibs"
+  echo "jniLibs: $OUT/jniLibs (ABIs: $ANDROID_ABIS)"
 else
   if [[ "${REQUIRE_SO:-}" == "1" ]]; then
     echo "error: cargo-ndk / ANDROID_NDK_HOME required but missing (REQUIRE_SO=1)" >&2
