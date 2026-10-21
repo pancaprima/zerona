@@ -111,7 +111,7 @@ class AppModel(
         val demoOptions =
             DemoOptions(
                 fixture = DemoFixture.STANDARD,
-                transcriptScale = TranscriptScale.NORMAL,
+                transcriptScale = TranscriptScale.Normal,
                 streamSpeed = StreamSpeed.REALISTIC,
                 longReply = false,
             )

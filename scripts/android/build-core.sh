@@ -21,6 +21,7 @@ cargo build --locked -p zeron-mobile --bin uniffi-bindgen --features bindgen --p
 HOST_LIB="$ROOT/target/mobile/libzeron_mobile.$([[ "$(uname)" == Darwin ]] && echo dylib || echo so)"
 "$ROOT/target/mobile/uniffi-bindgen" generate --library "$HOST_LIB" --language kotlin \
   --no-format --out-dir "$OUT/kotlin"
+python3 "$ROOT/scripts/android/patch-kotlin-bindings.py" "$OUT/kotlin"
 echo "kotlin bindings: $OUT/kotlin"
 
 if command -v cargo-ndk >/dev/null && [[ -n "${ANDROID_NDK_HOME:-}" ]]; then

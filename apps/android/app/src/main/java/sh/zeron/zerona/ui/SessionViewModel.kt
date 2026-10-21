@@ -106,6 +106,7 @@ class SessionViewModel(
 
     override fun onCleared() {
         handle?.setViewAttached(false)
+        transcriptView?.closeView()
         transcriptView?.close()
         handle = null
         transcriptView = null
