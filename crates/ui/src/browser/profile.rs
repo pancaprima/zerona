@@ -1,244 +1,166 @@
-//! Opaque browser-profile storage keyed by the workspace locator.
+//! Stable device-local browser storage, independent of chats and repositories.
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use zeron_proto::{AuthState, WorkspaceScope};
 
-const LOCATOR_LEN: usize = 16;
-
-fn validate_locator(locator: &str) -> Result<(), String> {
-    if locator.len() != LOCATOR_LEN
-        || !locator
-            .chars()
-            .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f' | 'A'..='F'))
-    {
-        return Err("Workspace locator must be 16 hexadecimal characters".into());
-    }
-    Ok(())
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct BrowserProfile {
+    pub root: PathBuf,
 }
 
-/// Stable on-disk browser partition for one Zeron workspace identity.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BrowserProfileStorage {
-    /// Workspace locator (16 hex chars); never contains raw credentials.
-    pub locator: String,
-    root: PathBuf,
-}
-
-impl BrowserProfileStorage {
-    pub fn from_locator(data_dir: &Path, locator: &str) -> Result<Self, String> {
-        validate_locator(locator)?;
-        Ok(Self {
-            locator: locator.to_owned(),
-            root: data_dir.join("browser").join(locator),
-        })
-    }
-
-    pub fn storage_root(&self) -> &Path {
-        &self.root
-    }
-
-    pub fn webkit_data_dir(&self) -> PathBuf {
-        self.root.join("webkit-data")
-    }
-
-    pub fn webkit_cache_dir(&self) -> PathBuf {
-        self.root.join("webkit-cache")
-    }
-
-    pub fn webview2_dir(&self) -> PathBuf {
-        self.root.join("webview2")
-    }
-
-    pub fn windows_profile_name(&self) -> String {
-        format!("zeron-{}", self.locator)
-    }
-
-    /// Deterministic store id for WKWebsiteDataStore / WebView2 isolation.
-    pub fn store_uuid(&self) -> uuid::Uuid {
-        use sha2::{Digest, Sha256};
-        let digest = Sha256::digest(format!("zeron-browser-store\0{}", self.locator).as_bytes());
-        let mut bytes = [0u8; 16];
-        bytes.copy_from_slice(&digest[..16]);
-        bytes[6] = (bytes[6] & 0x0f) | 0x40;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        uuid::Uuid::from_bytes(bytes)
-    }
-
-    pub fn ensure_directories(&self) -> std::io::Result<()> {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::create_dir_all(self.storage_root())?;
-        #[cfg(unix)]
-        std::fs::set_permissions(self.storage_root(), std::fs::Permissions::from_mode(0o700))?;
-        for dir in [
-            self.webkit_data_dir(),
-            self.webkit_cache_dir(),
-            self.webview2_dir(),
-        ] {
-            std::fs::create_dir_all(&dir)?;
-            #[cfg(unix)]
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BrowserProfileMode {
-    /// No workspace identity yet — native stores stay ephemeral.
-    Deferred,
-    Persistent(BrowserProfileStorage),
-}
-
-impl Default for BrowserProfileMode {
-    fn default() -> Self {
-        Self::Deferred
-    }
-}
-
-impl BrowserProfileMode {
-    pub fn persistent(data_dir: &Path, locator: &str) -> Result<Self, String> {
-        Ok(Self::Persistent(BrowserProfileStorage::from_locator(
-            data_dir, locator,
-        )?))
-    }
-
-    pub fn is_persistent(&self) -> bool {
-        matches!(self, Self::Persistent(_))
-    }
-
-    pub fn storage(&self) -> Option<&BrowserProfileStorage> {
-        match self {
-            Self::Deferred => None,
-            Self::Persistent(storage) => Some(storage),
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) mod test_dirs {
-    use super::*;
-    use std::path::Path;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-
-    pub struct UniqueTestDir {
-        path: PathBuf,
-    }
-
-    impl UniqueTestDir {
-        pub fn path(&self) -> &Path {
-            &self.path
-        }
-
-        pub fn new(label: &str) -> std::io::Result<Self> {
-            let label: String = label
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-                .collect();
-            loop {
-                let path = std::env::temp_dir().join(format!(
-                    "zeron-browser-profile-{label}-{}-{}",
-                    std::process::id(),
-                    NEXT.fetch_add(1, Ordering::Relaxed)
-                ));
-                match std::fs::create_dir(&path) {
-                    Ok(()) => return Ok(Self { path }),
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                    Err(error) => return Err(error),
-                }
+impl BrowserProfile {
+    pub fn for_workspace(
+        data_dir: &Path,
+        scope: Option<WorkspaceScope>,
+        auth: Option<&AuthState>,
+        local_device_id: Option<&str>,
+    ) -> Option<Self> {
+        let scope = scope?;
+        let scope_key = match scope {
+            WorkspaceScope::Local => "local",
+            WorkspaceScope::Synced => "synced",
+            WorkspaceScope::Development => "development",
+        };
+        match scope {
+            WorkspaceScope::Local => Some(Self::new(data_dir, &[scope_key, local_device_id?])),
+            WorkspaceScope::Synced | WorkspaceScope::Development => {
+                let AuthState::SignedIn { user, org_id } = auth? else {
+                    return None;
+                };
+                Some(Self::new(
+                    data_dir,
+                    &[scope_key, &user.id, org_id.as_deref().unwrap_or("")],
+                ))
             }
         }
     }
 
-    impl Drop for UniqueTestDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.path);
+    fn new(data_dir: &Path, identity: &[&str]) -> Self {
+        let mut hash = Sha256::new();
+        hash.update(b"zeron-browser-profile-v1");
+        for part in identity {
+            hash.update((part.len() as u64).to_le_bytes());
+            hash.update(part.as_bytes());
+        }
+        // Resolve aliases so windows using the same installation share a store.
+        let data_dir = data_dir.canonicalize().unwrap_or_else(|_| {
+            std::path::absolute(data_dir).unwrap_or_else(|_| data_dir.to_path_buf())
+        });
+        Self {
+            root: data_dir
+                .join("browser")
+                .join(format!("{:x}", hash.finalize())),
         }
     }
 
-    #[test]
-    fn unique_test_dir_removed_on_drop() {
-        let dir = UniqueTestDir::new("raii-drop").unwrap();
-        let path = dir.path().to_path_buf();
-        assert!(path.is_dir());
-        drop(dir);
-        assert!(!path.exists());
-    }
-
-    #[test]
-    fn unique_test_dir_path_borrow_does_not_consume_guard() {
-        let dir = UniqueTestDir::new("raii-borrow").unwrap();
-        let borrowed = dir.path();
-        assert!(borrowed.is_dir());
-        assert!(dir.path().exists());
+    #[cfg(any(target_os = "macos", test))]
+    pub fn data_store_identifier(&self) -> [u8; 16] {
+        // Include the installation directory: fixtures and alternative data roots
+        // must never open a real user's WKWebsiteDataStore.
+        let mut hash = Sha256::new();
+        hash.update(b"zeron-wkwebsite-data-store-v1");
+        hash.update(self.root.as_os_str().as_encoded_bytes());
+        let mut id: [u8; 16] = hash.finalize()[..16].try_into().unwrap();
+        id[6] = (id[6] & 0x0f) | 0x80; // UUID v8, application-defined hash.
+        id[8] = (id[8] & 0x3f) | 0x80;
+        id
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use test_dirs::UniqueTestDir;
-    use zeron_proto::{AuthState, WorkspaceScope};
 
     #[test]
-    fn rejects_invalid_locators() {
-        let dir = UniqueTestDir::new("reject-locators").unwrap();
-        let root = dir.path();
-        assert!(BrowserProfileStorage::from_locator(root, "short").is_err());
-        assert!(BrowserProfileStorage::from_locator(root, "gggggggggggggggg").is_err());
-        assert!(BrowserProfileStorage::from_locator(root, "../../../etc/passwd").is_err());
+    fn identity_is_stable_and_scoped_to_account_organization_and_installation() {
+        let root = tempfile::tempdir().unwrap();
+        let make = |parts: &[&str]| BrowserProfile::new(root.path(), parts);
+        let a = make(&["synced", "user-a", "org-a"]);
+        assert_eq!(a, make(&["synced", "user-a", "org-a"]));
+        for parts in [
+            ["synced", "user-b", "org-a"],
+            ["synced", "user-a", "org-b"],
+            ["development", "user-a", "org-a"],
+        ] {
+            let b = make(&parts);
+            assert_ne!(a.root, b.root);
+            assert_ne!(a.data_store_identifier(), b.data_store_identifier());
+        }
+        let other = tempfile::tempdir().unwrap();
+        let b = BrowserProfile::new(other.path(), &["synced", "user-a", "org-a"]);
+        assert_ne!(a.data_store_identifier(), b.data_store_identifier());
+        assert_ne!(make(&["ab", "c"]), make(&["a", "bc"]));
+        assert!(
+            make(&["../../outside"])
+                .root
+                .starts_with(root.path().canonicalize().unwrap().join("browser"))
+        );
     }
 
     #[test]
-    fn storage_paths_are_opaque_and_locator_scoped() {
-        let dir = UniqueTestDir::new("opaque-paths").unwrap();
-        let root = dir.path();
-        let a = BrowserProfileStorage::from_locator(root, "abc123def4567890").unwrap();
-        let b = BrowserProfileStorage::from_locator(root, "fedcba0987654321").unwrap();
-        assert!(a.storage_root().starts_with(root));
-        assert!(a.storage_root().ends_with("abc123def4567890"));
-        assert_ne!(a.storage_root(), b.storage_root());
-        assert!(!a.storage_root().to_string_lossy().contains("user:"));
-        assert!(!a.storage_root().to_string_lossy().contains("device:"));
-    }
-
-    #[test]
-    fn distinct_workspace_locators_get_distinct_store_ids() {
-        let dir = UniqueTestDir::new("distinct-stores").unwrap();
-        let root = dir.path();
-        let scope = Some(WorkspaceScope::Synced);
-        let auth_a = AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
-                id: "user-a".into(),
-                email: "a@example.com".into(),
-                name: None,
-            },
-            org_id: None,
+    fn authenticated_profiles_follow_user_and_organization_not_device() {
+        let root = tempfile::tempdir().unwrap();
+        let make = |user: &str, org: Option<&str>, device: &str, scope| {
+            let auth = AuthState::SignedIn {
+                user: zeron_proto::UserProfile {
+                    id: user.into(),
+                    email: "fixture@example.test".into(),
+                    name: None,
+                },
+                org_id: org.map(str::to_owned),
+            };
+            BrowserProfile::for_workspace(root.path(), Some(scope), Some(&auth), Some(device))
+                .unwrap()
         };
-        let auth_b = AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
-                id: "user-b".into(),
-                email: "b@example.com".into(),
-                name: None,
-            },
-            org_id: None,
-        };
-        let loc_a = crate::links::workspace_locator(scope, Some(&auth_a), Some("device")).unwrap();
-        let loc_b = crate::links::workspace_locator(scope, Some(&auth_b), Some("device")).unwrap();
-        let store_a = BrowserProfileStorage::from_locator(root, &loc_a)
-            .unwrap()
-            .store_uuid();
-        let store_b = BrowserProfileStorage::from_locator(root, &loc_b)
-            .unwrap()
-            .store_uuid();
-        assert_ne!(loc_a, loc_b);
-        assert_ne!(store_a, store_b);
+        let a = make("alice", Some("one"), "device-a", WorkspaceScope::Synced);
+        assert_eq!(
+            a,
+            make("alice", Some("one"), "device-b", WorkspaceScope::Synced)
+        );
+        assert_ne!(
+            a,
+            make("bob", Some("one"), "device-a", WorkspaceScope::Synced)
+        );
+        assert_ne!(
+            a,
+            make("alice", Some("two"), "device-a", WorkspaceScope::Synced)
+        );
+        assert_ne!(a, make("alice", None, "device-a", WorkspaceScope::Synced));
+        assert_ne!(
+            a,
+            make(
+                "alice",
+                Some("one"),
+                "device-a",
+                WorkspaceScope::Development
+            )
+        );
+        assert!(
+            BrowserProfile::for_workspace(
+                root.path(),
+                Some(WorkspaceScope::Synced),
+                Some(&AuthState::SignedOut),
+                Some("device-a")
+            )
+            .is_none()
+        );
     }
 
     #[test]
-    fn store_uuid_is_stable_for_one_locator() {
-        let dir = UniqueTestDir::new("stable-uuid").unwrap();
-        let storage = BrowserProfileStorage::from_locator(dir.path(), "0123456789abcdef").unwrap();
-        assert_eq!(storage.store_uuid(), storage.store_uuid());
+    fn unresolved_identity_does_not_select_a_shared_persistent_profile() {
+        let root = Path::new("/unused");
+        assert!(BrowserProfile::for_workspace(root, None, None, None).is_none());
+        assert!(
+            BrowserProfile::for_workspace(root, Some(WorkspaceScope::Local), None, None).is_none()
+        );
+        assert!(
+            BrowserProfile::for_workspace(root, Some(WorkspaceScope::Synced), None, Some("device"))
+                .is_none()
+        );
+        let local = |device| {
+            BrowserProfile::for_workspace(root, Some(WorkspaceScope::Local), None, Some(device))
+        };
+        assert_eq!(local("one"), local("one"));
+        assert_ne!(local("one"), local("two"));
     }
 }
