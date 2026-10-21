@@ -32,6 +32,71 @@ if command -v cargo-ndk >/dev/null && [[ -n "${ANDROID_NDK_HOME:-}" ]]; then
   done
   cargo ndk "${ndk_targets[@]}" -o "$OUT/jniLibs" \
     build --locked -p zeron-mobile --lib --profile mobile
+
+  abi_to_triple() {
+    case "$1" in
+      arm64-v8a) echo aarch64-linux-android ;;
+      x86_64) echo x86_64-linux-android ;;
+      armeabi-v7a) echo arm-linux-androideabi ;;
+      x86) echo i686-linux-android ;;
+      *)
+        echo "error: unknown Android ABI: $1" >&2
+        return 1
+        ;;
+    esac
+  }
+
+  find_libcxx_shared() {
+    local triple="$1"
+    local matches=()
+    while IFS= read -r -d '' path; do
+      matches+=("$path")
+    done < <(find "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt" -path "*/sysroot/usr/lib/$triple/libc++_shared.so" -type f -print0 2>/dev/null)
+    if (( ${#matches[@]} == 0 )); then
+      echo "error: libc++_shared.so not found for triple $triple under $ANDROID_NDK_HOME/toolchains/llvm/prebuilt" >&2
+      exit 1
+    fi
+    if (( ${#matches[@]} > 1 )); then
+      echo "error: multiple libc++_shared.so for triple $triple:" >&2
+      printf '  %s\n' "${matches[@]}" >&2
+      exit 1
+    fi
+    echo "${matches[0]}"
+  }
+
+  readelf_cmd() {
+    if command -v llvm-readelf >/dev/null 2>&1; then
+      echo llvm-readelf
+    elif command -v readelf >/dev/null 2>&1; then
+      echo readelf
+    fi
+  }
+
+  for abi in $ANDROID_ABIS; do
+    triple="$(abi_to_triple "$abi")"
+    src="$(find_libcxx_shared "$triple")"
+    dest_dir="$OUT/jniLibs/$abi"
+    mkdir -p "$dest_dir"
+    cp -p "$src" "$dest_dir/libc++_shared.so"
+    echo "copied libc++_shared.so ($triple) -> $dest_dir/libc++_shared.so"
+
+    mobile_so="$dest_dir/libzeron_mobile.so"
+    if [[ ! -f "$mobile_so" ]]; then
+      echo "error: expected $mobile_so after cargo-ndk build" >&2
+      exit 1
+    fi
+
+    re="$(readelf_cmd || true)"
+    if [[ -n "$re" ]]; then
+      if "$re" -d "$mobile_so" 2>/dev/null | grep -q 'Shared library: \[libc++_shared\.so\]'; then
+        if [[ ! -f "$dest_dir/libc++_shared.so" ]]; then
+          echo "error: $mobile_so needs libc++_shared.so but $dest_dir/libc++_shared.so is missing" >&2
+          exit 1
+        fi
+      fi
+    fi
+  done
+
   echo "jniLibs: $OUT/jniLibs (ABIs: $ANDROID_ABIS)"
 else
   if [[ "${REQUIRE_SO:-}" == "1" ]]; then

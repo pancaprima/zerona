@@ -66,7 +66,9 @@ jobs:
           out="$GITHUB_WORKSPACE/target/android-core"
           arm="$out/jniLibs/arm64-v8a/libzeron_mobile.so"
           x86="$out/jniLibs/x86_64/libzeron_mobile.so"
-          for lib in "$arm" "$x86"; do
+          arm_cxx="$out/jniLibs/arm64-v8a/libc++_shared.so"
+          x86_cxx="$out/jniLibs/x86_64/libc++_shared.so"
+          for lib in "$arm" "$x86" "$arm_cxx" "$x86_cxx"; do
             if [[ ! -f "$lib" ]]; then
               echo "missing $lib" >&2
               exit 1
