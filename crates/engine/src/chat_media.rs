@@ -35,6 +35,7 @@ pub struct ChatMedia {
     sessions: SessionsEngine,
     url_cache_root: PathBuf,
     allow_http: bool,
+    temp_root: PathBuf,
 }
 
 impl ChatMedia {
@@ -62,7 +63,14 @@ impl ChatMedia {
             sessions,
             url_cache_root,
             allow_http,
+            temp_root: std::env::temp_dir(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_temp_root(mut self, root: PathBuf) -> Self {
+        self.temp_root = root;
+        self
     }
 
     pub fn read_image(&self, request: &ReadChatImageRequest) -> Result<ChatImageChunk, EngineError> {
@@ -135,7 +143,7 @@ impl ChatMedia {
 
     fn directory_roots(&self, chat: &zeron_proto::Chat) -> Result<Vec<PathBuf>, EngineError> {
         let mut roots = self.uploads.read_roots();
-        roots.push(std::env::temp_dir());
+        roots.push(self.temp_root.clone());
         if let Some(root) = self.sessions.generated_images_allowed_root() {
             roots.push(root);
         }
@@ -583,7 +591,8 @@ mod tests {
                 core.repos.clone(),
                 core.doc_host.clone(),
                 core.sessions.clone(),
-            );
+            )
+            .with_temp_root(dir.path().join("__no_temp_root"));
             (dir, media, chat)
         };
         (rt, dir, media, chat)
@@ -597,7 +606,10 @@ mod tests {
         std::fs::write(&allowed, b"\x89PNG\r\n\x1a\nx").unwrap();
         let canonical = std::fs::canonicalize(&allowed).unwrap();
         assert!(media.path_allowed("chat-1", &chat, &canonical).unwrap());
-        let outside = std::fs::canonicalize("/etc/hosts").unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside_file = outside_dir.path().join("denied.png");
+        std::fs::write(&outside_file, b"\x89PNG\r\n\x1a\nx").unwrap();
+        let outside = std::fs::canonicalize(&outside_file).unwrap();
         assert!(!media.path_allowed("chat-1", &chat, &outside).unwrap());
     }
 
@@ -641,9 +653,10 @@ mod tests {
 
     #[test]
     fn mentioned_path_exact_match_only() {
-        let (rt, dir, media, chat) = fixture();
+        let (rt, _dir, media, chat) = fixture();
         let _enter = rt.enter();
-        let file = dir.path().join("mentioned.png");
+        let outside = tempfile::tempdir().unwrap();
+        let file = outside.path().join("mentioned.png");
         std::fs::write(&file, b"\x89PNG\r\n\x1a\nx").unwrap();
         let path = file.to_string_lossy().into_owned();
         let handle = media.doc_host.open("chat-1").unwrap();
@@ -652,7 +665,7 @@ mod tests {
             .unwrap();
         let canonical = std::fs::canonicalize(&file).unwrap();
         assert!(media.path_allowed("chat-1", &chat, &canonical).unwrap());
-        let sibling = dir.path().join("other.png");
+        let sibling = outside.path().join("other.png");
         std::fs::write(&sibling, b"\x89PNG\r\n\x1a\nx").unwrap();
         assert!(!media
             .path_allowed("chat-1", &chat, &std::fs::canonicalize(&sibling).unwrap())
