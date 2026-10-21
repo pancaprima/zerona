@@ -1902,7 +1902,7 @@ pub fn parse_for_row(
     let text = crate::chat_images::expand_media_tokens_for_markdown(text);
     if streaming {
         let parser = live_parsers.entry(key.to_string()).or_default();
-        parser.set_text(text);
+        parser.set_text(&text);
         (
             // Display tree: hanging inline markers mended so closers arriving
             // later never reflow painted text (markdown/mend.rs). Completed
@@ -1926,7 +1926,7 @@ pub fn parse_for_row(
             Some(parser) if parser.source() == text => {
                 (Arc::new(parser.tree().clone()), ParseOutcome::Handoff)
             }
-            _ => (Arc::new(parse_full(text)), ParseOutcome::Full),
+            _ => (Arc::new(parse_full(&text)), ParseOutcome::Full),
         };
         tree_cache.insert(key.to_string(), (text.len(), tree.clone()));
         (tree, outcome)
