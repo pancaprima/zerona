@@ -7,7 +7,8 @@
 # Kotlin generation needs only the host toolchain. The .so build needs the
 # Android NDK + cargo-ndk (`cargo install cargo-ndk`,
 # `rustup target add aarch64-linux-android x86_64-linux-android`); it is
-# skipped with a note when they are missing. (Not yet exercised in CI.)
+# skipped with a note when they are missing. CI runs this script in
+# .github/workflows/android-core.yml (with REQUIRE_SO=1 so the .so build cannot be skipped).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -27,5 +28,9 @@ if command -v cargo-ndk >/dev/null && [[ -n "${ANDROID_NDK_HOME:-}" ]]; then
     build --locked -p zeron-mobile --lib --profile mobile
   echo "jniLibs: $OUT/jniLibs"
 else
+  if [[ "${REQUIRE_SO:-}" == "1" ]]; then
+    echo "error: cargo-ndk / ANDROID_NDK_HOME required but missing (REQUIRE_SO=1)" >&2
+    exit 1
+  fi
   echo "note: cargo-ndk / ANDROID_NDK_HOME not found — skipped the .so build"
 fi
