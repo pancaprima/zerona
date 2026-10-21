@@ -202,6 +202,7 @@ async fn model_switch_mid_session_sends_catalog_defaults() {
                             message_id: None,
                             attachments: Vec::new(),
                             config: Some(Box::new(next.clone())),
+                            immediate: false,
                         })
                         .await
                         .unwrap();
