@@ -591,7 +591,8 @@ mod tests {
 
     #[test]
     fn allowlist_hit_and_miss() {
-        let (_rt, dir, media, chat) = fixture();
+        let (rt, dir, media, chat) = fixture();
+        let _enter = rt.enter();
         let allowed = dir.path().join("ok.png");
         std::fs::write(&allowed, b"\x89PNG\r\n\x1a\nx").unwrap();
         let canonical = std::fs::canonicalize(&allowed).unwrap();
@@ -602,7 +603,8 @@ mod tests {
 
     #[test]
     fn rejects_parent_dir_escape_in_relative_path() {
-        let (_rt, dir, media, _chat) = fixture();
+        let (rt, dir, media, _chat) = fixture();
+        let _enter = rt.enter();
         let err = media
             .read_image(&ReadChatImageRequest {
                 chat_id: "chat-1".into(),
@@ -623,7 +625,8 @@ mod tests {
 
     #[test]
     fn symlink_escape_is_rejected() {
-        let (_rt, dir, media, chat) = fixture();
+        let (rt, dir, media, chat) = fixture();
+        let _enter = rt.enter();
         let outside = tempfile::tempdir().unwrap();
         let secret = outside.path().join("secret.png");
         std::fs::write(&secret, b"\x89PNG\r\n\x1a\nx").unwrap();
@@ -638,7 +641,8 @@ mod tests {
 
     #[test]
     fn mentioned_path_exact_match_only() {
-        let (_rt, dir, media, chat) = fixture();
+        let (rt, dir, media, chat) = fixture();
+        let _enter = rt.enter();
         let file = dir.path().join("mentioned.png");
         std::fs::write(&file, b"\x89PNG\r\n\x1a\nx").unwrap();
         let path = file.to_string_lossy().into_owned();
@@ -657,7 +661,8 @@ mod tests {
 
     #[test]
     fn fake_png_extension_without_raster_bytes_is_rejected() {
-        let (_rt, dir, media, _chat) = fixture();
+        let (rt, dir, media, _chat) = fixture();
+        let _enter = rt.enter();
         let fake = dir.path().join("fake.png");
         std::fs::write(&fake, b"not an image").unwrap();
         assert!(media
@@ -671,7 +676,8 @@ mod tests {
 
     #[test]
     fn oversize_file_is_rejected() {
-        let (_rt, dir, media, _chat) = fixture();
+        let (rt, dir, media, _chat) = fixture();
+        let _enter = rt.enter();
         let huge = dir.path().join("huge.png");
         let mut file = std::fs::File::create(&huge).unwrap();
         let header = b"\x89PNG\r\n\x1a\n";
@@ -688,7 +694,8 @@ mod tests {
 
     #[test]
     fn unc_paths_are_rejected() {
-        let (_rt, _dir, media, _chat) = fixture();
+        let (rt, _dir, media, _chat) = fixture();
+        let _enter = rt.enter();
         for path in [r"\\host\share\a.png", "//host/share/a.png", r"C:file.png"] {
             assert!(media
                 .read_image(&ReadChatImageRequest {
