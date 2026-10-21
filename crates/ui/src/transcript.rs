@@ -1899,6 +1899,7 @@ pub fn parse_for_row(
     live_parsers: &mut HashMap<String, IncrementalParser>,
     tree_cache: &mut HashMap<String, (usize, Arc<BlockTree>)>,
 ) -> (Arc<BlockTree>, ParseOutcome) {
+    let text = crate::chat_images::expand_media_tokens_for_markdown(text);
     if streaming {
         let parser = live_parsers.entry(key.to_string()).or_default();
         parser.set_text(text);
@@ -11363,6 +11364,51 @@ mod tests {
     }
 
     // ---- streaming parse wiring (the transcript side, not the parser) ----
+
+    #[test]
+    fn parse_for_row_recognizes_media_tokens_as_inline_images() {
+        let path = "/tmp/phone_shot.jpg";
+        let text = format!("A07 screenshot captured. MEDIA:{path}");
+        let (tree, _) = parse_for_row(
+            false,
+            "e1#p1",
+            &text,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+        );
+        let has_image = tree.blocks.iter().any(|block| match &block.block {
+            Block::Paragraph { runs } => runs
+                .iter()
+                .any(|run| run.style.image.as_ref().is_some_and(|img| img.source == path)),
+            _ => false,
+        });
+        assert!(has_image);
+    }
+
+    #[test]
+    fn parse_for_row_media_token_with_trailing_period() {
+        let path = "/tmp/shot.png";
+        let text = format!("Saved MEDIA:{path}.");
+        let (tree, _) = parse_for_row(
+            false,
+            "e1#p1",
+            &text,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+        );
+        let has_image = tree.blocks.iter().any(|block| match &block.block {
+            Block::Paragraph { runs } => runs
+                .iter()
+                .any(|run| run.style.image.as_ref().is_some_and(|img| img.source == path)),
+            _ => false,
+        });
+        assert!(has_image);
+        let has_trailing_period = tree.blocks.iter().any(|block| match &block.block {
+            Block::Paragraph { runs } => runs.iter().any(|run| run.text.ends_with('.')),
+            _ => false,
+        });
+        assert!(has_trailing_period);
+    }
 
     #[test]
     fn live_row_parse_work_is_bounded_per_commit() {

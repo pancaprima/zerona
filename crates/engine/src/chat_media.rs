@@ -357,6 +357,19 @@ fn mentioned_canonical_paths(
                     }
                 }
             }
+            for dest in media_token_destinations(&text) {
+                if dest.contains("://") {
+                    continue;
+                }
+                if is_forbidden_path_syntax(&dest) {
+                    continue;
+                }
+                if let Ok(resolved) = resolve_chat_path(&dest, &cwd) {
+                    if let Ok(canonical) = std::fs::canonicalize(&resolved) {
+                        mentioned.insert(canonical);
+                    }
+                }
+            }
         }
     }
     Ok(mentioned)
@@ -370,6 +383,84 @@ fn part_text(part: &MessagePart) -> String {
         MessagePart::Error { message, .. } => message.clone(),
         _ => String::new(),
     }
+}
+
+const MEDIA_TOKEN_PREFIX: &str = "MEDIA:";
+const MEDIA_IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
+
+fn media_token_boundary(text: &str, start: usize) -> bool {
+    start == 0 || text[..start].chars().next_back().is_some_and(|c| c.is_whitespace())
+}
+
+fn media_path_has_allowed_image_extension(path: &str) -> bool {
+    let path = path.trim_end_matches(|c: char| matches!(c, '.' | ',' | '!' | '?' | ';' | ':'));
+    path.rsplit('/')
+        .next()
+        .and_then(|name| name.rsplit('.').next())
+        .map(|ext| {
+            let ext = ext.to_ascii_lowercase();
+            MEDIA_IMAGE_EXTENSIONS.iter().any(|allowed| *allowed == ext)
+        })
+        .unwrap_or(false)
+}
+
+fn trim_media_trailing_punctuation(path: &str) -> &str {
+    path.trim_end_matches(|c: char| {
+        matches!(c, ',' | '!' | '?' | ';' | ')' | ']' | '"' | '\'' | '`')
+    })
+    .trim_end_matches('.')
+}
+
+fn parse_media_token_source(tail: &str) -> Option<(&str, usize)> {
+    let leading = tail.len() - tail.trim_start().len();
+    let tail = tail.trim_start();
+    if tail.is_empty() {
+        return None;
+    }
+    let end = if tail.starts_with("https://")
+        || tail.starts_with("http://")
+        || tail.starts_with("//")
+        || tail.starts_with('/')
+    {
+        tail.find(|c: char| c.is_whitespace()).unwrap_or(tail.len())
+    } else {
+        let bytes = tail.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes.get(2), Some(b'/' | b'\\'))
+        {
+            tail.find(|c: char| c.is_whitespace()).unwrap_or(tail.len())
+        } else {
+            return None;
+        }
+    };
+    let source = trim_media_trailing_punctuation(&tail[..end]);
+    if source.is_empty() || !media_path_has_allowed_image_extension(source) {
+        return None;
+    }
+    Some((source, leading + source.len()))
+}
+
+fn media_token_destinations(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut search_at = 0;
+    while let Some(rel) = text[search_at..].find(MEDIA_TOKEN_PREFIX) {
+        let start = search_at + rel;
+        if !media_token_boundary(text, start) {
+            search_at = start + MEDIA_TOKEN_PREFIX.len();
+            continue;
+        }
+        let tail_start = start + MEDIA_TOKEN_PREFIX.len();
+        let tail = &text[tail_start..];
+        if let Some((source, consumed)) = parse_media_token_source(tail) {
+            out.push(source.to_string());
+            search_at = tail_start + consumed;
+        } else {
+            search_at = start + MEDIA_TOKEN_PREFIX.len();
+        }
+    }
+    out
 }
 
 fn markdown_image_destinations(text: &str) -> Vec<String> {
@@ -649,6 +740,41 @@ mod tests {
             let canonical = std::fs::canonicalize(&link).unwrap();
             assert!(!media.path_allowed("chat-1", &chat, &canonical).unwrap());
         }
+    }
+
+    #[test]
+    fn media_token_destinations_parsing() {
+        let path = "/tmp/phone_shot.jpg";
+        let text = format!("A07 screenshot captured. MEDIA:{path}");
+        assert_eq!(media_token_destinations(&text), vec![path.to_string()]);
+        assert!(media_token_destinations("MEDIA:/tmp/readme.txt").is_empty());
+        assert!(media_token_destinations("prefixMEDIA:/tmp/x.png").is_empty());
+        assert!(media_token_destinations("see /tmp/unmentioned.png").is_empty());
+        assert_eq!(
+            media_token_destinations("Saved MEDIA:/tmp/shot.png."),
+            vec!["/tmp/shot.png".to_string()]
+        );
+    }
+
+    #[test]
+    fn mentioned_path_via_media_token() {
+        let (rt, _dir, media, chat) = fixture();
+        let _enter = rt.enter();
+        let outside = tempfile::tempdir().unwrap();
+        let file = outside.path().join("mentioned.png");
+        std::fs::write(&file, b"\x89PNG\r\n\x1a\nx").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        let handle = media.doc_host.open("chat-1").unwrap();
+        handle
+            .write_user_message("m1", &format!("see MEDIA:{path}"), 1)
+            .unwrap();
+        let canonical = std::fs::canonicalize(&file).unwrap();
+        assert!(media.path_allowed("chat-1", &chat, &canonical).unwrap());
+        let sibling = outside.path().join("other.png");
+        std::fs::write(&sibling, b"\x89PNG\r\n\x1a\nx").unwrap();
+        assert!(!media
+            .path_allowed("chat-1", &chat, &std::fs::canonicalize(&sibling).unwrap())
+            .unwrap());
     }
 
     #[test]
