@@ -13,6 +13,7 @@ zeron-sync.workspace = true
 zeron-harness.workspace = true
 zeron-rpc.workspace = true
 zeron-update.workspace = true
+zeron-visual.workspace = true
 loro.workspace = true
 tokio.workspace = true
 futures.workspace = true
@@ -38,6 +39,7 @@ ignore.workspace = true
 fff-search.workspace = true
 nucleo-matcher.workspace = true
 
+same-file = "1"
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]

@@ -1,12 +1,13 @@
 //! AppKit boundary for the browser. Wry owns the native child and its UI
 //! delegate; our navigation delegate supplies browser policy and state. All
 //! callbacks enqueue events, never re-enter GPUI. No page-to-engine IPC.
-use super::model::{allowed_navigation, PageState, Presentation};
-use super::profile::BrowserProfileMode;
+use super::model::{PageState, Presentation, allowed_navigation};
 use gpui::{Bounds, Pixels, Window};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{class, define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2::{
+    DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, msg_send, sel,
+};
 use objc2_app_kit::{
     NSColor, NSEvent, NSEventMask, NSEventModifierFlags, NSView, NSWindowOrderingMode,
 };
@@ -20,147 +21,75 @@ use objc2_web_kit::{
 };
 use std::{
     cell::{Cell, RefCell},
+    mem::ManuallyDrop,
     rc::Rc,
 };
 use wry::{WebView, WebViewBuilderExtMacos, WebViewExtMacOS};
 
+#[derive(Default)]
 struct BrowserStore {
+    profile: Option<super::profile::BrowserProfile>,
     store: Option<Retained<objc2_web_kit::WKWebsiteDataStore>>,
-    profile: BrowserProfileMode,
     preview_hosts: std::collections::BTreeSet<String>,
 }
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(super) struct BrowserData(Rc<RefCell<BrowserStore>>);
 impl BrowserData {
-    pub(super) fn new(profile: BrowserProfileMode) -> Self {
-        if let BrowserProfileMode::Persistent(storage) = &profile {
-            if let Err(error) = storage.ensure_directories() {
-                tracing::warn!(%error, "could not create browser storage directories");
-            }
+    pub fn for_profile(profile: super::profile::BrowserProfile) -> Self {
+        thread_local! {
+            // Keep named stores alive through process termination, including
+            // after the last window closes or the active identity changes.
+            // macOS runs Rust TLS destructors during AppKit's exit(). Releasing
+            // a WKWebsiteDataStore there removes its network session before
+            // WebKit's UI-process-disconnect handler can flush its cookies.
+            // In particular, deleted cookies can reappear on the next launch.
+            // Intentionally skip this registry's destructor: WebKit must still
+            // own the sessions when our process disconnects, and the OS reclaims
+            // these process-lifetime references on exit.
+            static PROFILES: ManuallyDrop<RefCell<std::collections::HashMap<std::path::PathBuf, Rc<RefCell<BrowserStore>>>>> =
+                ManuallyDrop::new(RefCell::new(std::collections::HashMap::new()));
         }
-        Self(Rc::new(RefCell::new(BrowserStore {
-            store: None,
-            profile,
-            preview_hosts: Default::default(),
-        })))
-    }
-
-    #[cfg(feature = "browser-fixture")]
-    pub(super) fn fixture_native_cookie_diag(
-        &self,
-        cookie_name: &str,
-        cx: &gpui::App,
-    ) -> gpui::Task<Result<String, String>> {
-        let data = self.clone();
-        let cookie_name = cookie_name.to_string();
-        cx.spawn(async move |_cx| {
-            let mtm = MainThreadMarker::new().ok_or_else(|| {
-                "Native cookie diagnostics must run on the main thread.".to_string()
-            })?;
-            let store = data.ensure_store(mtm)?;
-            super::macos_persistence_diag::native_cookie_diag_line(store, cookie_name).await
+        PROFILES.with(|profiles| {
+            let mut profiles = profiles.borrow_mut();
+            if let Some(store) = profiles.get(&profile.root) {
+                return Self(store.clone());
+            }
+            let root = profile.root.clone();
+            let store = Rc::new(RefCell::new(BrowserStore {
+                profile: Some(profile),
+                ..Default::default()
+            }));
+            profiles.insert(root, store.clone());
+            Self(store)
         })
     }
-
-    pub(super) fn clear_website_data(&self, cx: &gpui::App) -> gpui::Task<Result<(), String>> {
-        #[cfg(feature = "browser-fixture")]
-        if std::env::var_os("ZERON_BROWSER_FIXTURE_INJECT_CLEAR_ERROR").is_some() {
-            return gpui::Task::ready(Err(
-                "Fixture-injected clear failure (test-only; not a real WebKit error).".into(),
-            ));
-        }
-        let data = self.clone();
-        cx.spawn(async move |_cx| {
-            let mtm = MainThreadMarker::new().ok_or_else(|| {
-                "Browser data clear must run on the main thread. Try again.".to_string()
-            })?;
-            let store = data.ensure_store(mtm)?;
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            unsafe {
-                use block2::RcBlock;
-                use objc2_foundation::NSDate;
-                use std::sync::Mutex;
-                let types = objc2_web_kit::WKWebsiteDataStore::allWebsiteDataTypes(mtm);
-                let past = NSDate::distantPast();
-                let reply = Mutex::new(Some(tx));
-                let block = RcBlock::new(move || {
-                    if let Some(tx) = reply.lock().unwrap().take() {
-                        let _ = tx.send(Ok(()));
-                    }
-                });
-                store.removeDataOfTypes_modifiedSince_completionHandler(&types, &past, &block);
-            }
-            rx.await
-                .map_err(|_| "Browser data clear did not finish".to_string())?
-        })
-    }
-
-    fn open_store(
-        &self,
-        mtm: MainThreadMarker,
-        profile: BrowserProfileMode,
-    ) -> Result<Retained<objc2_web_kit::WKWebsiteDataStore>, String> {
-        Ok(unsafe {
-            match profile {
-                BrowserProfileMode::Deferred => {
-                    objc2_web_kit::WKWebsiteDataStore::nonPersistentDataStore(mtm)
-                }
-                BrowserProfileMode::Persistent(storage) => {
-                    use objc2_foundation::NSUUID;
-                    let store_uuid = storage.store_uuid();
-                    super::macos_store_registry::get_or_open_persistent_store(
-                        store_uuid,
-                        mtm,
-                        |mtm| {
-                            let uuid = NSUUID::from_bytes(store_uuid.into_bytes());
-                            objc2_web_kit::WKWebsiteDataStore::dataStoreForIdentifier(&uuid, mtm)
-                        },
-                    )
-                }
-            }
-        })
-    }
-
-    fn ensure_store(
-        &self,
-        mtm: MainThreadMarker,
-    ) -> Result<Retained<objc2_web_kit::WKWebsiteDataStore>, String> {
-        let profile = self.0.borrow().profile.clone();
-        if self.0.borrow().store.is_some() {
-            return self
-                .0
-                .borrow()
-                .store
-                .clone()
-                .ok_or_else(|| "Browser store unavailable".into());
-        }
-        let store = self.open_store(mtm, profile)?;
-        let preview_hosts = self.0.borrow().preview_hosts.clone();
-        if let Err(error) = configure_preview_proxy(&store, &preview_hosts) {
-            tracing::warn!(%error, "preview hostname proxy unavailable");
-        }
-        #[cfg(feature = "browser-fixture")]
-        super::macos_fixture_store_retention::retain_exact_store_if_enabled(store.clone());
-        let mut state = self.0.borrow_mut();
-        if state.store.is_none() {
-            state.store = Some(store);
-        }
-        state
-            .store
-            .clone()
-            .ok_or_else(|| "Browser store unavailable".into())
-    }
-
     fn configuration(
         &self,
         mtm: MainThreadMarker,
-    ) -> Result<Retained<objc2_web_kit::WKWebViewConfiguration>, String> {
-        let store = self.ensure_store(mtm)?;
+    ) -> Retained<objc2_web_kit::WKWebViewConfiguration> {
+        let mut data = self.0.borrow_mut();
+        if data.store.is_none() {
+            data.store = Some(unsafe {
+                match &data.profile {
+                    Some(profile) if persistent_profiles_supported() => {
+                        let identifier =
+                            objc2_foundation::NSUUID::from_bytes(profile.data_store_identifier());
+                        objc2_web_kit::WKWebsiteDataStore::dataStoreForIdentifier(&identifier, mtm)
+                    }
+                    _ => objc2_web_kit::WKWebsiteDataStore::nonPersistentDataStore(mtm),
+                }
+            });
+            if let Err(error) =
+                configure_preview_proxy(data.store.as_ref().unwrap(), &data.preview_hosts)
+            {
+                tracing::warn!(%error, "preview hostname proxy unavailable");
+            }
+        }
         let configuration = unsafe { objc2_web_kit::WKWebViewConfiguration::new(mtm) };
         unsafe {
-            configuration.setWebsiteDataStore(&store);
+            configuration.setWebsiteDataStore(data.store.as_ref().unwrap());
         }
-        Ok(configuration)
+        configuration
     }
     pub(super) fn register_preview(&self, address: &str) {
         let Ok(url) = url::Url::parse(address) else {
@@ -187,6 +116,21 @@ impl BrowserData {
     }
 }
 
+/// macOS 12/13 have only a single default persistent store. Do not silently
+/// share it across accounts; retain isolated temporary stores on those systems.
+pub(super) fn persistent_profiles_supported() -> bool {
+    unsafe {
+        msg_send![class!(WKWebsiteDataStore), respondsToSelector: sel!(dataStoreForIdentifier:)]
+    }
+}
+
+impl BrowserData {
+    pub(super) fn persistence_notice(&self) -> Option<&'static str> {
+        (self.0.borrow().profile.is_some() && !persistent_profiles_supported())
+            .then_some("Logins are temporary on this macOS version. Use macOS 14 or later, or open this page in your default browser, to keep them.")
+    }
+}
+
 /// Network.framework objects are Objective-C OS objects. Resolve the newer API
 /// dynamically so older systems can still open ordinary browser tabs. Match
 /// only discovered/opened preview hostnames; other websites retain normal routing.
@@ -198,7 +142,7 @@ fn configure_preview_proxy(
         return Ok(());
     }
     use objc2_foundation::{NSArray, NSObject};
-    use std::ffi::{c_char, CStr, CString};
+    use std::ffi::{CStr, CString, c_char};
     unsafe {
         let supported: bool = msg_send![store, respondsToSelector: sel!(setProxyConfigurations:)];
         if !supported {
@@ -404,7 +348,7 @@ impl NativePage {
         let mtm = MainThreadMarker::new().ok_or("Browser must be created on the main thread")?;
         let new_tab = tx.clone();
         let web = wry::WebViewBuilder::new()
-            .with_webview_configuration(data.configuration(mtm)?)
+            .with_webview_configuration(data.configuration(mtm))
             .with_visible(false)
             .with_focused(false)
             .with_new_window_req_handler(move |url, _| {
@@ -925,6 +869,25 @@ impl NativePage {
     pub fn fixture_visible(&self) -> bool {
         !self.0.borrow().view.isHidden()
     }
+    pub fn fixture_cookies(&self, completion: impl FnOnce(Vec<String>) + 'static) {
+        use objc2_foundation::{NSArray, NSHTTPCookie};
+        let completion = RefCell::new(Some(completion));
+        let block = block2::RcBlock::new(move |cookies: std::ptr::NonNull<NSArray<NSHTTPCookie>>| {
+            let cookies = unsafe { cookies.as_ref() };
+            let values = cookies.iter().map(|cookie| format!(
+                "{}={}; domain={}; path={}; httpOnly={}; sessionOnly={}",
+                cookie.name(), cookie.value(), cookie.domain(), cookie.path(),
+                cookie.isHTTPOnly(), cookie.isSessionOnly()
+            )).collect();
+            if let Some(completion) = completion.borrow_mut().take() {
+                completion(values);
+            }
+        });
+        unsafe {
+            self.0.borrow().view.configuration().websiteDataStore().httpCookieStore().getAllCookies(&block);
+        }
+    }
+
     pub fn fixture_eval(&self, script: &str) {
         unsafe {
             self.0
@@ -932,16 +895,5 @@ impl NativePage {
                 .view
                 .evaluateJavaScript_completionHandler(&NSString::from_str(script), None);
         }
-    }
-    #[cfg(feature = "browser-fixture")]
-    pub fn fixture_native_cookie_diag(
-        &self,
-        cookie_name: &str,
-        cx: &gpui::App,
-    ) -> gpui::Task<Result<String, String>> {
-        self.0
-            .borrow()
-            .data
-            .fixture_native_cookie_diag(cookie_name, cx)
     }
 }
