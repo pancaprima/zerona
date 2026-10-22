@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Canvas
 import android.os.SystemClock
 import android.util.AttributeSet
-import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
@@ -81,19 +80,12 @@ class TranscriptListView
             setOnScrollChangeListener { _, _, _, _, _ ->
                 if (!programmaticScroll) {
                     val threshold = 70f * density
-                    val wasFollowing = following
                     following =
                         TranscriptAnchor.shouldFollowAfterUserScroll(
                             scrollY,
                             computeMaxScroll(),
                             threshold,
                         )
-                    if (wasFollowing && !following) {
-                        Log.d(
-                            "ZScroll",
-                            "follow=false scrollY=$scrollY max=${computeMaxScroll()}",
-                        )
-                    }
                 }
                 scheduleScrollToLatestEvaluation()
                 layoutRows()
@@ -193,7 +185,6 @@ class TranscriptListView
 
         fun jumpToLatest() {
             if (destroyed) return
-            Log.d("ZScroll", "jump")
             cancelPendingAutoTail()
             jumpRowSyncInProgress = true
             pendingJumpAfterLayout = true
@@ -288,12 +279,6 @@ class TranscriptListView
             layoutRows()
             scheduleScrollToLatestEvaluation()
             maybeResettleJumpBottom()
-            Log.d(
-                "ZScroll",
-                "applyFrame rev=$revision rowCount=${frame.rowCount()} totalDp=$totalDp " +
-                    "totalPx=$totalPx lastRowBottomPx=$lastRowBottomPx finalHeightPx=$finalHeightPx " +
-                    "following=$following scrollY=$scrollY first=$first settleDeadline=$jumpSettleDeadlineMs",
-            )
         }
 
         private fun lastRowBottomPx(frame: LayoutFrame): Int {
@@ -428,12 +413,6 @@ class TranscriptListView
                 pendingAutoTailAfterLayout = false
                 pendingAutoTailFromEmpty = false
                 pendingMarkReadyAfterAutoTail = false
-                val child = getChildAt(0)
-                Log.d(
-                    "ZScroll",
-                    "drain max=${computeMaxScroll()} scrollY=$scrollY child.height=${child?.height} " +
-                        "content.layoutParams.height=${content.layoutParams.height}",
-                )
                 programmaticScrollToMax()
                 scheduleJumpRowSyncAfterScroll()
                 return
@@ -463,7 +442,6 @@ class TranscriptListView
             if (!jumpRowSyncInProgress) {
                 following = true
             }
-            Log.d("ZScroll", "scrollToMax target=$max scrollYAfter=$scrollY")
             post {
                 if (destroyed || bindGen != bindGeneration) return@post
                 if (gen == programmaticScrollGeneration) {
@@ -505,7 +483,6 @@ class TranscriptListView
             scrollTo(0, max)
             programmaticScroll = false
             layoutRows()
-            logLayoutRowsSnapshot("jumpSync pass=$pass")
             if (isTailViewportSatisfied()) {
                 finishJumpRowSync(gen, bindGen, forced = false)
             } else {
@@ -530,14 +507,6 @@ class TranscriptListView
             if (tailOk || forced) {
                 markReadyForScrollToLatestUi()
             }
-            val bounds = visibleRowVerticalBoundsPx()
-            val window = TranscriptAnchor.layoutWindowDp(scrollY, density, height, overscanDp)
-            Log.d(
-                "ZScroll",
-                "jumpDone forced=$forced scrollY=$scrollY max=$max laid=${visible.size} " +
-                    "window=${window.first.toInt()}..${window.second.toInt()}dp " +
-                    "rowsPx=${bounds?.first}..${bounds?.last} tailOk=$tailOk",
-            )
             if (!tailOk) {
                 emitScrollToLatestVisibility(true)
             }
@@ -581,19 +550,6 @@ class TranscriptListView
             return minTop..maxBottom
         }
 
-        private fun logLayoutRowsSnapshot(reason: String) {
-            val frame = current ?: return
-            val window = TranscriptAnchor.layoutWindowDp(scrollY, density, height, overscanDp)
-            val placementCount = frame.rowsIn(window.first, window.second).size
-            val bounds = visibleRowVerticalBoundsPx()
-            Log.d(
-                "ZScroll",
-                "$reason scrollY=$scrollY max=${computeMaxScroll()} placements=$placementCount " +
-                    "attached=${visible.size} window=${window.first.toInt()}..${window.second.toInt()}dp " +
-                    "rowsPx=${bounds?.first}..${bounds?.last}",
-            )
-        }
-
         private fun maybeResettleJumpBottom() {
             if (destroyed) return
             if (!following) return
@@ -613,15 +569,8 @@ class TranscriptListView
             ) {
                 return
             }
-            val child = getChildAt(0)
-            Log.d(
-                "ZScroll",
-                "resettle max=${computeMaxScroll()} scrollY=$scrollY child.height=${child?.height} " +
-                    "content.layoutParams.height=${content.layoutParams.height}",
-            )
             programmaticScrollToMax()
             layoutRows()
-            logLayoutRowsSnapshot("resettle")
             requestLayout()
         }
 
@@ -651,12 +600,6 @@ class TranscriptListView
             b: Int,
         ) {
             super.onLayout(changed, l, t, r, b)
-            if (content.height != content.layoutParams.height) {
-                Log.d(
-                    "ZScroll",
-                    "layoutMismatch measured=${content.height} params=${content.layoutParams.height}",
-                )
-            }
             drainPendingScrollsAfterLayout()
             if (
                 current != null &&
@@ -690,10 +633,6 @@ class TranscriptListView
             }
             val currentContentHeight = content.layoutParams.height
             if (maxPlacementBottomPx > currentContentHeight) {
-                Log.d(
-                    "ZScroll",
-                    "raiseHeight old=$currentContentHeight new=$maxPlacementBottomPx",
-                )
                 content.layoutParams.height = maxPlacementBottomPx
                 content.minimumHeight = maxPlacementBottomPx
                 content.requestLayout()
