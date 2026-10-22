@@ -5,6 +5,8 @@ import uniffi.zeron_core.FaceData
 import uniffi.zeron_core.FaceRole
 
 object FontLoader {
+    fun assetFileNames(): List<Pair<FaceRole, String>> = assetFiles
+
     private val assetFiles: List<Pair<FaceRole, String>> =
         listOf(
             FaceRole.SANS to "Geist.ttf",

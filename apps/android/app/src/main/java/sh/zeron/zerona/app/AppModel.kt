@@ -24,6 +24,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import sh.zeron.zerona.core.AndroidPlatformMeasurer
 import sh.zeron.zerona.core.FontLoader
+import sh.zeron.zerona.core.GeistTypefaces
 import sh.zeron.zerona.core.ZeronCoreLoader
 import uniffi.zeron_core.AuthCallback
 import uniffi.zeron_core.AuthExchange
@@ -112,6 +113,8 @@ class AppModel(
     private var processLifecycleRegistered = false
 
     fun textSystemOrNull(): TextSystem? = textSystem
+
+    fun applicationContext(): Context = appContext
 
     init {
         viewModelScope.launch {
@@ -412,7 +415,8 @@ class AppModel(
             _state.update { it.copy(loadError = "Missing Geist fonts in assets/fonts") }
             return false
         }
-        val measurer = AndroidPlatformMeasurer()
+        GeistTypefaces.ensureLoaded(appContext)
+        val measurer = AndroidPlatformMeasurer(appContext)
         textSystem = TextSystem(faces, measurer)
         return true
     }

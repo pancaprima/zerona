@@ -30,6 +30,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import sh.zeron.zerona.app.AppModel
+import sh.zeron.zerona.app.SessionRowUi
+import sh.zeron.zerona.transcript.TranscriptLab
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -102,6 +104,18 @@ fun SessionsScreen(
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(padding),
         ) {
+            if (state.isDemo) {
+                item(key = "lab") {
+                    SessionRowItem(
+                        SessionRowUi(
+                            id = TranscriptLab.CHAT_ID,
+                            title = "Transcript lab (fixture markdown)",
+                            timeLabel = "Offline fixture",
+                        ),
+                        onClick = { onSessionClick(TranscriptLab.CHAT_ID) },
+                    )
+                }
+            }
             state.sections.forEach { section ->
                 item(key = "h-${section.id}") {
                     SectionHeader(section.header)
