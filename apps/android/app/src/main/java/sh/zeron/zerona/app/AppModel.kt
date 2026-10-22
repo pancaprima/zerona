@@ -669,9 +669,10 @@ class AppModel(
             is CoreException.HostUnavailable -> e.detail
             is CoreException.Unsupported -> e.detail
             is CoreException.Network -> e.detail
-            is CoreException.HostError -> e.detail
+            is CoreException.HostException -> e.detail
             is CoreException.Storage -> e.detail
             is CoreException.NotImplemented -> e.detail
+            is CoreException.Closed -> "Client closed"
             is CoreException.Internal -> e.detail
             is CoreException -> e.message ?: e.toString()
             else -> e.message ?: e.toString()

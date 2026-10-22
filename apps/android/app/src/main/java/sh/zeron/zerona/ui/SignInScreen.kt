@@ -128,6 +128,7 @@ private fun OrgPickerDialog(
                 }
             }
         },
+        confirmButton = {},
         dismissButton = {
             TextButton(onClick = onDismiss) {
                 Text("Cancel")
