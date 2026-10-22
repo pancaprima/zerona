@@ -28,4 +28,31 @@ object TranscriptAnchor {
             (maxScroll.toLong() - clampedScrollY.toLong()).coerceAtLeast(0L)
         return distanceFromBottom > thresholdPx
     }
+
+    fun distanceFromBottom(
+        scrollY: Int,
+        maxScroll: Int,
+    ): Long {
+        if (maxScroll <= 0) return 0L
+        val clampedScrollY = scrollY.coerceIn(0, maxScroll)
+        return (maxScroll.toLong() - clampedScrollY.toLong()).coerceAtLeast(0L)
+    }
+
+    fun shouldResettleToBottom(
+        scrollY: Int,
+        maxScroll: Int,
+        epsilonPx: Int,
+    ): Boolean {
+        if (maxScroll <= 0) return false
+        val clampedScrollY = scrollY.coerceIn(0, maxScroll)
+        return clampedScrollY < maxScroll - epsilonPx
+    }
+
+    fun settleActive(
+        nowMs: Long,
+        deadlineMs: Long,
+    ): Boolean {
+        if (deadlineMs == 0L) return false
+        return nowMs < deadlineMs
+    }
 }

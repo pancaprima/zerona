@@ -2,6 +2,7 @@ package sh.zeron.zerona.transcript
 
 import android.content.Context
 import android.graphics.Canvas
+import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
@@ -21,6 +22,8 @@ class TranscriptListView
         companion object {
             private const val MAX_ROW_POOL_SIZE = 32
             private const val SCROLL_TO_LATEST_THRESHOLD_DP = 240f
+            private const val JUMP_SETTLE_WINDOW_MS = 1500L
+            private const val JUMP_SETTLE_EPSILON_PX = 2
         }
 
         private val content = FrameLayout(context)
@@ -54,6 +57,7 @@ class TranscriptListView
         private var pendingAutoTailFromEmpty = false
         private var pendingMarkReadyAfterAutoTail = false
         private var replayScrollToLatestGeneration = 0
+        private var jumpSettleDeadlineMs = 0L
         var onScrollToLatestVisibilityChanged: ((Boolean) -> Unit)? = null
 
         private val scrollToLatestEvalRunnable =
@@ -85,6 +89,7 @@ class TranscriptListView
 
         override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
             if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                clearJumpSettle()
                 cancelPendingJump()
                 cancelPendingAutoTail()
             }
@@ -130,6 +135,7 @@ class TranscriptListView
             bindGeneration++
             replayScrollToLatestGeneration++
             removeCallbacks(scrollToLatestEvalRunnable)
+            clearJumpSettle()
             cancelPendingJump()
             cancelPendingAutoTail()
             readyForScrollToLatestUi = false
@@ -176,6 +182,7 @@ class TranscriptListView
             cancelPendingAutoTail()
             following = true
             pendingJumpAfterLayout = true
+            jumpSettleDeadlineMs = SystemClock.uptimeMillis() + JUMP_SETTLE_WINDOW_MS
             requestLayout()
         }
 
@@ -256,6 +263,7 @@ class TranscriptListView
             }
             layoutRows()
             scheduleScrollToLatestEvaluation()
+            maybeResettleJumpBottom()
         }
 
         private fun invalidateDrawCache() {
@@ -320,6 +328,10 @@ class TranscriptListView
             }
         }
 
+        private fun clearJumpSettle() {
+            jumpSettleDeadlineMs = 0L
+        }
+
         private fun cancelPendingJump() {
             pendingJumpAfterLayout = false
         }
@@ -350,21 +362,13 @@ class TranscriptListView
             }
             if (pendingJumpAfterLayout) {
                 pendingJumpAfterLayout = false
-                val max = computeMaxScroll()
-                val gen = ++programmaticScrollGeneration
-                val bindGen = bindGeneration
-                programmaticScroll = true
-                scrollTo(0, max)
-                following = true
+                pendingAutoTailAfterLayout = false
+                pendingAutoTailFromEmpty = false
+                pendingMarkReadyAfterAutoTail = false
+                programmaticScrollToMax()
                 markReadyForScrollToLatestUi()
-                post {
-                    if (destroyed || bindGen != bindGeneration) return@post
-                    if (gen == programmaticScrollGeneration) {
-                        programmaticScroll = false
-                    }
-                    scheduleScrollToLatestEvaluation()
-                }
                 layoutRows()
+                maybeResettleJumpBottom()
                 return
             }
             if (pendingAutoTailAfterLayout) {
@@ -380,6 +384,46 @@ class TranscriptListView
                     markReadyForScrollToLatestUi()
                 }
             }
+            maybeResettleJumpBottom()
+        }
+
+        private fun programmaticScrollToMax() {
+            val max = computeMaxScroll()
+            val gen = ++programmaticScrollGeneration
+            val bindGen = bindGeneration
+            programmaticScroll = true
+            scrollTo(0, max)
+            following = true
+            post {
+                if (destroyed || bindGen != bindGeneration) return@post
+                if (gen == programmaticScrollGeneration) {
+                    programmaticScroll = false
+                }
+                scheduleScrollToLatestEvaluation()
+            }
+        }
+
+        private fun maybeResettleJumpBottom() {
+            if (destroyed) return
+            val now = SystemClock.uptimeMillis()
+            if (!TranscriptAnchor.settleActive(now, jumpSettleDeadlineMs)) {
+                if (jumpSettleDeadlineMs != 0L) {
+                    jumpSettleDeadlineMs = 0L
+                }
+                return
+            }
+            if (
+                !TranscriptAnchor.shouldResettleToBottom(
+                    scrollY,
+                    computeMaxScroll(),
+                    JUMP_SETTLE_EPSILON_PX,
+                )
+            ) {
+                return
+            }
+            programmaticScrollToMax()
+            layoutRows()
+            requestLayout()
         }
 
         private fun computeMaxScroll(): Int {
