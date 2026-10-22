@@ -1,6 +1,6 @@
 # Plan: Zerona Android M3 (sign-in live + kirim pesan)
 
-Status: draft, belum ada kode. Lanjutan `plan-zerona-android-app.md` (M1 demo sudah di `main`, PR #23).
+Status: M3a diimplementasi di branch `feat/android-m3a` (sign-in + live client); M3b composer belum. Lanjutan `plan-zerona-android-app.md` (M1 demo sudah di `main`, PR #23).
 Build Rust/Gradle HANYA di CI. Implementasi didelegasikan ke Cursor; verifikasi lewat CI + HP (Pixel 3 / A07).
 
 ## Tujuan
@@ -32,14 +32,14 @@ Build Rust/Gradle HANYA di CI. Implementasi didelegasikan ke Cursor; verifikasi 
 - C: satu PR besar. Risiko compile error numpuk (VPS tidak build), review susah.
 
 ## Sub-milestone B
-### M3a: sign-in + live client (PR sendiri)
-- Layar sign-in + gate navigasi (belum login -> SignIn, sudah -> Sessions).
-- Custom Tab (`androidx.browser`) + intent-filter `zeron://callback` di `AndroidManifest.xml`; `launchMode=singleTask` biar callback balik ke Activity yang sama.
-- `CredentialsStore.kt` (EncryptedSharedPreferences / `security-crypto`), `allowBackup=false` atau exclude file kredensial.
-- `AppModel.kt`: cabang `startLive` vs `startDemo`; tangani `AuthRefreshed`, `AuthExpired`; `ConnectivityManager` -> `setNetworkOnline`; lifecycle `onForeground`/`onBackground`.
-- Picker org kalau user punya >1 org.
-- Tombol Sign out (hapus kredensial; kebijakan `dataDir` lihat keputusan #4).
-- Mode Demo tetap ada (tombol di layar sign-in) supaya APK tetap bisa dicoba tanpa akun.
+### M3a: sign-in + live client (PR sendiri) — [x] kode
+- [x] Layar sign-in + gate navigasi (belum login -> SignIn, sudah -> Sessions).
+- [x] Custom Tab (`androidx.browser`) + intent-filter `zeron://callback` di `AndroidManifest.xml`; `launchMode=singleTask` biar callback balik ke Activity yang sama.
+- [x] `CredentialsStore.kt` (EncryptedSharedPreferences / `security-crypto`), `allowBackup=false`.
+- [x] `AppModel.kt`: cabang `startLive` vs `startDemo`; tangani `AuthRefreshed`, `AuthExpired`; `ConnectivityManager` -> `setNetworkOnline`; lifecycle `onForeground`/`onBackground`.
+- [x] Picker org kalau user punya >1 org.
+- [x] Tombol Sign out (hapus kredensial; kebijakan `dataDir` lihat keputusan #4).
+- [x] Mode Demo tetap ada (tombol di layar sign-in) supaya APK tetap bisa dicoba tanpa akun.
 
 File: `AppModel.kt`, baru `CredentialsStore.kt`, `SignInScreen.kt`, `ZeronaApp.kt`, `MainActivity.kt`, `AndroidManifest.xml`, `build.gradle.kts`, `ClientListenerBridge.kt`.
 
