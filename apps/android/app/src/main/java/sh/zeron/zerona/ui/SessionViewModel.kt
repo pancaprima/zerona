@@ -63,6 +63,7 @@ data class SessionUiState(
     val viewportWidthDp: Float = 0f,
     val textScale: Float = 1f,
     val frameTick: Long = 0L,
+    val showScrollToLatest: Boolean = false,
 )
 
 class SessionViewModel(
@@ -229,7 +230,14 @@ class SessionViewModel(
     }
 
     fun attachTranscriptHost(host: TranscriptListView) {
+        transcriptHost?.onScrollToLatestVisibilityChanged = null
         transcriptHost = host
+        host.onScrollToLatestVisibilityChanged = { visible ->
+            if (transcriptHost === host) {
+                _state.update { it.copy(showScrollToLatest = visible) }
+            }
+        }
+        host.replayScrollToLatestVisibility()
         val tv = transcriptView
         if (tv != null && engineLive) {
             host.bind(tv, transcriptActions)
@@ -240,8 +248,14 @@ class SessionViewModel(
 
     fun clearTranscriptHost(host: TranscriptListView) {
         if (transcriptHost === host) {
+            host.onScrollToLatestVisibilityChanged = null
             transcriptHost = null
+            _state.update { it.copy(showScrollToLatest = false) }
         }
+    }
+
+    fun jumpToLatest() {
+        transcriptHost?.jumpToLatest()
     }
 
     fun setViewport(
@@ -484,8 +498,10 @@ class SessionViewModel(
         engineLive = false
         sessionImageLoader.close()
         stopLabStream()
+        transcriptHost?.onScrollToLatestVisibilityChanged = null
         transcriptHost?.shutdown()
         transcriptHost = null
+        _state.update { it.copy(showScrollToLatest = false) }
         frameRelay?.shutdown()
         frameRelay = null
         handle?.setViewAttached(false)

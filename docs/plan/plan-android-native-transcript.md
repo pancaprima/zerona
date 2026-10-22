@@ -17,6 +17,8 @@ Review blockers addressed in `apps/android/**`: Geist via `createFromAsset`, mat
 
 **PR26 feedback (2026-10-22):** Compact transcript via `TranscriptViewportScale` (`0.88f × Configuration.fontScale` → `setViewport` only). Compose + native clipping (`clipToBounds`, `TranscriptListView.dispatchDraw` clip, `RowView.clipChildren`). Glass-inspired opaque composer (`GlassInspired.kt`). `WidgetKind.Image` loads through `CoreClient.readAttachment(hostDeviceId, reference)` with bounded decode + session LRU; lab demo uses `LAB_DEMO_IMAGE_REFERENCE` only (no FFI). `zeron-preview://image?ref=` opens in-app preview; Markdown `![]()` remote images remain links (Rust does not emit image widgets for them). `readAttachment` is not chat-scoped — host path jail on the engine applies.
 
+**Scroll-to-latest (2026-10-22, pending CI/device):** When the user reads history (`following = false`) and remaining scroll distance from the live bottom exceeds **240 dp** (px threshold computed once from view density), show a bottom-centered opaque “Latest” control (12 dp above the transcript box bottom; scaffold already clears the composer). Visibility is driven by `TranscriptAnchor.shouldShowScrollToLatest(scrollY, maxScroll, thresholdPx)` on real `NestedScrollView` offsets (not row estimates), gated until after the initial bottom scroll / layout pass. `TranscriptListView` posts visibility deltas to `SessionViewModel`; tap calls `jumpToLatest()` (instant scroll to current `maxScroll`, `following = true`, pending jumps cancelled on user scroll/unbind). Follow-tail semantics unchanged (70 dp resume threshold). Acceptance: manual checklist items below; JVM tests for the pure helper only.
+
 **Rollback:** Revert the `feat/android-native-transcript` branch; no schema or Rust changes.
 
 ## Verified sources
@@ -61,7 +63,7 @@ flowchart LR
 
 | Layer | Status |
 |-------|--------|
-| JVM unit (44 `@Test` methods in 8 classes, no JNA): UTF-16 slice/clamp/`isValidRange`/surrogate, per-scalar advance aggregation (`TextMeasureAdvances`), link hit-test (scroller viewport), anchor helpers, cache key equality, streaming prefix targets, `TranscriptViewportScale`, `ImageAttachmentSupport` (MIME, sample plan, preview URL/query parsing, percent-decode, host cache key, stale guard, `ViewportClip` helper) | Under `app/src/test`; `tasks.matching { assembleDebug }` depends on `testDebugUnitTest`; `apps/android/scripts/selfcheck-native-transcript.sh` for static callsite/import checks |
+| JVM unit (48 `@Test` methods in 8 classes, no JNA): UTF-16 slice/clamp/`isValidRange`/surrogate, per-scalar advance aggregation (`TextMeasureAdvances`), link hit-test (scroller viewport), anchor helpers (follow + scroll-to-latest threshold), cache key equality, streaming prefix targets, `TranscriptViewportScale`, `ImageAttachmentSupport` (MIME, sample plan, preview URL/query parsing, percent-decode, host cache key, stale guard, `ViewportClip` helper) | Under `app/src/test`; `tasks.matching { assembleDebug }` depends on `testDebugUnitTest`; `apps/android/scripts/selfcheck-native-transcript.sh` for static callsite/import checks |
 | Rust layout | Existing `crates/mobile` tests (out of scope) |
 | `assembleDebug` / on-device | **Pending** — not run on this VPS (no Android SDK compile here) |
 
@@ -79,6 +81,7 @@ flowchart LR
 - [ ] Demo lab + live session composer send regression
 - [ ] Long-press copy uses `copyText`
 - [ ] Lab replay streaming streams fixture markdown; live tool streams still session-only
+- [ ] **Scroll-to-latest:** long session scrolled far up → “Latest” visible; tap jumps to bottom and hides; new messages while reading history stay anchored; after jump, streaming tail follows; keyboard open/close and rotation; short/empty transcript → control hidden
 
 ## Known limitations
 

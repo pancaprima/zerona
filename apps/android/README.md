@@ -31,7 +31,7 @@ gradle -p apps/android :app:testDebugUnitTest \
   -PzeronCoreDir=../../target/android-core
 ```
 
-Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link hit-test, anchor/follow, cache keys, streaming prefixes, viewport scale, image reference/decode planning) live under `app/src/test` (44 JVM `@Test` methods in 8 classes). `assembleDebug` also runs `testDebugUnitTest` (see `app/build.gradle.kts`). Static wiring checks: `apps/android/scripts/selfcheck-native-transcript.sh` (no Gradle).
+Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link hit-test, anchor/follow, cache keys, streaming prefixes, viewport scale, image reference/decode planning) live under `app/src/test` (48 JVM `@Test` methods in 8 classes). `assembleDebug` also runs `testDebugUnitTest` (see `app/build.gradle.kts`). Static wiring checks: `apps/android/scripts/selfcheck-native-transcript.sh` (no Gradle).
 
 ## Manual transcript checks (device)
 
@@ -42,6 +42,7 @@ Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link 
 5. **Links** — http/https open in browser; `javascript:` ignored.
 6. **Tools** — disclosure, toggle, working/spinner rows in **Transcript lab** (fixture markdown) or a **live session** with tool rows (not every demo chat).
 7. **Composer** — send, queue/steer chips while typing during a turn, rotation, switch session.
+8. **Scroll-to-latest** — long transcript scrolled far up shows bottom **Latest** control; tap jumps to bottom; new messages while reading history stay put; after jump, streaming follows tail; keyboard open/close and rotation; short transcript hides control.
 
 Visual golden comparison is not automated on Android CI yet (`assembleDebug` only).
 

@@ -3,6 +3,7 @@ package sh.zeron.zerona.transcript
 import android.content.Context
 import android.graphics.Canvas
 import android.util.AttributeSet
+import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
 import androidx.core.widget.NestedScrollView
@@ -19,6 +20,7 @@ class TranscriptListView
     ) : NestedScrollView(context, attrs) {
         companion object {
             private const val MAX_ROW_POOL_SIZE = 32
+            private const val SCROLL_TO_LATEST_THRESHOLD_DP = 240f
         }
 
         private val content = FrameLayout(context)
@@ -32,6 +34,7 @@ class TranscriptListView
         private val cache = mutableMapOf<ModelKey, RowDrawModel>()
         private val cacheOrder = ArrayDeque<ModelKey>()
         private var destroyed = false
+        private var bindGeneration = 0
         private var renderEpoch = 0
 
         /** Viewport width in logical dp (matches Rust layout units). */
@@ -41,7 +44,23 @@ class TranscriptListView
         var overscanDp: Float = 700f
         private var following = true
         private var programmaticScroll = false
+        private var programmaticScrollGeneration = 0
         private val density: Float = resources.displayMetrics.density
+        private val scrollToLatestThresholdPx: Float = SCROLL_TO_LATEST_THRESHOLD_DP * density
+        private var scrollToLatestVisible = false
+        private var readyForScrollToLatestUi = false
+        private var pendingJumpAfterLayout = false
+        private var pendingAutoTailAfterLayout = false
+        private var pendingAutoTailFromEmpty = false
+        private var pendingMarkReadyAfterAutoTail = false
+        private var replayScrollToLatestGeneration = 0
+        var onScrollToLatestVisibilityChanged: ((Boolean) -> Unit)? = null
+
+        private val scrollToLatestEvalRunnable =
+            Runnable {
+                if (destroyed) return@Runnable
+                evaluateScrollToLatestVisibility()
+            }
 
         init {
             isFillViewport = true
@@ -59,8 +78,17 @@ class TranscriptListView
                             threshold,
                         )
                 }
+                scheduleScrollToLatestEvaluation()
                 layoutRows()
             }
+        }
+
+        override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+            if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                cancelPendingJump()
+                cancelPendingAutoTail()
+            }
+            return super.dispatchTouchEvent(ev)
         }
 
         override fun dispatchDraw(canvas: Canvas) {
@@ -86,6 +114,13 @@ class TranscriptListView
         }
 
         fun unbind() {
+            bindGeneration++
+            replayScrollToLatestGeneration++
+            removeCallbacks(scrollToLatestEvalRunnable)
+            cancelPendingJump()
+            cancelPendingAutoTail()
+            readyForScrollToLatestUi = false
+            scrollToLatestVisible = false
             engine = null
             actions = null
             closeCurrentFrame()
@@ -106,7 +141,29 @@ class TranscriptListView
         fun shutdown() {
             if (destroyed) return
             destroyed = true
+            removeCallbacks(scrollToLatestEvalRunnable)
+            onScrollToLatestVisibilityChanged = null
+            cancelPendingJump()
             unbind()
+        }
+
+        fun replayScrollToLatestVisibility() {
+            val bindGen = bindGeneration
+            val replayGen = ++replayScrollToLatestGeneration
+            post {
+                if (destroyed || bindGen != bindGeneration || replayGen != replayScrollToLatestGeneration) {
+                    return@post
+                }
+                onScrollToLatestVisibilityChanged?.invoke(scrollToLatestVisible)
+            }
+        }
+
+        fun jumpToLatest() {
+            if (destroyed) return
+            cancelPendingAutoTail()
+            following = true
+            pendingJumpAfterLayout = true
+            requestLayout()
         }
 
         fun applyLatestFrame() {
@@ -136,6 +193,7 @@ class TranscriptListView
                 }
                 invalidateDrawCache()
                 layoutRows()
+                scheduleScrollToLatestEvaluation()
                 return
             }
 
@@ -168,9 +226,9 @@ class TranscriptListView
             content.layoutParams.height = heightPx
             content.requestLayout()
             if (first) {
-                post { scrollToBottom(false) }
+                scheduleAutoTailAfterLayout(markReady = true, fromEmpty = true)
             } else if (following) {
-                post { scrollToBottom(false) }
+                scheduleAutoTailAfterLayout(markReady = true)
             } else if (anchorKey != null) {
                 val idx = frame.indexOf(anchorKey)
                 if (idx != null) {
@@ -184,6 +242,7 @@ class TranscriptListView
                 }
             }
             layoutRows()
+            scheduleScrollToLatestEvaluation()
         }
 
         private fun invalidateDrawCache() {
@@ -194,6 +253,7 @@ class TranscriptListView
 
         private fun scrollToBottom(animated: Boolean) {
             val max = computeMaxScroll()
+            val gen = ++programmaticScrollGeneration
             programmaticScroll = true
             if (animated) {
                 smoothScrollTo(0, max)
@@ -201,7 +261,112 @@ class TranscriptListView
                 scrollTo(0, max)
             }
             following = true
-            post { programmaticScroll = false }
+            val bindGen = bindGeneration
+            post {
+                if (destroyed || bindGen != bindGeneration) return@post
+                if (gen == programmaticScrollGeneration) {
+                    programmaticScroll = false
+                }
+                scheduleScrollToLatestEvaluation()
+            }
+        }
+
+        private fun markReadyForScrollToLatestUi() {
+            readyForScrollToLatestUi = true
+            evaluateScrollToLatestVisibility()
+        }
+
+        private fun scheduleScrollToLatestEvaluation() {
+            removeCallbacks(scrollToLatestEvalRunnable)
+            post(scrollToLatestEvalRunnable)
+        }
+
+        private fun evaluateScrollToLatestVisibility() {
+            if (!readyForScrollToLatestUi) {
+                emitScrollToLatestVisibility(false)
+                return
+            }
+            val show =
+                TranscriptAnchor.shouldShowScrollToLatest(
+                    scrollY,
+                    computeMaxScroll(),
+                    scrollToLatestThresholdPx,
+                )
+            emitScrollToLatestVisibility(show)
+        }
+
+        private fun emitScrollToLatestVisibility(show: Boolean) {
+            if (scrollToLatestVisible == show) return
+            scrollToLatestVisible = show
+            val listener = onScrollToLatestVisibilityChanged
+            if (listener == null) return
+            val bindGen = bindGeneration
+            post {
+                if (destroyed || bindGen != bindGeneration) return@post
+                onScrollToLatestVisibilityChanged?.invoke(scrollToLatestVisible)
+            }
+        }
+
+        private fun cancelPendingJump() {
+            pendingJumpAfterLayout = false
+        }
+
+        private fun cancelPendingAutoTail() {
+            pendingAutoTailAfterLayout = false
+            pendingAutoTailFromEmpty = false
+            pendingMarkReadyAfterAutoTail = false
+        }
+
+        private fun scheduleAutoTailAfterLayout(
+            markReady: Boolean,
+            fromEmpty: Boolean = false,
+        ) {
+            pendingAutoTailAfterLayout = true
+            pendingAutoTailFromEmpty = fromEmpty
+            if (markReady) {
+                pendingMarkReadyAfterAutoTail = true
+            }
+            requestLayout()
+        }
+
+        private fun drainPendingScrollsAfterLayout() {
+            if (destroyed || current == null) {
+                pendingJumpAfterLayout = false
+                cancelPendingAutoTail()
+                return
+            }
+            if (pendingJumpAfterLayout) {
+                pendingJumpAfterLayout = false
+                val max = computeMaxScroll()
+                val gen = ++programmaticScrollGeneration
+                val bindGen = bindGeneration
+                programmaticScroll = true
+                scrollTo(0, max)
+                following = true
+                markReadyForScrollToLatestUi()
+                post {
+                    if (destroyed || bindGen != bindGeneration) return@post
+                    if (gen == programmaticScrollGeneration) {
+                        programmaticScroll = false
+                    }
+                    scheduleScrollToLatestEvaluation()
+                }
+                layoutRows()
+                return
+            }
+            if (pendingAutoTailAfterLayout) {
+                pendingAutoTailAfterLayout = false
+                val markReady = pendingMarkReadyAfterAutoTail
+                pendingMarkReadyAfterAutoTail = false
+                val fromEmpty = pendingAutoTailFromEmpty
+                pendingAutoTailFromEmpty = false
+                if (following || fromEmpty) {
+                    scrollToBottom(false)
+                }
+                if (markReady) {
+                    markReadyForScrollToLatestUi()
+                }
+            }
         }
 
         private fun computeMaxScroll(): Int {
@@ -218,7 +383,27 @@ class TranscriptListView
             super.onSizeChanged(w, h, oldw, oldh)
             if (h != oldh || w != oldw) {
                 layoutRows()
+                scheduleScrollToLatestEvaluation()
             }
+        }
+
+        override fun onLayout(
+            changed: Boolean,
+            l: Int,
+            t: Int,
+            r: Int,
+            b: Int,
+        ) {
+            super.onLayout(changed, l, t, r, b)
+            drainPendingScrollsAfterLayout()
+            if (
+                current != null &&
+                    !pendingAutoTailAfterLayout &&
+                    !pendingJumpAfterLayout
+            ) {
+                readyForScrollToLatestUi = true
+            }
+            scheduleScrollToLatestEvaluation()
         }
 
         private fun layoutRows() {
