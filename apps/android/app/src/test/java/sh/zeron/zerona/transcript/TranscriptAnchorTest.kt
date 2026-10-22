@@ -109,6 +109,58 @@ class TranscriptAnchorTest {
     }
 
     @Test
+    fun layoutWindowDpAtTail() {
+        // Pixel 3–like: scrollY=445314, density=2.75, viewport=1483px, overscan=700dp
+        val density = 2.75f
+        val scrollY = 445314
+        val viewportPx = 1483
+        val overscanDp = 700f
+        val viewHeightDp = viewportPx / density
+        val scrollDp = scrollY / density
+        val expectedY0 = scrollDp - overscanDp
+        val expectedY1 = scrollDp + viewHeightDp + overscanDp
+        val window =
+            TranscriptAnchor.layoutWindowDp(scrollY, density, viewportPx, overscanDp)
+        assertEquals(expectedY0, window.first, 0.01f)
+        assertEquals(expectedY1, window.second, 0.01f)
+    }
+
+    @Test
+    fun layoutWindowDpZeroViewportUsesFallback() {
+        val overscanDp = 700f
+        val window = TranscriptAnchor.layoutWindowDp(1000, 2f, 0, overscanDp, 400f)
+        assertEquals(500f - overscanDp, window.first, 0.01f)
+        assertEquals(500f + 400f + overscanDp, window.second, 0.01f)
+    }
+
+    @Test
+    fun viewportIntersectsRowBandTailBugScenario() {
+        val scrollY = 445314
+        val viewportPx = 1483
+        val vpBottom = scrollY + viewportPx
+        val staleBandTop = 366908
+        val staleBandBottom = 370696
+        assertFalse(
+            TranscriptAnchor.viewportIntersectsRowBand(
+                scrollY,
+                vpBottom,
+                staleBandTop,
+                staleBandBottom,
+            ),
+        )
+        val tailBandTop = 445000
+        val tailBandBottom = 446749
+        assertTrue(
+            TranscriptAnchor.viewportIntersectsRowBand(
+                scrollY,
+                vpBottom,
+                tailBandTop,
+                tailBandBottom,
+            ),
+        )
+    }
+
+    @Test
     fun extendSettleDeadlineInactiveStaysZero() {
         assertEquals(
             0L,

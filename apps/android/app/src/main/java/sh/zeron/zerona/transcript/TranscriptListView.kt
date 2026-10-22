@@ -56,6 +56,8 @@ class TranscriptListView
         private var scrollToLatestVisible = false
         private var readyForScrollToLatestUi = false
         private var pendingJumpAfterLayout = false
+        private var jumpRowSyncInProgress = false
+        private var jumpRowSyncGeneration = 0
         private var pendingAutoTailAfterLayout = false
         private var pendingAutoTailFromEmpty = false
         private var pendingMarkReadyAfterAutoTail = false
@@ -193,7 +195,7 @@ class TranscriptListView
             if (destroyed) return
             Log.d("ZScroll", "jump")
             cancelPendingAutoTail()
-            following = true
+            jumpRowSyncInProgress = true
             pendingJumpAfterLayout = true
             armJumpSettle()
             requestLayout()
@@ -268,8 +270,8 @@ class TranscriptListView
                 scheduleAutoTailAfterLayout(markReady = true, fromEmpty = true)
             } else {
                 extendJumpSettleIfActive()
-                if (following) {
-                    scheduleAutoTailAfterLayout(markReady = true)
+                if (following || jumpRowSyncInProgress) {
+                    scheduleAutoTailAfterLayout(markReady = !jumpRowSyncInProgress)
                 } else if (anchorKey != null) {
                     val idx = frame.indexOf(anchorKey)
                     if (idx != null) {
@@ -342,6 +344,10 @@ class TranscriptListView
                 emitScrollToLatestVisibility(false)
                 return
             }
+            if (jumpRowSyncInProgress) {
+                emitScrollToLatestVisibility(true)
+                return
+            }
             val show =
                 TranscriptAnchor.shouldShowScrollToLatest(
                     scrollY,
@@ -389,6 +395,8 @@ class TranscriptListView
 
         private fun cancelPendingJump() {
             pendingJumpAfterLayout = false
+            jumpRowSyncInProgress = false
+            jumpRowSyncGeneration++
         }
 
         private fun cancelPendingAutoTail() {
@@ -427,9 +435,7 @@ class TranscriptListView
                         "content.layoutParams.height=${content.layoutParams.height}",
                 )
                 programmaticScrollToMax()
-                markReadyForScrollToLatestUi()
-                layoutRows()
-                maybeResettleJumpBottom()
+                scheduleJumpRowSyncAfterScroll()
                 return
             }
             if (pendingAutoTailAfterLayout) {
@@ -454,7 +460,10 @@ class TranscriptListView
             val bindGen = bindGeneration
             programmaticScroll = true
             scrollTo(0, max)
-            following = true
+            if (!jumpRowSyncInProgress) {
+                following = true
+            }
+            Log.d("ZScroll", "scrollToMax target=$max scrollYAfter=$scrollY")
             post {
                 if (destroyed || bindGen != bindGeneration) return@post
                 if (gen == programmaticScrollGeneration) {
@@ -462,6 +471,127 @@ class TranscriptListView
                 }
                 scheduleScrollToLatestEvaluation()
             }
+        }
+
+        private fun scheduleJumpRowSyncAfterScroll() {
+            val gen = ++jumpRowSyncGeneration
+            val bindGen = bindGeneration
+            post {
+                if (destroyed || bindGen != bindGeneration || gen != jumpRowSyncGeneration) {
+                    return@post
+                }
+                runJumpRowSyncPass(gen, bindGen, pass = 1) {
+                    postOnAnimation {
+                        if (destroyed || bindGen != bindGeneration || gen != jumpRowSyncGeneration) {
+                            return@postOnAnimation
+                        }
+                        runJumpRowSyncPass(gen, bindGen, pass = 2) {
+                            finishJumpRowSync(gen, bindGen, forced = true)
+                        }
+                    }
+                }
+            }
+        }
+
+        private fun runJumpRowSyncPass(
+            gen: Int,
+            bindGen: Int,
+            pass: Int,
+            onIncomplete: () -> Unit,
+        ) {
+            if (destroyed || bindGen != bindGeneration || gen != jumpRowSyncGeneration) return
+            val max = computeMaxScroll()
+            programmaticScroll = true
+            scrollTo(0, max)
+            programmaticScroll = false
+            layoutRows()
+            logLayoutRowsSnapshot("jumpSync pass=$pass")
+            if (isTailViewportSatisfied()) {
+                finishJumpRowSync(gen, bindGen, forced = false)
+            } else {
+                onIncomplete()
+            }
+        }
+
+        private fun finishJumpRowSync(
+            gen: Int,
+            bindGen: Int,
+            forced: Boolean,
+        ) {
+            if (destroyed || bindGen != bindGeneration || gen != jumpRowSyncGeneration) return
+            val max = computeMaxScroll()
+            programmaticScroll = true
+            scrollTo(0, max)
+            programmaticScroll = false
+            layoutRows()
+            val tailOk = isTailViewportSatisfied()
+            jumpRowSyncInProgress = false
+            following = tailOk
+            if (tailOk || forced) {
+                markReadyForScrollToLatestUi()
+            }
+            val bounds = visibleRowVerticalBoundsPx()
+            val window = TranscriptAnchor.layoutWindowDp(scrollY, density, height, overscanDp)
+            Log.d(
+                "ZScroll",
+                "jumpDone forced=$forced scrollY=$scrollY max=$max laid=${visible.size} " +
+                    "window=${window.first.toInt()}..${window.second.toInt()}dp " +
+                    "rowsPx=${bounds?.first}..${bounds?.last} tailOk=$tailOk",
+            )
+            if (!tailOk) {
+                emitScrollToLatestVisibility(true)
+            }
+            scheduleScrollToLatestEvaluation()
+            maybeResettleJumpBottom()
+        }
+
+        private fun isTailViewportSatisfied(): Boolean {
+            val max = computeMaxScroll()
+            if (
+                TranscriptAnchor.shouldResettleToBottom(
+                    scrollY,
+                    max,
+                    JUMP_SETTLE_EPSILON_PX,
+                )
+            ) {
+                return false
+            }
+            val bounds = visibleRowVerticalBoundsPx() ?: return false
+            val vpBottom = scrollY + height
+            return TranscriptAnchor.viewportIntersectsRowBand(
+                scrollY,
+                vpBottom,
+                bounds.first,
+                bounds.last,
+            )
+        }
+
+        private fun visibleRowVerticalBoundsPx(): IntRange? {
+            if (visible.isEmpty()) return null
+            var minTop = Int.MAX_VALUE
+            var maxBottom = Int.MIN_VALUE
+            for (view in visible.values) {
+                val lp = view.layoutParams as? FrameLayout.LayoutParams ?: continue
+                val top = lp.topMargin
+                val bottom = top + lp.height
+                if (top < minTop) minTop = top
+                if (bottom > maxBottom) maxBottom = bottom
+            }
+            if (minTop == Int.MAX_VALUE) return null
+            return minTop..maxBottom
+        }
+
+        private fun logLayoutRowsSnapshot(reason: String) {
+            val frame = current ?: return
+            val window = TranscriptAnchor.layoutWindowDp(scrollY, density, height, overscanDp)
+            val placementCount = frame.rowsIn(window.first, window.second).size
+            val bounds = visibleRowVerticalBoundsPx()
+            Log.d(
+                "ZScroll",
+                "$reason scrollY=$scrollY max=${computeMaxScroll()} placements=$placementCount " +
+                    "attached=${visible.size} window=${window.first.toInt()}..${window.second.toInt()}dp " +
+                    "rowsPx=${bounds?.first}..${bounds?.last}",
+            )
         }
 
         private fun maybeResettleJumpBottom() {
@@ -491,6 +621,7 @@ class TranscriptListView
             )
             programmaticScrollToMax()
             layoutRows()
+            logLayoutRowsSnapshot("resettle")
             requestLayout()
         }
 
@@ -530,7 +661,8 @@ class TranscriptListView
             if (
                 current != null &&
                     !pendingAutoTailAfterLayout &&
-                    !pendingJumpAfterLayout
+                    !pendingJumpAfterLayout &&
+                    !jumpRowSyncInProgress
             ) {
                 readyForScrollToLatestUi = true
             }
@@ -540,9 +672,14 @@ class TranscriptListView
         private fun layoutRows() {
             val frame = current ?: return
             if (layoutWidthDp <= 0f) return
-            val viewHeightDp = if (height > 0) height / density else overscanDp
-            val y0 = scrollY / density - overscanDp
-            val y1 = scrollY / density + viewHeightDp + overscanDp
+            val (y0, y1) =
+                TranscriptAnchor.layoutWindowDp(
+                    scrollY,
+                    density,
+                    height,
+                    overscanDp,
+                    overscanDp,
+                )
             val placements = frame.rowsIn(y0, y1)
             var maxPlacementBottomPx = 0
             for (p in placements) {

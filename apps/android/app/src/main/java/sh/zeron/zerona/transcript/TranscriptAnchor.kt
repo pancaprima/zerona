@@ -64,6 +64,34 @@ object TranscriptAnchor {
         return nowMs < deadlineMs
     }
 
+    /**
+     * Vertical layout window in layout dp used by [TranscriptListView.layoutRows].
+     * [viewportHeightPx] may be 0 while the view has no height yet; then [fallbackViewHeightDp] is used.
+     */
+    fun layoutWindowDp(
+        scrollY: Int,
+        density: Float,
+        viewportHeightPx: Int,
+        overscanDp: Float,
+        fallbackViewHeightDp: Float = overscanDp,
+    ): Pair<Float, Float> {
+        val viewHeightDp =
+            if (viewportHeightPx > 0) viewportHeightPx / density else fallbackViewHeightDp
+        val scrollDp = scrollY / density
+        val y0 = scrollDp - overscanDp
+        val y1 = scrollDp + viewHeightDp + overscanDp
+        return y0 to y1
+    }
+
+    /** True when any part of [rowBandMinTopPx]..[rowBandMaxBottomPx] lies inside the viewport. */
+    fun viewportIntersectsRowBand(
+        viewportTopPx: Int,
+        viewportBottomPx: Int,
+        rowBandMinTopPx: Int,
+        rowBandMaxBottomPx: Int,
+    ): Boolean =
+        rowBandMaxBottomPx > viewportTopPx && rowBandMinTopPx < viewportBottomPx
+
     fun extendSettleDeadline(
         nowMs: Long,
         armedAtMs: Long,
