@@ -49,8 +49,11 @@ fun SessionScreen(
 
     val refreshTick by appModel.refreshTick.collectAsState()
     LaunchedEffect(refreshTick) {
+        viewModel.refreshComposer()
         viewModel.refreshTranscript()
     }
+
+    val appState by appModel.state.collectAsState()
 
     Scaffold(
         topBar = {
@@ -64,14 +67,15 @@ fun SessionScreen(
             )
         },
         bottomBar = {
-            Text(
-                "Sign-in required to send (demo)",
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            SessionComposerBar(
+                composer = state.composer,
+                draftText = state.draftText,
+                demoLocked = appState.isDemo,
+                onDraftChange = viewModel::updateDraft,
+                onDeliveryModeChange = viewModel::setDeliveryMode,
+                onSend = viewModel::send,
+                onRemoveQueued = viewModel::removeQueued,
+                onDeliverQueuedNow = viewModel::deliverQueuedNow,
             )
         },
     ) { padding ->

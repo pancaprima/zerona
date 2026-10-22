@@ -1,6 +1,6 @@
 # Plan: Zerona Android M3 (sign-in live + kirim pesan)
 
-Status: M3a diimplementasi di branch `feat/android-m3a` (sign-in + live client); M3b composer belum. Lanjutan `plan-zerona-android-app.md` (M1 demo sudah di `main`, PR #23).
+Status: M3a sudah merged (PR #24, login terbukti di HP). M3b (composer + kirim) diimplementasi di branch `feat/android-m3b`, belum dites di HP. Lanjutan `plan-zerona-android-app.md` (M1 demo sudah di `main`, PR #23).
 Build Rust/Gradle HANYA di CI. Implementasi didelegasikan ke Cursor; verifikasi lewat CI + HP (Pixel 3 / A07).
 
 ## Tujuan
@@ -43,7 +43,7 @@ Build Rust/Gradle HANYA di CI. Implementasi didelegasikan ke Cursor; verifikasi 
 
 File: `AppModel.kt`, baru `CredentialsStore.kt`, `SignInScreen.kt`, `ZeronaApp.kt`, `MainActivity.kt`, `AndroidManifest.xml`, `build.gradle.kts`, `ClientListenerBridge.kt`.
 
-### M3b: composer + kirim pesan (PR sendiri, setelah M3a)
+### M3b: composer + kirim pesan (PR sendiri, setelah M3a) — [x] kode
 - Composer Compose di `SessionScreen.kt` menggantikan placeholder; `SessionHandle.send(SendRequest(text, attachments, worktree?, busy))`.
 - Sesi sibuk: Queue vs Steer (interrupt lalu send), mengikuti iOS `CoreSessionSource.swift:123-126`.
 - Baca state composer lewat `handle.composer()` saat `ComposerChanged`.
