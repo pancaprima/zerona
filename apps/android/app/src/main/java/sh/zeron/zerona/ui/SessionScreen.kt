@@ -22,7 +22,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -53,12 +56,35 @@ fun SessionScreen(
         viewModel.refreshTranscript()
     }
 
+    val workspaceTick by appModel.workspaceTick.collectAsState()
+    LaunchedEffect(workspaceTick) {
+        viewModel.refreshModelLabel()
+    }
+
     val appState by appModel.state.collectAsState()
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(state.title.ifBlank { "Session" }) },
+                title = {
+                    Column {
+                        Text(state.title.ifBlank { "Session" })
+                        val modelLabel = state.modelLabel
+                        if (modelLabel != null) {
+                            Text(
+                                modelLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier =
+                                    Modifier.semantics {
+                                        contentDescription = "Model: $modelLabel"
+                                    },
+                            )
+                        }
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")

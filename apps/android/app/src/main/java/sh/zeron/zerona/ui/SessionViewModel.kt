@@ -46,6 +46,7 @@ data class ComposerStripState(
 
 data class SessionUiState(
     val title: String = "",
+    val modelLabel: String? = null,
     val loading: Boolean = true,
     val rows: List<TranscriptRowUi> = emptyList(),
     val plainPreview: String = "",
@@ -101,9 +102,32 @@ class SessionViewModel(
                 return
             }
             refreshComposer()
+            refreshModelLabel()
             mainHandler.post { refreshTranscript() }
         } catch (e: Exception) {
             _state.update { it.copy(loading = false, error = formatCoreError(e)) }
+        }
+    }
+
+    fun refreshModelLabel() {
+        val core = appModel.client ?: return
+        viewModelScope.launch {
+            try {
+                val label =
+                    withContext(Dispatchers.Default) {
+                        val row = core.sessionRow(chatId)
+                        formatModelLabel(
+                            row?.modelLabel,
+                            row?.model,
+                            row?.harnessLabel,
+                            row?.reasoning,
+                        )
+                    }
+                _state.update { it.copy(modelLabel = label) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -294,4 +318,19 @@ class SessionViewModel(
             is CoreException -> e.message ?: e.toString()
             else -> e.message ?: e.toString()
         }
+}
+
+fun formatModelLabel(
+    modelLabel: String?,
+    model: String?,
+    harnessLabel: String?,
+    reasoning: String?,
+): String? {
+    val base =
+        modelLabel?.trim()?.takeIf { it.isNotBlank() }
+            ?: model?.trim()?.takeIf { it.isNotBlank() }
+            ?: harnessLabel?.trim()?.takeIf { it.isNotBlank() }
+            ?: return null
+    val reasoningPart = reasoning?.trim()?.takeIf { it.isNotBlank() }
+    return if (reasoningPart != null) "$base · $reasoningPart" else base
 }

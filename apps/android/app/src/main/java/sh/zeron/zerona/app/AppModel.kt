@@ -102,6 +102,9 @@ class AppModel(
     private val refreshCounter = MutableStateFlow(0L)
     val refreshTick: StateFlow<Long> = refreshCounter.asStateFlow()
 
+    private val workspaceCounter = MutableStateFlow(0L)
+    val workspaceTick: StateFlow<Long> = workspaceCounter.asStateFlow()
+
     var client: CoreClient? = null
         private set
 
@@ -421,6 +424,7 @@ class AppModel(
         when (event) {
             is ClientEvent.WorkspaceChanged -> {
                 client?.let { refreshWorkspace(it) }
+                workspaceCounter.update { it + 1 }
             }
             is ClientEvent.SessionChanged,
             is ClientEvent.ComposerChanged,
