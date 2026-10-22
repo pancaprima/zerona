@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Zerona" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/zerona_background</item>
+        <item name="android:colorBackground">@color/zerona_background</item>
+        <item name="android:textColorPrimary">@color/zerona_on_surface</item>
+        <item name="android:textColorSecondary">@color/zerona_on_surface_variant</item>
+    </style>
+    <style name="Theme.Zerona.Dialog.Dark" parent="android:Theme.Material.Dialog.Alert">
+        <item name="android:background">@color/zerona_surface</item>
+        <item name="android:textColorPrimary">@color/zerona_on_surface</item>
+        <item name="android:textColorSecondary">@color/zerona_on_surface_variant</item>
+    </style>
+</resources>

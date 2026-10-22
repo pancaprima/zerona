@@ -131,8 +131,16 @@ Use these as design references, not an automatic dependency-upgrade requirement.
 ## Rollback
 Keep cosmetic changes isolated in their own commit/PR; revert that patch and reinstall the preceding verified APK if needed. Do not revert unrelated active milestone work.
 
-## Decisions still needed
-- Feedback pada katalog komponen lengkap dengan arah visual mock pertama. Bold v2 tidak dipilih.
-- Persetujuan detail state, kepadatan dan motion sebelum implementasi native.
-- Izin implementasi adalah langkah terpisah dari mock lengkap ini.
+## Decisions (recorded)
+- Visual direction: Calm v1 catalog (not Bold v2). User approved native implementation after mock review.
+- Composer shell: **Edge Dock** (option 4) — opaque full-width dock, plain field, trailing send.
+- State, density, and motion: shipped per Edge Dock spec (`animateContentSize` ~200ms on composer; Latest chip fade/slide ~200/160ms). Further motion changes are out of scope for this refresh.
 - Todo due date remains unspecified; do not invent a date.
+
+## Implementation evidence (Composer 2.5, worktree only)
+- Shared tokens: `ZeronaColorTokens.kt`, `TranscriptColorTokens.kt`, `Contrast.kt`, M3 `Theme.kt`; transcript `Palette.kt` consumes shared tokens (action lilac `#5C45A8`, decorative `#7B5FD4` for quote bar only).
+- Edge Dock: opaque full-width `SessionComposerBar`, tonal top divider, plain `BasicTextField` (+2dp horizontal inset so focus stroke does not clip glyphs), trailing send (48dp), contextual Queue/Steer; queued items use bounded preview (`MAX_QUEUED_PREVIEW_LINES` = 3) with **Send now** / **Remove** on `FlowRow` inside the same queue row `Column` (wraps at large fonts).
+- Sessions list: one `LazyColumn` item per section header and per session (`key = row.id`); per-row `Surface` with first/middle/last corner radii for continuous tonal groups (no eager section `Column`).
+- Native chrome: `values` + `values-night` themes/colors; `NativeChrome.kt` for dialogs/menus/selection/image preview tints.
+- Motion shipped: `animateContentSize` (~200ms) on composer stack; `AnimatedVisibility` fade/slide (~200/160ms) on Latest. No transcript scroll/inset animation changes.
+- VPS pure helpers: `GRADLE_USER_HOME=/root/.gradle python3 scripts/android/test-design-helpers.py --cache-dir /root/.hermes/profiles/girlfriend/cache/scratch/zerona-jvm` — **37** JVM tests (`ZeronaColorTokensTest`, `ContrastTest`, `ComposerPresentationTest`). Contrast regression captured RED then GREEN at `/root/.hermes/profiles/girlfriend/cache/scratch/zerona-final-contrast-{red,green}.log`. Compose compile/device UI unverified here; parent runs Android CI.

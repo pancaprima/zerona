@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#1A1A1A</color>
+    <color name="zerona_background">#EBE8F0</color>
+    <color name="zerona_surface">#F7F5FA</color>
+    <color name="zerona_on_surface">#1C1B22</color>
+    <color name="zerona_on_surface_variant">#5C5768</color>
+    <color name="zerona_primary">#5C45A8</color>
+    <color name="zerona_outline">#C9C2D4</color>
 </resources>

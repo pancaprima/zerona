@@ -147,7 +147,7 @@ internal class MessageActionsController(
         }
 
         val menuBuilt =
-            AlertDialog.Builder(activity)
+            NativeChrome.dialogBuilder(activity)
                 .setTitle("Message")
                 .setItems(labels.toTypedArray()) { _, which ->
                     when (val action = actions.getOrNull(which)) {
@@ -194,6 +194,7 @@ internal class MessageActionsController(
             }
         }
         menuBuilt.show()
+        NativeChrome.applyDialogList(menuBuilt)
         menuBuilt.listView?.let { list ->
             val minPx = (48f * activity.resources.displayMetrics.density).toInt()
             for (i in 0 until list.childCount) {
@@ -214,7 +215,7 @@ internal class MessageActionsController(
         }
         val labels = links.map { it.label }.toTypedArray()
         val built =
-            AlertDialog.Builder(activity)
+            NativeChrome.dialogBuilder(activity)
                 .setTitle("Copy link")
                 .setItems(labels) { _, which ->
                     links.getOrNull(which)?.let { writeClipboardLink(it.url) }
@@ -230,6 +231,7 @@ internal class MessageActionsController(
             releaseIfIdle()
         }
         built.show()
+        NativeChrome.applyDialogList(built)
     }
 
     private fun showSelectionPanel(showSource: Boolean) {
@@ -271,6 +273,7 @@ internal class MessageActionsController(
                         View.GONE
                     }
                 minimumHeight = (48f * density).toInt()
+                NativeChrome.applyCheckBox(this, activity)
             }
 
         val bodyView =
@@ -284,6 +287,7 @@ internal class MessageActionsController(
                 if (showSource) {
                     typeface = Typeface.MONOSPACE
                 }
+                NativeChrome.applyReadableText(this, activity)
             }
 
         monoToggle.setOnCheckedChangeListener { _, checked ->
@@ -319,6 +323,7 @@ internal class MessageActionsController(
                 setOnClickListener {
                     writeClipboard(TranscriptMessageActionsSupport.prepareClipboardText(menuState.selectionText))
                 }
+                NativeChrome.themeButton(this, activity)
             }
         val closeBtn =
             Button(activity).apply {
@@ -326,6 +331,7 @@ internal class MessageActionsController(
                 setOnClickListener {
                     dismissSelectionDialog(releaseController = true)
                 }
+                NativeChrome.themeButton(this, activity)
             }
         buttonRow.addView(copyAll)
         buttonRow.addView(closeBtn)
@@ -336,7 +342,7 @@ internal class MessageActionsController(
 
         val title = if (showSource) "Source text" else "Message text"
         val built =
-            AlertDialog.Builder(activity)
+            NativeChrome.dialogBuilder(activity)
                 .setTitle(title)
                 .setView(root)
                 .create()

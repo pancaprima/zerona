@@ -18,7 +18,11 @@ fun LoadErrorScreen(message: String) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("Could not load Zeron core", style = MaterialTheme.typography.titleLarge)
+        Text(
+            "Could not load Zeron core",
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onBackground,
+        )
         Text(
             message,
             modifier = Modifier.padding(top = 12.dp),
