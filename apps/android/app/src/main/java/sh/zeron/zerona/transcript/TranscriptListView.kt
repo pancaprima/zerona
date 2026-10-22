@@ -105,6 +105,19 @@ class TranscriptListView
             }
         }
 
+        /**
+         * Lazily resolves whole-message source for a row key against the current layout frame.
+         * Must run on the UI thread; does not retain [LayoutFrame] beyond the call.
+         */
+        fun wholeMessageTextForRow(rowKey: ULong): String? {
+            if (destroyed) return null
+            val frame = current ?: return null
+            val idx =
+                runCatching { frame.indexOf(rowKey) }.getOrNull()
+                    ?: return null
+            return runCatching { frame.messageText(idx) }.getOrNull()
+        }
+
         fun bind(
             transcriptView: TranscriptView?,
             transcriptActions: TranscriptActions?,

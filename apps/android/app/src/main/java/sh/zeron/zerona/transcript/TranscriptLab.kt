@@ -3,6 +3,8 @@ package sh.zeron.zerona.transcript
 import uniffi.zeron_core.DebugEntry
 import uniffi.zeron_core.layoutFixtureMarkdown
 
+private const val LAB_MARKDOWN_IMAGE_ALT = "Lab Markdown image"
+
 /**
  * Offline transcript lab (`setDebugEntries`, no session `attach`).
  *
@@ -39,6 +41,17 @@ object TranscriptLab {
                 id = "a-demo-image",
                 user = false,
                 text = "The thumbnail above uses the Android lab demo fixture only.",
+                streaming = false,
+            )
+        entries +=
+            DebugEntry(
+                id = "a-markdown-image",
+                user = false,
+                text =
+                    "Markdown image (lab fixture path — not a host read):\n\n" +
+                        "![$LAB_MARKDOWN_IMAGE_ALT]($LAB_DEMO_IMAGE_REFERENCE)\n\n" +
+                        "Copy-link diagnostic (plain link, not promoted to a widget): " +
+                        "[.png]($LAB_DEMO_IMAGE_REFERENCE)",
                 streaming = false,
             )
         for (i in 0 until 3) {

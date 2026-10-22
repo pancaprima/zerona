@@ -31,15 +31,15 @@ gradle -p apps/android :app:testDebugUnitTest \
   -PzeronCoreDir=../../target/android-core
 ```
 
-Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link hit-test, anchor/follow, cache keys, streaming prefixes, viewport scale, image reference/decode planning) live under `app/src/test` (48 JVM `@Test` methods in 8 classes). `assembleDebug` also runs `testDebugUnitTest` (see `app/build.gradle.kts`). Static wiring checks: `apps/android/scripts/selfcheck-native-transcript.sh` (no Gradle).
+Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link hit-test, anchor/follow, cache keys, streaming prefixes, viewport scale, image reference/decode planning, message action/copy/link menu models) live under `app/src/test` (64 JVM `@Test` methods in 9 classes). `assembleDebug` also runs `testDebugUnitTest` (see `app/build.gradle.kts`). Static wiring checks: `apps/android/scripts/selfcheck-native-transcript.sh` (no Gradle).
 
 ## Manual transcript checks (device)
 
-1. **Demo → Transcript lab** — lazy `layoutFixtureMarkdown()` via `setDebugEntries` (widgets from laid-out fixture only). Includes a **lab demo image** row (`LAB_DEMO_IMAGE_REFERENCE`, local gradient only). Use top-bar **Replay streaming** for scripted fixture prefixes (`a-stream`); composer locked; live host tool streams need a real session.
+1. **Demo → Transcript lab** — lazy `layoutFixtureMarkdown()` via `setDebugEntries` (widgets from laid-out fixture only). Includes a **user attachment list** demo row, a **Markdown `![]()`** assistant row (`LAB_DEMO_IMAGE_REFERENCE`, lab gradient — not `readAttachment`), and a plain `[.png](…)` link on that row for Copy link (links are not promoted to image widgets). Use top-bar **Replay streaming** for scripted fixture prefixes (`a-stream`); composer locked; live host tool streams need a real session.
 2. **Demo session** — open any demo chat; scroll a long reply; confirm no duplicate full messages per row.
 3. **Font scale** — system display size 85% / 130%; relayout matches paint.
 4. **Code block** — horizontal scroll inside row; copy button copies payload.
-5. **Links** — http/https open in browser; `javascript:` ignored.
+5. **Links & images** — tap http/https open in browser; `javascript:` ignored. Core emits **image widgets** only for Markdown `![]()` with local absolute or `pending://` references (not `https`, relatives, or plain `[label](path)` links). Long-press for **Copy message**, **Select text** (Activity-scoped selectable `TextView` with handles — not cross-row Canvas selection), **Copy link**, and **View source** when whole-message text differs from the visible block and row `copyText` differs from painted text (`messageText` / per-row `copyText` slices — not guaranteed full original bytes).
 6. **Tools** — disclosure, toggle, working/spinner rows in **Transcript lab** (fixture markdown) or a **live session** with tool rows (not every demo chat).
 7. **Composer** — send, queue/steer chips while typing during a turn, rotation, switch session.
 8. **Scroll-to-latest** — long transcript scrolled far up shows bottom **Latest** control; tap jumps to bottom; new messages while reading history stay put; after jump, streaming follows tail; keyboard open/close and rotation; short transcript hides control.
@@ -48,7 +48,7 @@ Visual golden comparison is not automated on Android CI yet (`assembleDebug` onl
 
 ## Known gaps
 
-- Markdown `![]()` remote images: links only (not `WidgetKind.Image`). Agent `Visual`: placeholder; `setVisualSource` wired for future scripts.
+- Markdown `![]()` with remote/relative/`file:` sources stay links (by design). Device verification pending for host `readAttachment` thumbnails and lab Markdown image row. Agent `Visual`: placeholder; `setVisualSource` wired for future scripts.
 - Real host attachment thumbnails: manual device test pending (signed-in session).
 - Math glyphs on API &lt; 31: labeled placeholder (real glyphs need API 31+ `drawGlyphs`).
 - Tool rail / shimmer simplified vs iOS.

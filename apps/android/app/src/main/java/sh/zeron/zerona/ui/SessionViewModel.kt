@@ -24,10 +24,15 @@ import kotlinx.coroutines.withContext
 import sh.zeron.zerona.app.AppModel
 import sh.zeron.zerona.transcript.FrameRelay
 import sh.zeron.zerona.transcript.ImageAttachmentSupport
+import sh.zeron.zerona.transcript.MessageActionsController
+import sh.zeron.zerona.transcript.MessageLinkDescriptor
 import sh.zeron.zerona.transcript.SessionImageLoader
 import sh.zeron.zerona.transcript.TranscriptActions
 import sh.zeron.zerona.transcript.TranscriptLab
 import sh.zeron.zerona.transcript.TranscriptListView
+import sh.zeron.zerona.transcript.TranscriptMessageActionsSupport
+import sh.zeron.zerona.transcript.findActivity
+import sh.zeron.zerona.transcript.isUsableForUi
 import uniffi.zeron_core.BusyPolicy
 import uniffi.zeron_core.CoreException
 import uniffi.zeron_core.DebugEntry
@@ -86,6 +91,7 @@ class SessionViewModel(
     private var engineLive = false
 
     private val sessionImageLoader = SessionImageLoader(viewModelScope)
+    private var messageActionsController: MessageActionsController? = null
 
     private val transcriptActions =
         object : TranscriptActions {
@@ -112,6 +118,54 @@ class SessionViewModel(
                     return
                 }
                 sessionImageLoader.showPreview(context, reference, thumbnail)
+            }
+
+            override fun showMessageActions(
+                context: Context,
+                rowKey: ULong,
+                fallbackRowText: String,
+                links: List<MessageLinkDescriptor>,
+                preferredLink: String?,
+                rowCopyText: String,
+                rowDisplayText: String,
+            ) {
+                val activity = context.findActivity()
+                if (activity == null || !activity.isUsableForUi()) return
+                val host = transcriptHost
+                val whole =
+                    if (host != null && transcriptHost === host) {
+                        host.wholeMessageTextForRow(rowKey)
+                    } else {
+                        null
+                    }
+                val menuState =
+                    TranscriptMessageActionsSupport.buildMenuState(
+                        fallbackRowText = fallbackRowText,
+                        rowCopyText = rowCopyText,
+                        rowDisplayText = rowDisplayText,
+                        wholeMessageText = whole,
+                        links = links,
+                        preferredLinkUrl = preferredLink,
+                    )
+                if (!menuState.copyMessageEnabled &&
+                    !menuState.selectTextEnabled &&
+                    !menuState.copyLinkEnabled
+                ) {
+                    return
+                }
+                messageActionsController?.close()
+                val controller =
+                    MessageActionsController(
+                        activity = activity,
+                        menuState = menuState,
+                        onClosed = { closed ->
+                            if (messageActionsController === closed) {
+                                messageActionsController = null
+                            }
+                        },
+                    )
+                messageActionsController = controller
+                controller.show()
             }
 
             override fun openUrl(
@@ -250,6 +304,8 @@ class SessionViewModel(
         if (transcriptHost === host) {
             host.onScrollToLatestVisibilityChanged = null
             transcriptHost = null
+            messageActionsController?.close()
+            messageActionsController = null
             _state.update { it.copy(showScrollToLatest = false) }
         }
     }
@@ -496,6 +552,8 @@ class SessionViewModel(
 
     override fun onCleared() {
         engineLive = false
+        messageActionsController?.close()
+        messageActionsController = null
         sessionImageLoader.close()
         stopLabStream()
         transcriptHost?.onScrollToLatestVisibilityChanged = null

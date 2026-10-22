@@ -25,4 +25,15 @@ interface TranscriptActions {
         thumbnail: Bitmap?,
     ) {
     }
+
+    fun showMessageActions(
+        context: Context,
+        rowKey: ULong,
+        fallbackRowText: String,
+        links: List<MessageLinkDescriptor>,
+        preferredLink: String? = null,
+        rowCopyText: String = "",
+        rowDisplayText: String = fallbackRowText,
+    ) {
+    }
 }

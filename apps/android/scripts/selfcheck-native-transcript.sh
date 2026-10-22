@@ -37,7 +37,7 @@ fi
 
 # TranscriptActions implementors: required overrides present.
 vm="$MAIN/ui/SessionViewModel.kt"
-for sym in toggleRow toggleDetail openUrl imageLoader showImagePreview; do
+for sym in toggleRow toggleDetail openUrl imageLoader showImagePreview showMessageActions; do
   grep -q "override fun $sym" "$vm" || fail "SessionViewModel missing override fun $sym"
 done
 

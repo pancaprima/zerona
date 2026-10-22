@@ -3,8 +3,6 @@ package sh.zeron.zerona.transcript
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
 import android.view.GestureDetector
@@ -54,7 +52,8 @@ class RowView(
             object : GestureDetector.SimpleOnGestureListener() {
                 override fun onLongPress(e: MotionEvent) {
                     longPressActive = true
-                    copyRowText()
+                    performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    presentMessageActions(preferredLinkUrl = null)
                 }
             },
         )
@@ -69,16 +68,20 @@ class RowView(
         setOnTouchListener { _, event ->
             gesture.onTouchEvent(event)
             if (event.actionMasked == MotionEvent.ACTION_UP) {
-                if (!longPressActive) {
-                    val link = hitLink(event.x, event.y)
-                    if (link != null) {
-                        openLink(link.url)
-                        return@setOnTouchListener true
-                    }
+                if (longPressActive) {
+                    longPressActive = false
+                    return@setOnTouchListener true
                 }
-                longPressActive = false
+                val link = hitLink(event.x, event.y)
+                if (link != null) {
+                    openLink(link.url)
+                    return@setOnTouchListener true
+                }
             }
             if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                longPressActive = false
+            }
+            if (event.actionMasked == MotionEvent.ACTION_CANCEL) {
                 longPressActive = false
             }
             false
@@ -312,12 +315,21 @@ class RowView(
         clearHostedViews(linkOverlayViews)
         for (link in d.links) {
             val host = widgetHost(link.scroller?.toInt()) ?: this
+            val linkUrl = link.url
             val view =
                 View(context).apply {
-                    contentDescription = "Link, ${link.url}"
+                    contentDescription = "Link, $linkUrl"
                     importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
                     isClickable = true
-                    setOnClickListener { openLink(link.url) }
+                    isLongClickable = true
+                    setOnClickListener {
+                        openLink(linkUrl)
+                    }
+                    setOnLongClickListener {
+                        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        presentMessageActions(preferredLinkUrl = linkUrl)
+                        true
+                    }
                 }
             view.layoutParams =
                 LayoutParams(
@@ -381,11 +393,20 @@ class RowView(
         actions?.openUrl(context, url)
     }
 
-    private fun copyRowText() {
+    private fun presentMessageActions(preferredLinkUrl: String?) {
         val d = model?.display ?: return
-        val text = d.copyText.ifEmpty { d.text }
-        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText("transcript", text))
+        val act = actions ?: return
+        val fallback = d.copyText.ifEmpty { d.text }
+        val links = d.links.map { TranscriptMessageActionsSupport.linkDescriptor(it.url) }
+        act.showMessageActions(
+            context,
+            rowKey,
+            fallback,
+            links,
+            preferredLinkUrl,
+            rowCopyText = d.copyText,
+            rowDisplayText = d.text,
+        )
     }
 
     fun reloadImageWidgets() {
@@ -399,6 +420,7 @@ class RowView(
     }
 
     fun resetForPool() {
+        longPressActive = false
         cancelStreamAnimation()
         for (v in widgetViews) {
             if (v is TranscriptImageWidget) {

@@ -6,16 +6,18 @@ Replace the M1 Compose `Text` + `messageText` path with a native Android painter
 
 ## Non-goals
 
-- Rust/protocol changes, third-party markdown parsers, WebView rendering.
+- Third-party markdown parsers, WebView rendering, FFI/schema changes.
 - Network image loading, live agent `Visual` sessions (placeholder + a11y only).
 - CI Gradle builds on this VPS task (device visual validation pending).
-- Modifying `crates/**`, iOS, scripts, workflows, or generated bindings.
+- iOS, scripts, workflows, or generated binding edits (unless a follow-up explicitly approves them).
+
+**Historical (pre–Markdown images phase):** early milestones treated `crates/**` as out of scope. **Current approved narrow Rust scope:** `crates/mobile/src/layout/markdown.rs` and layout regressions in `tests.rs` only — embeddable `![]()` → `WidgetKind.Image`, `copy_text` preservation, streaming display mend contract. No `crates/markdown` parser changes.
 
 ## Status (2026-10-22)
 
 Review blockers addressed in `apps/android/**`: Geist via `createFromAsset`, math via `Font.Builder` + `Canvas.drawGlyphs` (API 31+) with explicit `MATH_REFERENCE_SIZE` on the paint, logical-dp viewport + canvas density scale, scroller inner `FrameLayout`, frame lifecycle (revision idempotency closes duplicate wrappers; `renderEpoch` on theme/style), hydration on `frameReady` + app refresh tick, lab **Replay streaming** top-bar action (composer locked in lab), JVM unit tests wired via lazy `tasks.matching { assembleDebug }`.
 
-**PR26 feedback (2026-10-22):** Compact transcript via `TranscriptViewportScale` (`0.88f × Configuration.fontScale` → `setViewport` only). Compose + native clipping (`clipToBounds`, `TranscriptListView.dispatchDraw` clip, `RowView.clipChildren`). Glass-inspired opaque composer (`GlassInspired.kt`). `WidgetKind.Image` loads through `CoreClient.readAttachment(hostDeviceId, reference)` with bounded decode + session LRU; lab demo uses `LAB_DEMO_IMAGE_REFERENCE` only (no FFI). `zeron-preview://image?ref=` opens in-app preview; Markdown `![]()` remote images remain links (Rust does not emit image widgets for them). `readAttachment` is not chat-scoped — host path jail on the engine applies.
+**PR26 feedback (2026-10-22):** Compact transcript via `TranscriptViewportScale` (`0.88f × Configuration.fontScale` → `setViewport` only). Compose + native clipping (`clipToBounds`, `TranscriptListView.dispatchDraw` clip, `RowView.clipChildren`). Glass-inspired opaque composer (`GlassInspired.kt`). `WidgetKind.Image` loads through `CoreClient.readAttachment(hostDeviceId, reference)` with bounded decode + session LRU; lab uses `LAB_DEMO_IMAGE_REFERENCE` (in-memory gradient, no FFI) and a **Markdown** `![]()` row with the same path. `zeron-preview://image?ref=` opens in-app preview. **Markdown image support boundary (mobile layout):** local absolute paths, Windows/UNC paths, and `pending://…` references become `WidgetKind.Image`; `https:`/`http:`, `file:`, `data:`, `javascript:`, relative paths, and overlong sources stay alt + link (no URL/file-type guessing). Ordinary `[label](path)` links are never promoted to image widgets. `readAttachment` is not chat-scoped — host path jail on the engine applies.
 
 **Scroll-to-latest (2026-10-22, pending CI/device):** When the user reads history (`following = false`) and remaining scroll distance from the live bottom exceeds **240 dp** (px threshold computed once from view density), show a bottom-centered opaque “Latest” control (12 dp above the transcript box bottom; scaffold already clears the composer). Visibility is driven by `TranscriptAnchor.shouldShowScrollToLatest(scrollY, maxScroll, thresholdPx)` on real `NestedScrollView` offsets (not row estimates), gated until after the initial bottom scroll / layout pass. `TranscriptListView` posts visibility deltas to `SessionViewModel`; tap calls `jumpToLatest()` (instant scroll to current `maxScroll`, `following = true`, pending jumps cancelled on user scroll/unbind). Follow-tail semantics unchanged (70 dp resume threshold). Acceptance: manual checklist items below; JVM tests for the pure helper only.
 
@@ -63,8 +65,8 @@ flowchart LR
 
 | Layer | Status |
 |-------|--------|
-| JVM unit (48 `@Test` methods in 8 classes, no JNA): UTF-16 slice/clamp/`isValidRange`/surrogate, per-scalar advance aggregation (`TextMeasureAdvances`), link hit-test (scroller viewport), anchor helpers (follow + scroll-to-latest threshold), cache key equality, streaming prefix targets, `TranscriptViewportScale`, `ImageAttachmentSupport` (MIME, sample plan, preview URL/query parsing, percent-decode, host cache key, stale guard, `ViewportClip` helper) | Under `app/src/test`; `tasks.matching { assembleDebug }` depends on `testDebugUnitTest`; `apps/android/scripts/selfcheck-native-transcript.sh` for static callsite/import checks |
-| Rust layout | Existing `crates/mobile` tests (out of scope) |
+| JVM unit (64 `@Test` methods in 9 classes, no JNA): UTF-16 slice/clamp/`isValidRange`/surrogate, per-scalar advance aggregation (`TextMeasureAdvances`), link hit-test (scroller viewport), anchor helpers (follow + scroll-to-latest threshold), cache key equality, streaming prefix targets, `TranscriptViewportScale`, `ImageAttachmentSupport` (MIME, sample plan, preview URL/query parsing, percent-decode, host cache key, stale guard, `ViewportClip` helper), `TranscriptMessageActionsSupport` (clipboard/selection UTF-16 caps, exact link token, dedupe) | Under `app/src/test`; `tasks.matching { assembleDebug }` depends on `testDebugUnitTest`; `apps/android/scripts/selfcheck-native-transcript.sh` for static callsite/import checks |
+| Rust layout (`crates/mobile/src/layout/tests.rs`) | **15** Markdown image regressions (`embeddable_image_reference`, local/pending/mixed/streaming mend, narrow + same-line non-overlap ink rects, link/code fallbacks, cap 16); run via macOS `ios-core` / `cargo test -p zeron-mobile` when mobile layout changes — **pending CI log on parent push** |
 | `assembleDebug` / on-device | **Pending** — not run on this VPS (no Android SDK compile here) |
 
 ### Manual acceptance (pending device)
@@ -79,7 +81,8 @@ flowchart LR
 - [ ] http/https links open externally; `zeron-preview` stays in-app; other schemes ignored
 - [ ] Rotation / session switch / follow-tail vs anchor
 - [ ] Demo lab + live session composer send regression
-- [ ] Long-press copy uses `copyText`
+- [ ] Long-press copy uses row `copyText` / whole-message text where applicable
+- [ ] Lab Markdown `![]()` image row loads lab fixture; plain `[.png](…)` link offers Copy link only
 - [ ] Lab replay streaming streams fixture markdown; live tool streams still session-only
 - [ ] **Scroll-to-latest:** long session scrolled far up → “Latest” visible; tap jumps to bottom and hides; new messages while reading history stay anchored; after jump, streaming tail follows; keyboard open/close and rotation; short/empty transcript → control hidden
 
@@ -88,7 +91,9 @@ flowchart LR
 - `reveal_ms` on `TextRun` not animated (same as iOS painter).
 - Tool rail connector animation simplified vs iOS `ToolRailView`.
 - Shimmer is a reduced gradient sweep.
-- Markdown `![]()` HTTPS images stay links/alt text (no `WidgetKind.Image` from Rust on mobile).
+- Markdown `![]()` with `https:`/`http:`, `file:`, relatives, or jail-breaking paths stay links/alt text (no widget). Streaming incomplete destinations use mend `zeron:pending-link` in the display AST until the source completes — not emitted as host image widgets.
+- Long-press **View source** compares whole-message text (`LayoutFrame.messageText`) to the visible block; per-row `copy_text` is the trimmed markdown slice for that layout block (joined blocks may normalize spacing) — not a guaranteed byte-identical full message source.
+- **Select text** opens an Activity-scoped selectable `TextView` panel (handles), not in-place cross-row Canvas selection.
 - `Visual` widgets: placeholder + `setVisualSource` wired for future scripts; no live visual player in this milestone.
 - `readAttachment` returns full `ByteArray` (client cap); Android enforces size before decode — not streaming decode.
 - Math glyphs on API &lt; 31: labeled placeholder, not TeX layout.

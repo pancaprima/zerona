@@ -1,5 +1,8 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+
+use zeron_text::StyleId;
 
 use super::*;
 
@@ -649,12 +652,32 @@ fn visual_rows_take_the_height_their_worker_measures() {
     view.close();
 }
 
-/// Every row of a one-message transcript at `width`.
-fn rows_of(md: &str, width: f32) -> Vec<RowDisplay> {
+/// Layout pass for a one-message transcript at `width`, with per-style ink metrics
+/// from the same [`Typography`] that produced the frame (no duplicate sizing).
+struct RowsPass {
+    rows: Vec<RowDisplay>,
+    style_metrics: HashMap<u16, (f32, f32)>,
+}
+
+fn rows_pass(md: &str, width: f32) -> RowsPass {
     let mut w = worker(width);
     w.input = transcript_one(md);
     let frame = w.pass();
-    (0..frame.row_count()).map(|i| frame.display(i).unwrap()).collect()
+    let style_metrics = frame
+        .styles()
+        .iter()
+        .map(|desc| {
+            let m = w.typo.book.metrics(StyleId(desc.id));
+            (desc.id, (m.ascent, m.descent))
+        })
+        .collect();
+    let rows = (0..frame.row_count()).map(|i| frame.display(i).unwrap()).collect();
+    RowsPass { rows, style_metrics }
+}
+
+/// Every row of a one-message transcript at `width`.
+fn rows_of(md: &str, width: f32) -> Vec<RowDisplay> {
+    rows_pass(md, width).rows
 }
 
 /// Inline math paints as glyphs on the text's baseline, never as TeX, and
@@ -1255,4 +1278,254 @@ fn math_tables_keep_a_bounded_canvas() {
     assert!(canvas < 8e6, "table canvas {canvas} pt²");
     let small = rows_of("| a | b |\n|---|---|\n| $x^2$ | $\\frac{1}{2}$ |", 390.0).remove(0);
     assert!(!small.glyphs.is_empty(), "a small math table renders its formulas");
+}
+
+fn image_widget_refs(d: &RowDisplay) -> Vec<&str> {
+    d.widgets
+        .iter()
+        .filter_map(|w| match &w.kind {
+            display::WidgetKind::Image { reference } => Some(reference.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn run_ink_rect(r: &display::TextRun, metrics: &HashMap<u16, (f32, f32)>) -> (f32, f32, f32, f32) {
+    let (ascent, descent) = metrics.get(&r.style).copied().unwrap_or((0.0, 0.0));
+    (r.x, r.baseline - ascent, r.x + r.width, r.baseline + descent)
+}
+
+fn rects_overlap(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
+    a.0 < b.2 && a.2 > b.0 && a.1 < b.3 && a.3 > b.1
+}
+
+/// Conservative ink-vs-widget overlap using the frame's resolved style metrics.
+fn run_overlaps_image(r: &display::TextRun, img: &display::Widget, metrics: &HashMap<u16, (f32, f32)>) -> bool {
+    let ink = run_ink_rect(r, metrics);
+    let widget = (img.x, img.y, img.x + img.w, img.y + img.h);
+    rects_overlap(ink, widget)
+}
+
+fn row0(md: &str) -> RowDisplay {
+    rows_of(md, 390.0).remove(0)
+}
+
+#[test]
+fn markdown_local_image_emits_widget_with_exact_reference() {
+    let md = "![A07 screenshot](/tmp/uploads/ab12-shot.png)";
+    let d = row0(md);
+    assert_eq!(image_widget_refs(&d), ["/tmp/uploads/ab12-shot.png"]);
+    assert!(!d.text.contains("A07 screenshot"), "alt is not painted: {}", d.text);
+    assert!(!d.runs.iter().any(|r| r.color == display::ColorRole::Link));
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_image_mixed_paragraph_preserves_order() {
+    let md = "Before ![cap](/tmp/a.png) after";
+    let pass = rows_pass(md, 390.0);
+    let d = &pass.rows[0];
+    let metrics = &pass.style_metrics;
+    assert_eq!(image_widget_refs(d), ["/tmp/a.png"]);
+    assert!(d.text.contains("Before") && d.text.contains("after"), "{}", d.text);
+    let before = d.runs.iter().find(|r| run_text(d, r) == "Before ").expect("before");
+    let after = d.runs.iter().find(|r| run_text(d, r) == " after").expect("after");
+    let img = d.widgets.iter().find(|w| matches!(&w.kind, display::WidgetKind::Image { .. })).expect("widget");
+    for r in &d.runs {
+        assert!(!run_overlaps_image(r, img, metrics), "run {:?} overlaps image", r);
+    }
+    if (before.baseline - after.baseline).abs() < 0.5 {
+        assert!(before.x + before.width <= img.x + 0.5, "text before image on line");
+        assert!(img.x + img.w <= after.x + 0.5, "text after image on line");
+    }
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_two_inline_images_in_one_paragraph() {
+    let md = "![one](/tmp/one.png) and ![two](/tmp/two.png)";
+    let d = row0(md);
+    assert_eq!(image_widget_refs(&d), ["/tmp/one.png", "/tmp/two.png"]);
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_pending_image_emits_widget() {
+    let md = "![](pending://u1/x.png)";
+    let d = row0(md);
+    assert_eq!(image_widget_refs(&d), ["pending://u1/x.png"]);
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_plain_link_to_png_is_not_an_image_widget() {
+    let md = "[notes](/tmp/ending.png)";
+    let d = row0(md);
+    assert!(image_widget_refs(&d).is_empty());
+    assert!(!d.links.is_empty());
+    assert!(d.text.contains("notes"));
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_https_image_stays_alt_and_link() {
+    let md = "![remote](https://example.com/a.png)";
+    let d = row0(md);
+    assert!(image_widget_refs(&d).is_empty());
+    assert!(d.text.contains("remote"));
+    assert!(d.runs.iter().any(|r| r.color == display::ColorRole::Link));
+    assert!(!d.links.is_empty());
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_unsafe_and_relative_image_sources_stay_link_fallback() {
+    for md in [
+        "![f](file:///tmp/x.png)",
+        "![d](data:image/png;base64,abc)",
+        "![r](relative.png)",
+        "![j](javascript:alert(1))",
+    ] {
+        let d = row0(md);
+        assert!(image_widget_refs(&d).is_empty(), "{md}");
+        assert!(d.runs.iter().any(|r| r.color == display::ColorRole::Link), "{md}");
+        assert_eq!(d.copy_text, md);
+    }
+}
+
+#[test]
+fn markdown_image_syntax_inside_code_is_literal() {
+    let fenced = "```\n![a](/tmp/b.png)\n```";
+    let d = row0(fenced);
+    assert!(image_widget_refs(&d).is_empty());
+    assert!(d.text.contains("![a](/tmp/b.png)"), "{}", d.text);
+    assert_eq!(d.copy_text, fenced);
+
+    let inline = "Use `![a](/tmp/b.png)` here.";
+    let d = row0(inline);
+    assert!(image_widget_refs(&d).is_empty());
+    assert!(d.text.contains("![a](/tmp/b.png)"), "{}", d.text);
+    assert_eq!(d.copy_text, inline);
+}
+
+#[test]
+fn markdown_linked_image_uses_source_without_link_overlay_on_widget() {
+    let md = "[![cap](/tmp/inner.png)](https://example.com/outer)";
+    let d = row0(md);
+    assert_eq!(image_widget_refs(&d), ["/tmp/inner.png"]);
+    let img = d.widgets.iter().find(|w| matches!(&w.kind, display::WidgetKind::Image { .. })).unwrap();
+    assert!(d.links.iter().all(|l| {
+        let overlaps = l.x < img.x + img.w && l.x + l.w > img.x && l.y < img.y + img.h && l.y + l.h > img.y;
+        !overlaps
+    }));
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_image_streaming_appears_only_when_complete() {
+    // Streaming layout uses `IncrementalParser::display_tree` (mended tail). Incomplete
+    // `](url` destinations become `zeron:pending-link` in the AST — not embeddable host paths
+    // (see `crates/markdown` `display_tree_never_leaks_streaming_urls` / `links_mend_to_pending_sentinel`).
+    let full = "![A07](/tmp/a07.png)";
+    let host_path = "/tmp/a07.png";
+    let mut w = worker(390.0);
+    for (shown, expect_widget) in [
+        ("![A07", false),
+        ("![A07](", false),
+        ("![A07](/tmp/a07.png", false),
+        (full, true),
+    ] {
+        w.input = debug_input(vec![DebugEntry { id: "a".into(), user: false, text: shown.to_owned(), streaming: true }], true);
+        let d = w.pass().display(0).unwrap();
+        let refs = image_widget_refs(&d);
+        assert_eq!(!refs.is_empty(), expect_widget, "widget at {shown:?}");
+        if !expect_widget {
+            assert!(
+                !refs.iter().any(|r| *r == host_path),
+                "host path must not widget before complete source: {shown:?} -> {refs:?}"
+            );
+        }
+    }
+    w.input = transcript_one(full);
+    let d = w.pass().display(0).unwrap();
+    assert_eq!(image_widget_refs(&d), [host_path]);
+    assert_eq!(d.copy_text, full);
+}
+
+#[test]
+fn markdown_image_narrow_viewport_fits_without_text_overlap() {
+    let md = "Hi ![x](/tmp/wide.png) there";
+    let width = 120.0;
+    let pass = rows_pass(md, width);
+    let d = &pass.rows[0];
+    let metrics = &pass.style_metrics;
+    let img = d.widgets.iter().find(|w| matches!(&w.kind, display::WidgetKind::Image { .. })).expect("image");
+    assert!(img.w > 0.0 && img.h > 0.0 && img.w <= width + 0.5);
+    assert!(img.x >= 0.0 && img.x + img.w <= width + 0.5);
+    assert!(img.w <= img.h + 0.5, "image is square at paint");
+    for r in &d.runs {
+        assert!(
+            !run_overlaps_image(r, img, metrics),
+            "run {:?} overlaps image {:?}",
+            r,
+            img
+        );
+    }
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_image_same_line_viewport_no_text_overlap() {
+    let md = "Hi ![x](/tmp/wide.png) there";
+    let pass = rows_pass(md, 390.0);
+    let d = &pass.rows[0];
+    let metrics = &pass.style_metrics;
+    let img = d.widgets.iter().find(|w| matches!(&w.kind, display::WidgetKind::Image { .. })).expect("image");
+    for r in &d.runs {
+        assert!(!run_overlaps_image(r, img, metrics), "run {:?} overlaps image", r);
+    }
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_image_in_list_does_not_crash() {
+    let d = row0("- ![item](/tmp/item.png)\n- text");
+    assert_eq!(image_widget_refs(&d), ["/tmp/item.png"]);
+}
+
+#[test]
+fn embeddable_image_reference_policy() {
+    use super::markdown::{embeddable_image_reference, MAX_IMAGE_SOURCE_LEN};
+    assert!(embeddable_image_reference("/tmp/a.png"));
+    assert!(embeddable_image_reference("/tmp/my file.png"), "spaces are not trimmed");
+    assert!(embeddable_image_reference("pending://u/x"));
+    assert!(!embeddable_image_reference("pending://"));
+    assert!(embeddable_image_reference(r"C:\shots\a.png"));
+    assert!(embeddable_image_reference(r"C:/shots/a.png"));
+    assert!(!embeddable_image_reference("C:"));
+    assert!(!embeddable_image_reference("C:foo"));
+    assert!(embeddable_image_reference(r"\\server\share\a.png"));
+    assert!(!embeddable_image_reference("https://x/a.png"));
+    assert!(!embeddable_image_reference("relative.png"));
+    assert!(!embeddable_image_reference("file:///tmp/a.png"));
+    assert!(!embeddable_image_reference(""));
+    assert!(!embeddable_image_reference("/tmp/\0bad"));
+    assert!(!embeddable_image_reference("\t/tmp/a.png"));
+    let ok = format!("/{}", "a".repeat(MAX_IMAGE_SOURCE_LEN - 1));
+    assert_eq!(ok.len(), MAX_IMAGE_SOURCE_LEN);
+    assert!(embeddable_image_reference(&ok));
+    let too_long = format!("/{}", "a".repeat(MAX_IMAGE_SOURCE_LEN));
+    assert_eq!(too_long.len(), MAX_IMAGE_SOURCE_LEN + 1);
+    assert!(!embeddable_image_reference(&too_long));
+}
+
+#[test]
+fn markdown_inline_image_row_cap_is_sixteen() {
+    let md = (0..17)
+        .map(|i| format!("![n{i}](/tmp/img{i}.png)"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let d = row0(&md);
+    assert_eq!(image_widget_refs(&d).len(), 16);
+    assert_eq!(d.copy_text, md);
 }
