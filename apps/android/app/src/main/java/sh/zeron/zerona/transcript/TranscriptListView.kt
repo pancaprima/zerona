@@ -23,6 +23,8 @@ class TranscriptListView
             private const val MAX_ROW_POOL_SIZE = 32
             private const val SCROLL_TO_LATEST_THRESHOLD_DP = 240f
             private const val JUMP_SETTLE_WINDOW_MS = 1500L
+            private const val TAIL_SETTLE_EXTEND_MS = 600L
+            private const val TAIL_SETTLE_MAX_MS = 5000L
             private const val JUMP_SETTLE_EPSILON_PX = 2
         }
 
@@ -58,6 +60,7 @@ class TranscriptListView
         private var pendingMarkReadyAfterAutoTail = false
         private var replayScrollToLatestGeneration = 0
         private var jumpSettleDeadlineMs = 0L
+        private var jumpSettleArmedAtMs = 0L
         var onScrollToLatestVisibilityChanged: ((Boolean) -> Unit)? = null
 
         private val scrollToLatestEvalRunnable =
@@ -127,6 +130,7 @@ class TranscriptListView
             transcriptView: TranscriptView?,
             transcriptActions: TranscriptActions?,
         ) {
+            clearJumpSettle()
             engine = transcriptView
             actions = transcriptActions
         }
@@ -182,7 +186,7 @@ class TranscriptListView
             cancelPendingAutoTail()
             following = true
             pendingJumpAfterLayout = true
-            jumpSettleDeadlineMs = SystemClock.uptimeMillis() + JUMP_SETTLE_WINDOW_MS
+            armJumpSettle()
             requestLayout()
         }
 
@@ -246,18 +250,22 @@ class TranscriptListView
             content.layoutParams.height = heightPx
             content.requestLayout()
             if (first) {
+                armJumpSettle()
                 scheduleAutoTailAfterLayout(markReady = true, fromEmpty = true)
-            } else if (following) {
-                scheduleAutoTailAfterLayout(markReady = true)
-            } else if (anchorKey != null) {
-                val idx = frame.indexOf(anchorKey)
-                if (idx != null) {
-                    val p = frame.placement(idx)
-                    if (p != null) {
-                        val yPx = TranscriptAnchor.anchoredScrollY(p.y, anchorDelta) * density
-                        programmaticScroll = true
-                        scrollTo(0, yPx.toInt())
-                        programmaticScroll = false
+            } else {
+                extendJumpSettleIfActive()
+                if (following) {
+                    scheduleAutoTailAfterLayout(markReady = true)
+                } else if (anchorKey != null) {
+                    val idx = frame.indexOf(anchorKey)
+                    if (idx != null) {
+                        val p = frame.placement(idx)
+                        if (p != null) {
+                            val yPx = TranscriptAnchor.anchoredScrollY(p.y, anchorDelta) * density
+                            programmaticScroll = true
+                            scrollTo(0, yPx.toInt())
+                            programmaticScroll = false
+                        }
                     }
                 }
             }
@@ -330,6 +338,26 @@ class TranscriptListView
 
         private fun clearJumpSettle() {
             jumpSettleDeadlineMs = 0L
+            jumpSettleArmedAtMs = 0L
+        }
+
+        private fun armJumpSettle() {
+            val now = SystemClock.uptimeMillis()
+            jumpSettleArmedAtMs = now
+            jumpSettleDeadlineMs = now + JUMP_SETTLE_WINDOW_MS
+        }
+
+        private fun extendJumpSettleIfActive() {
+            if (jumpSettleDeadlineMs == 0L) return
+            val now = SystemClock.uptimeMillis()
+            jumpSettleDeadlineMs =
+                TranscriptAnchor.extendSettleDeadline(
+                    now,
+                    jumpSettleArmedAtMs,
+                    jumpSettleDeadlineMs,
+                    TAIL_SETTLE_EXTEND_MS,
+                    TAIL_SETTLE_MAX_MS,
+                )
         }
 
         private fun cancelPendingJump() {
@@ -405,10 +433,11 @@ class TranscriptListView
 
         private fun maybeResettleJumpBottom() {
             if (destroyed) return
+            if (!following) return
             val now = SystemClock.uptimeMillis()
             if (!TranscriptAnchor.settleActive(now, jumpSettleDeadlineMs)) {
                 if (jumpSettleDeadlineMs != 0L) {
-                    jumpSettleDeadlineMs = 0L
+                    clearJumpSettle()
                 }
                 return
             }

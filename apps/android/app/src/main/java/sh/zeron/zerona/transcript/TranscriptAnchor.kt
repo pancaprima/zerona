@@ -55,4 +55,28 @@ object TranscriptAnchor {
         if (deadlineMs == 0L) return false
         return nowMs < deadlineMs
     }
+
+    fun extendSettleDeadline(
+        nowMs: Long,
+        armedAtMs: Long,
+        currentDeadlineMs: Long,
+        extendMs: Long,
+        capMs: Long,
+    ): Long {
+        if (currentDeadlineMs == 0L) return 0L
+        val capDeadline =
+            if (capMs >= Long.MAX_VALUE - armedAtMs) {
+                Long.MAX_VALUE
+            } else {
+                armedAtMs + capMs
+            }
+        val extended =
+            if (extendMs >= Long.MAX_VALUE - nowMs) {
+                Long.MAX_VALUE
+            } else {
+                nowMs + extendMs
+            }
+        val candidate = maxOf(currentDeadlineMs, extended)
+        return minOf(candidate, capDeadline)
+    }
 }

@@ -92,4 +92,64 @@ class TranscriptAnchorTest {
         assertFalse(TranscriptAnchor.settleActive(200L, 200L))
         assertFalse(TranscriptAnchor.settleActive(300L, 200L))
     }
+
+    @Test
+    fun extendSettleDeadlineInactiveStaysZero() {
+        assertEquals(
+            0L,
+            TranscriptAnchor.extendSettleDeadline(1000L, 500L, 0L, 600L, 5000L),
+        )
+    }
+
+    @Test
+    fun extendSettleDeadlineExtendsToNowPlusExtend() {
+        assertEquals(
+            1600L,
+            TranscriptAnchor.extendSettleDeadline(1000L, 500L, 1200L, 600L, 5000L),
+        )
+    }
+
+    @Test
+    fun extendSettleDeadlineNeverDecreases() {
+        assertEquals(
+            3000L,
+            TranscriptAnchor.extendSettleDeadline(2000L, 500L, 3000L, 600L, 5000L),
+        )
+    }
+
+    @Test
+    fun extendSettleDeadlineCappedAtArmedPlusCap() {
+        assertEquals(
+            6000L,
+            TranscriptAnchor.extendSettleDeadline(5800L, 1000L, 5900L, 600L, 5000L),
+        )
+    }
+
+    @Test
+    fun extendSettleDeadlineCapBelowCurrentDeadline() {
+        assertEquals(
+            1100L,
+            TranscriptAnchor.extendSettleDeadline(2000L, 1000L, 5000L, 600L, 100L),
+        )
+    }
+
+    @Test
+    fun extendSettleDeadlineExtremeLongWithoutOverflow() {
+        val now = Long.MAX_VALUE - 10L
+        val armed = Long.MAX_VALUE - 100L
+        assertEquals(
+            Long.MAX_VALUE,
+            TranscriptAnchor.extendSettleDeadline(now, armed, 1000L, 600L, 5000L),
+        )
+        assertEquals(
+            Long.MAX_VALUE,
+            TranscriptAnchor.extendSettleDeadline(
+                Long.MAX_VALUE - 1L,
+                0L,
+                Long.MAX_VALUE - 100L,
+                600L,
+                Long.MAX_VALUE,
+            ),
+        )
+    }
 }
