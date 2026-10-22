@@ -164,7 +164,7 @@ fun SessionScreen(
                 )
                 val showLatest = state.showScrollToLatest && state.error == null && !showLoadingShell
                 val latestMotionMs = ComposerPresentation.CONTENT_MOTION_DURATION_MS
-                AnimatedVisibility(
+                androidx.compose.animation.AnimatedVisibility(
                     visible = showLatest,
                     modifier = Modifier.align(Alignment.BottomCenter),
                     enter =
