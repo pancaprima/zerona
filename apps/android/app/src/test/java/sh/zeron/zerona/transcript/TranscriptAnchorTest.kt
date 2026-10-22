@@ -7,6 +7,21 @@ import org.junit.Test
 
 class TranscriptAnchorTest {
     @Test
+    fun contentHeightPx() {
+        assertEquals(500, TranscriptAnchor.contentHeightPx(500, 100))
+        assertEquals(600, TranscriptAnchor.contentHeightPx(500, 600))
+        assertEquals(1, TranscriptAnchor.contentHeightPx(0, 0))
+        assertEquals(1, TranscriptAnchor.contentHeightPx(-10, -20))
+        assertEquals(42, TranscriptAnchor.contentHeightPx(42, 42))
+        assertEquals(Int.MAX_VALUE, TranscriptAnchor.contentHeightPx(Int.MAX_VALUE, 100))
+        assertEquals(Int.MAX_VALUE, TranscriptAnchor.contentHeightPx(100, Int.MAX_VALUE))
+        assertEquals(
+            Int.MAX_VALUE,
+            TranscriptAnchor.contentHeightPx(Int.MAX_VALUE, Int.MAX_VALUE),
+        )
+    }
+
+    @Test
     fun followWhenNearBottom() {
         assertTrue(TranscriptAnchor.shouldFollowAfterUserScroll(950, 1000, 100f))
         assertFalse(TranscriptAnchor.shouldFollowAfterUserScroll(800, 1000, 100f))

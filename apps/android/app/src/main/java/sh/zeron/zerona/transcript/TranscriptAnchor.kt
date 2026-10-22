@@ -4,6 +4,14 @@ package sh.zeron.zerona.transcript
  * Pure helpers for follow-tail vs scroll anchoring.
  */
 object TranscriptAnchor {
+    fun contentHeightPx(
+        totalPx: Int,
+        lastRowBottomPx: Int,
+    ): Int {
+        val result = maxOf(1L, totalPx.toLong(), lastRowBottomPx.toLong())
+        return if (result > Int.MAX_VALUE) Int.MAX_VALUE else result.toInt()
+    }
+
     fun shouldFollowAfterUserScroll(
         scrollY: Int,
         maxScroll: Int,

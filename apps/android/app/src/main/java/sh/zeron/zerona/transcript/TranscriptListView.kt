@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.os.SystemClock
 import android.util.AttributeSet
+import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
@@ -78,12 +79,19 @@ class TranscriptListView
             setOnScrollChangeListener { _, _, _, _, _ ->
                 if (!programmaticScroll) {
                     val threshold = 70f * density
+                    val wasFollowing = following
                     following =
                         TranscriptAnchor.shouldFollowAfterUserScroll(
                             scrollY,
                             computeMaxScroll(),
                             threshold,
                         )
+                    if (wasFollowing && !following) {
+                        Log.d(
+                            "ZScroll",
+                            "follow=false scrollY=$scrollY max=${computeMaxScroll()}",
+                        )
+                    }
                 }
                 scheduleScrollToLatestEvaluation()
                 layoutRows()
@@ -183,6 +191,7 @@ class TranscriptListView
 
         fun jumpToLatest() {
             if (destroyed) return
+            Log.d("ZScroll", "jump")
             cancelPendingAutoTail()
             following = true
             pendingJumpAfterLayout = true
@@ -246,8 +255,13 @@ class TranscriptListView
             }
             current = frame
             lastRevision = revision
-            val heightPx = (frame.totalHeight() * density).toInt().coerceAtLeast(1)
-            content.layoutParams.height = heightPx
+            val totalDp = frame.totalHeight()
+            val totalPx = (totalDp * density).toInt()
+            val lastRowBottomPx = lastRowBottomPx(frame)
+            val finalHeightPx =
+                TranscriptAnchor.contentHeightPx(totalPx, lastRowBottomPx)
+            content.layoutParams.height = finalHeightPx
+            content.minimumHeight = finalHeightPx
             content.requestLayout()
             if (first) {
                 armJumpSettle()
@@ -272,6 +286,19 @@ class TranscriptListView
             layoutRows()
             scheduleScrollToLatestEvaluation()
             maybeResettleJumpBottom()
+            Log.d(
+                "ZScroll",
+                "applyFrame rev=$revision rowCount=${frame.rowCount()} totalDp=$totalDp " +
+                    "totalPx=$totalPx lastRowBottomPx=$lastRowBottomPx finalHeightPx=$finalHeightPx " +
+                    "following=$following scrollY=$scrollY first=$first settleDeadline=$jumpSettleDeadlineMs",
+            )
+        }
+
+        private fun lastRowBottomPx(frame: LayoutFrame): Int {
+            val rowCount = frame.rowCount()
+            if (rowCount == 0u) return 0
+            val p = frame.placement(rowCount - 1u) ?: return 0
+            return ceil((p.y + p.height) * density).toInt()
         }
 
         private fun invalidateDrawCache() {
@@ -393,6 +420,12 @@ class TranscriptListView
                 pendingAutoTailAfterLayout = false
                 pendingAutoTailFromEmpty = false
                 pendingMarkReadyAfterAutoTail = false
+                val child = getChildAt(0)
+                Log.d(
+                    "ZScroll",
+                    "drain max=${computeMaxScroll()} scrollY=$scrollY child.height=${child?.height} " +
+                        "content.layoutParams.height=${content.layoutParams.height}",
+                )
                 programmaticScrollToMax()
                 markReadyForScrollToLatestUi()
                 layoutRows()
@@ -450,6 +483,12 @@ class TranscriptListView
             ) {
                 return
             }
+            val child = getChildAt(0)
+            Log.d(
+                "ZScroll",
+                "resettle max=${computeMaxScroll()} scrollY=$scrollY child.height=${child?.height} " +
+                    "content.layoutParams.height=${content.layoutParams.height}",
+            )
             programmaticScrollToMax()
             layoutRows()
             requestLayout()
@@ -481,6 +520,12 @@ class TranscriptListView
             b: Int,
         ) {
             super.onLayout(changed, l, t, r, b)
+            if (content.height != content.layoutParams.height) {
+                Log.d(
+                    "ZScroll",
+                    "layoutMismatch measured=${content.height} params=${content.layoutParams.height}",
+                )
+            }
             drainPendingScrollsAfterLayout()
             if (
                 current != null &&
@@ -499,6 +544,23 @@ class TranscriptListView
             val y0 = scrollY / density - overscanDp
             val y1 = scrollY / density + viewHeightDp + overscanDp
             val placements = frame.rowsIn(y0, y1)
+            var maxPlacementBottomPx = 0
+            for (p in placements) {
+                val bottomPx = ceil((p.y + p.height) * density).toInt()
+                if (bottomPx > maxPlacementBottomPx) {
+                    maxPlacementBottomPx = bottomPx
+                }
+            }
+            val currentContentHeight = content.layoutParams.height
+            if (maxPlacementBottomPx > currentContentHeight) {
+                Log.d(
+                    "ZScroll",
+                    "raiseHeight old=$currentContentHeight new=$maxPlacementBottomPx",
+                )
+                content.layoutParams.height = maxPlacementBottomPx
+                content.minimumHeight = maxPlacementBottomPx
+                content.requestLayout()
+            }
             val seen = mutableSetOf<ULong>()
             val widthDp = frame.width()
             val epoch = renderEpoch
