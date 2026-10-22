@@ -1,16 +1,18 @@
 package sh.zeron.zerona.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -22,6 +24,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import uniffi.zeron_core.BusyPolicy
 
@@ -106,24 +112,24 @@ fun SessionComposerBar(
             }
             HorizontalDivider()
         }
-        if (composer.turnRunning && !demoLocked) {
+        if (composer.turnRunning && !demoLocked && draftText.isNotBlank()) {
             Row(
                 modifier =
                     Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                FilterChip(
+                DeliveryModeChip(
+                    label = "Queue",
                     selected = composer.deliveryMode == BusyPolicy.QUEUE,
                     onClick = { onDeliveryModeChange(BusyPolicy.QUEUE) },
-                    label = { Text("Queue") },
                 )
                 if (composer.canSteer) {
-                    FilterChip(
+                    DeliveryModeChip(
+                        label = "Steer",
                         selected = composer.deliveryMode == BusyPolicy.STEER,
                         onClick = { onDeliveryModeChange(BusyPolicy.STEER) },
-                        label = { Text("Steer") },
                     )
                 }
             }
@@ -173,5 +179,44 @@ fun SessionComposerBar(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DeliveryModeChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        modifier =
+            Modifier
+                .height(24.dp)
+                .semantics {
+                    role = Role.Button
+                    this.selected = selected
+                }
+                .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color =
+            if (selected) {
+                colors.secondaryContainer
+            } else {
+                colors.surfaceVariant
+            },
+    ) {
+        Text(
+            text = label,
+            modifier =
+                Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color =
+                if (selected) {
+                    colors.onSecondaryContainer
+                } else {
+                    colors.onSurfaceVariant
+                },
+        )
     }
 }
