@@ -52,3 +52,21 @@ karena gesture memicu `layoutRows()` baru.
 - Di Pixel 3: tap "Latest" dari atas → layar langsung menampilkan pesan terakhir
   (bukan kosong), `lastRowBottom` mendekati `content`, tombol Latest hilang,
   dan tidak perlu swipe untuk memunculkan isi.
+
+## Hasil verifikasi di perangkat (build `44cb33a4`, Pixel 3)
+
+Kedua chat terbukti beres, tanpa perlu swipe sesudah tap:
+
+- `Edit Destination Coins`: `scrollToMax target=445314 scrollYAfter=445314`,
+  `jumpSync pass=1 ... placements=5 attached=5 rowsPx=442828..446749`,
+  `jumpDone tailOk=true`; 2 detik setelah tap screenshot sudah berisi pesan
+  terakhir (bukan blank) dan tombol Latest hilang.
+- `Group Ride Order Fee`: sama, `target/scrollYAfter=699419`,
+  `rowsPx=696641..700854`, `jumpDone tailOk=true`.
+- Buka chat dari daftar tetap mendarat di ujung seperti sebelumnya.
+
+Akar masalah terkonfirmasi oleh log baru: `scrollTo` di dalam `onLayout`
+menghasilkan `scrollYAfter` yang ke-clamp ke batas lama (baris tertinggal di
+jendela sebelumnya). Setelah scroll dipindah ke frame berikutnya, keduanya sama
+persis dengan `max`.
+
