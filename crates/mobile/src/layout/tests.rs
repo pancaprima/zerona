@@ -1328,8 +1328,17 @@ fn markdown_image_mixed_paragraph_preserves_order() {
     let metrics = &pass.style_metrics;
     assert_eq!(image_widget_refs(d), ["/tmp/a.png"]);
     assert!(d.text.contains("Before") && d.text.contains("after"), "{}", d.text);
-    let before = d.runs.iter().find(|r| run_text(d, r) == "Before ").expect("before");
-    let after = d.runs.iter().find(|r| run_text(d, r) == " after").expect("after");
+    let utf16_off = |byte: usize| d.text[..byte].encode_utf16().count() as u32;
+    let before_byte = d.text.find("Before").expect("Before in row text");
+    let after_byte = d.text.find("after").expect("after in row text");
+    let fffc_byte = d.text.find('\u{FFFC}').expect("image placeholder in row text");
+    let before_u16 = utf16_off(before_byte);
+    let fffc_u16 = utf16_off(fffc_byte);
+    let after_u16 = utf16_off(after_byte);
+    assert!(before_u16 < fffc_u16 && fffc_u16 < after_u16, "text order: {before_u16} {fffc_u16} {after_u16}");
+    let before = d.runs.iter().find(|r| run_text(d, r).trim() == "Before").expect("before");
+    let after = d.runs.iter().find(|r| run_text(d, r).trim() == "after").expect("after");
+    assert!(before.baseline <= after.baseline);
     let img = d.widgets.iter().find(|w| matches!(&w.kind, display::WidgetKind::Image { .. })).expect("widget");
     for r in &d.runs {
         assert!(!run_overlaps_image(r, img, metrics), "run {:?} overlaps image", r);
