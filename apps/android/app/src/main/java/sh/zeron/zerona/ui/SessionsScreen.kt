@@ -1,11 +1,18 @@
 package sh.zeron.zerona.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,6 +30,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -31,16 +39,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import java.util.Locale
 import sh.zeron.zerona.app.AppModel
 import sh.zeron.zerona.app.SessionRowUi
 import sh.zeron.zerona.transcript.TranscriptLab
 
-private val sessionGroupCornerRadius = 14.dp
+private val sessionRowPressShape = RoundedCornerShape(12.dp)
+private val labRowShape = RoundedCornerShape(12.dp)
+private val sessionTimeMinWidth = 48.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,26 +70,21 @@ fun SessionsScreen(
                         containerColor = MaterialTheme.colorScheme.surface,
                     ),
                 title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        ZeronaDecorMark(
-                            modifier = Modifier.padding(end = 8.dp),
-                            sizeDp = 22.dp,
-                        )
-                        Text(
-                            "Zerona",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+                    Text(
+                        "Zerona",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 },
                 actions = {
                     if (state.isOffline && !state.isDemo) {
                         StatusBadge(
                             label = "Offline",
-                            container = MaterialTheme.colorScheme.surfaceVariant,
-                            content = MaterialTheme.colorScheme.onSurfaceVariant,
+                            container = MaterialTheme.colorScheme.secondary,
+                            content = MaterialTheme.colorScheme.onSecondary,
                             modifier = Modifier.padding(end = 4.dp),
                         )
                     }
@@ -85,15 +92,15 @@ fun SessionsScreen(
                         label = if (state.isDemo) "Demo" else "Live",
                         container =
                             if (state.isDemo) {
-                                MaterialTheme.colorScheme.secondaryContainer
+                                MaterialTheme.colorScheme.primaryContainer
                             } else {
-                                MaterialTheme.colorScheme.tertiaryContainer
+                                MaterialTheme.colorScheme.tertiary
                             },
                         content =
                             if (state.isDemo) {
-                                MaterialTheme.colorScheme.onSecondaryContainer
+                                MaterialTheme.colorScheme.onPrimaryContainer
                             } else {
-                                MaterialTheme.colorScheme.onTertiaryContainer
+                                MaterialTheme.colorScheme.onTertiary
                             },
                         modifier = Modifier.padding(end = 2.dp),
                     )
@@ -136,70 +143,32 @@ fun SessionsScreen(
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         ) {
             if (state.isDemo) {
                 item(key = TranscriptLab.CHAT_ID) {
-                    SessionGroupRow(
-                        shape = RoundedCornerShape(sessionGroupCornerRadius),
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    ) {
-                        SessionRowItem(
-                            SessionRowUi(
-                                id = TranscriptLab.CHAT_ID,
-                                title = "Transcript lab (fixture markdown)",
-                                timeLabel = "Offline fixture",
-                            ),
-                            onClick = { onSessionClick(TranscriptLab.CHAT_ID) },
-                            showDivider = false,
-                        )
-                    }
+                    TranscriptLabEntryRow(
+                        onClick = { onSessionClick(TranscriptLab.CHAT_ID) },
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
                 }
             }
             state.sections.forEach { section ->
                 val sessions = section.sessions
                 if (sessions.isEmpty()) return@forEach
                 item(key = "h-${section.id}") {
-                    SessionGroupRow(
-                        shape =
-                            RoundedCornerShape(
-                                topStart = sessionGroupCornerRadius,
-                                topEnd = sessionGroupCornerRadius,
-                            ),
-                        modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 6.dp),
-                    ) {
-                        SectionHeader(section.header)
-                    }
+                    SectionHeader(section.header)
                 }
                 items(
                     count = sessions.size,
                     key = { sessions[it].id },
                 ) { index ->
                     val row = sessions[index]
-                    val isLast = index == sessions.size - 1
-                    val shape: Shape =
-                        if (isLast) {
-                            RoundedCornerShape(
-                                bottomStart = sessionGroupCornerRadius,
-                                bottomEnd = sessionGroupCornerRadius,
-                            )
-                        } else {
-                            RectangleShape
-                        }
-                    SessionGroupRow(
-                        shape = shape,
-                        modifier =
-                            Modifier.padding(
-                                start = 12.dp,
-                                end = 12.dp,
-                                bottom = if (isLast) 6.dp else 0.dp,
-                            ),
-                    ) {
-                        SessionRowItem(
-                            row,
-                            onClick = { onSessionClick(row.id) },
-                            showDivider = !isLast,
-                        )
-                    }
+                    SessionRowItem(
+                        row,
+                        onClick = { onSessionClick(row.id) },
+                        showDivider = true,
+                    )
                 }
             }
         }
@@ -207,19 +176,48 @@ fun SessionsScreen(
 }
 
 @Composable
-private fun SessionGroupRow(
-    shape: Shape,
+private fun TranscriptLabEntryRow(
+    onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    content: @Composable () -> Unit,
 ) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = shape,
-        color = MaterialTheme.colorScheme.surfaceContainer,
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            content()
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val rowColor =
+        if (pressed) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainer
         }
+    Column(
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .clip(labRowShape)
+                .background(rowColor)
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = ripple(),
+                    onClick = onClick,
+                )
+                .padding(12.dp),
+    ) {
+        Text(
+            "Transcript lab (fixture markdown)",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            "Offline fixture",
+            modifier = Modifier.padding(top = 4.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -239,6 +237,7 @@ private fun StatusBadge(
             label,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
             color = content,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -249,11 +248,14 @@ private fun StatusBadge(
 @Composable
 private fun SectionHeader(title: String) {
     Text(
-        title,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-        style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.primary,
+        title.uppercase(Locale.getDefault()),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 4.dp, end = 4.dp, top = 8.dp, bottom = 4.dp),
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
     )
@@ -261,36 +263,58 @@ private fun SectionHeader(title: String) {
 
 @Composable
 private fun SessionRowItem(
-    row: sh.zeron.zerona.app.SessionRowUi,
+    row: SessionRowUi,
     onClick: () -> Unit,
     showDivider: Boolean = true,
 ) {
-    Column(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onClick)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-    ) {
-        Text(
-            row.title,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            row.timeLabel,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-    if (showDivider) {
-        HorizontalDivider(
-            modifier = Modifier.padding(horizontal = 16.dp),
-            color = MaterialTheme.colorScheme.outlineVariant,
-        )
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val pressColor =
+        if (pressed) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            Color.Transparent
+        }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .clip(sessionRowPressShape)
+                    .background(pressColor)
+                    .clickable(
+                        interactionSource = interactionSource,
+                        indication = ripple(),
+                        onClick = onClick,
+                    )
+                    .padding(horizontal = 8.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                row.title,
+                modifier =
+                    Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                row.timeLabel,
+                modifier = Modifier.widthIn(min = sessionTimeMinWidth),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.End,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (showDivider) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+        }
     }
 }
