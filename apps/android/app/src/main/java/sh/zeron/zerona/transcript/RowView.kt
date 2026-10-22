@@ -63,7 +63,8 @@ class RowView(
         addView(canvas)
         addView(freshCanvas)
         freshCanvas.visibility = GONE
-        clipChildren = false
+        clipChildren = true
+        clipToPadding = true
         isClickable = true
         setOnTouchListener { _, event ->
             gesture.onTouchEvent(event)
@@ -369,10 +370,15 @@ class RowView(
     }
 
     private fun openLink(url: String) {
+        val previewRef = ImageAttachmentSupport.previewImageReferenceFromUrl(url)
+        if (previewRef != null) {
+            actions?.showImagePreview(context, previewRef, null)
+            return
+        }
         val uri = Uri.parse(url)
         val scheme = uri.scheme?.lowercase()
         if (scheme != "http" && scheme != "https") return
-        actions?.openUrl(url)
+        actions?.openUrl(context, url)
     }
 
     private fun copyRowText() {
@@ -382,8 +388,23 @@ class RowView(
         cm.setPrimaryClip(ClipData.newPlainText("transcript", text))
     }
 
+    fun reloadImageWidgets() {
+        for (v in widgetViews) {
+            if (v is TranscriptImageWidget) {
+                actions?.imageLoader()?.cancelLoad(v)
+                v.clearForRebind()
+                actions?.imageLoader()?.loadInto(v)
+            }
+        }
+    }
+
     fun resetForPool() {
         cancelStreamAnimation()
+        for (v in widgetViews) {
+            if (v is TranscriptImageWidget) {
+                actions?.imageLoader()?.cancelLoad(v)
+            }
+        }
         model = null
         actions = null
         visibility = GONE

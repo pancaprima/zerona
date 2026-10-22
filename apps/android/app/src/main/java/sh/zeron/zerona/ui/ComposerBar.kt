@@ -18,6 +18,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -29,6 +30,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import uniffi.zeron_core.BusyPolicy
 
 @Composable
@@ -44,138 +46,180 @@ fun SessionComposerBar(
     modifier: Modifier = Modifier,
 ) {
     val canSend = draftText.isNotBlank() && !composer.sendInFlight
-    Column(
-        modifier =
-            modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .imePadding(),
+    val scheme = MaterialTheme.colorScheme
+    val fieldColors =
+        OutlinedTextFieldDefaults.colors(
+            focusedContainerColor = scheme.surface,
+            unfocusedContainerColor = scheme.surface,
+            disabledContainerColor = scheme.surfaceVariant,
+            errorContainerColor = scheme.surface,
+            focusedBorderColor = scheme.outline,
+            unfocusedBorderColor = scheme.outlineVariant,
+            disabledBorderColor = scheme.outlineVariant,
+        )
+    val fieldShape = RoundedCornerShape(16.dp)
+    val fieldTextStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp)
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = GlassInspired.composerBackdropColor(),
+        tonalElevation = 2.dp,
     ) {
-        composer.banner?.let { banner ->
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-            ) {
-                Text(
-                    banner,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color =
-                        if (composer.bannerIsError) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                )
-            }
-        }
-        composer.queueError?.let { err ->
-            Text(
-                err,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-        }
-        if (composer.queue.isNotEmpty()) {
-            HorizontalDivider()
-            composer.queue.forEach { item ->
-                Row(
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        item.text,
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 3,
-                    )
-                    if (!item.actionPending) {
-                        TextButton(onClick = { onDeliverQueuedNow(item.id) }) {
-                            Text("Send now")
-                        }
-                        TextButton(onClick = { onRemoveQueued(item.id) }) {
-                            Text("Remove")
-                        }
-                    } else {
-                        Text(
-                            "Updating…",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-            HorizontalDivider()
-        }
-        if (composer.turnRunning && !demoLocked && draftText.isNotBlank()) {
-            Row(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                DeliveryModeChip(
-                    label = "Queue",
-                    selected = composer.deliveryMode == BusyPolicy.QUEUE,
-                    onClick = { onDeliveryModeChange(BusyPolicy.QUEUE) },
-                )
-                if (composer.canSteer) {
-                    DeliveryModeChip(
-                        label = "Steer",
-                        selected = composer.deliveryMode == BusyPolicy.STEER,
-                        onClick = { onDeliveryModeChange(BusyPolicy.STEER) },
-                    )
-                }
-            }
-        }
-        Row(
+        Column(
             modifier =
                 Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    .navigationBarsPadding()
+                    .imePadding(),
         ) {
-            if (demoLocked) {
-                OutlinedTextField(
-                    value = "",
-                    onValueChange = {},
-                    enabled = false,
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Sign in to send (demo)") },
-                    minLines = 1,
-                    maxLines = 4,
-                )
-            } else {
-                OutlinedTextField(
-                    value = draftText,
-                    onValueChange = onDraftChange,
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Message") },
-                    minLines = 1,
-                    maxLines = 6,
-                )
-                IconButton(
-                    onClick = onSend,
-                    enabled = canSend,
-                    modifier = Modifier.size(48.dp),
+            composer.banner?.let { banner ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = scheme.surfaceVariant,
                 ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send",
-                        tint =
-                            if (canSend) {
-                                MaterialTheme.colorScheme.primary
+                    Text(
+                        banner,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color =
+                            if (composer.bannerIsError) {
+                                scheme.error
                             } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
+                                scheme.onSurfaceVariant
                             },
                     )
+                }
+            }
+            composer.queueError?.let { err ->
+                Text(
+                    err,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = scheme.error,
+                )
+            }
+            if (composer.queue.isNotEmpty()) {
+                HorizontalDivider(color = scheme.outlineVariant)
+                composer.queue.forEach { item ->
+                    Row(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            item.text,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 3,
+                        )
+                        if (!item.actionPending) {
+                            TextButton(onClick = { onDeliverQueuedNow(item.id) }) {
+                                Text("Send now")
+                            }
+                            TextButton(onClick = { onRemoveQueued(item.id) }) {
+                                Text("Remove")
+                            }
+                        } else {
+                            Text(
+                                "Updating…",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = scheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider(color = scheme.outlineVariant)
+            }
+            GlassInspired.GlassCard(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+            ) {
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (composer.turnRunning && !demoLocked && draftText.isNotBlank()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            DeliveryModeChip(
+                                label = "Queue",
+                                selected = composer.deliveryMode == BusyPolicy.QUEUE,
+                                onClick = { onDeliveryModeChange(BusyPolicy.QUEUE) },
+                            )
+                            if (composer.canSteer) {
+                                DeliveryModeChip(
+                                    label = "Steer",
+                                    selected = composer.deliveryMode == BusyPolicy.STEER,
+                                    onClick = { onDeliveryModeChange(BusyPolicy.STEER) },
+                                )
+                            }
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        if (demoLocked) {
+                            OutlinedTextField(
+                                value = "",
+                                onValueChange = {},
+                                enabled = false,
+                                modifier = Modifier.weight(1f),
+                                placeholder = {
+                                    Text(
+                                        "Sign in to send (demo)",
+                                        style = fieldTextStyle,
+                                    )
+                                },
+                                textStyle = fieldTextStyle,
+                                shape = fieldShape,
+                                colors = fieldColors,
+                                minLines = 1,
+                                maxLines = 4,
+                            )
+                        } else {
+                            OutlinedTextField(
+                                value = draftText,
+                                onValueChange = onDraftChange,
+                                modifier = Modifier.weight(1f),
+                                placeholder = {
+                                    Text("Message", style = fieldTextStyle)
+                                },
+                                textStyle = fieldTextStyle,
+                                shape = fieldShape,
+                                colors = fieldColors,
+                                minLines = 1,
+                                maxLines = 6,
+                            )
+                            IconButton(
+                                onClick = onSend,
+                                enabled = canSend,
+                                modifier = Modifier.size(48.dp),
+                            ) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.Send,
+                                    contentDescription = "Send",
+                                    tint =
+                                        if (canSend) {
+                                            scheme.primary
+                                        } else {
+                                            scheme.onSurfaceVariant
+                                        },
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -203,8 +247,10 @@ private fun DeliveryModeChip(
             if (selected) {
                 colors.secondaryContainer
             } else {
-                colors.surfaceVariant
+                colors.surface
             },
+        shadowElevation = if (selected) 2.dp else 0.dp,
+        tonalElevation = if (selected) 0.dp else 1.dp,
     ) {
         Text(
             text = label,

@@ -16,6 +16,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.runtime.Composable
@@ -24,7 +25,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalConfiguration
+import sh.zeron.zerona.transcript.TranscriptViewportScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -42,7 +45,7 @@ fun SessionScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val configuration = LocalConfiguration.current
-    val textScale = configuration.fontScale
+    val textScale = TranscriptViewportScale.viewportTextScale(configuration.fontScale)
     val dark = isSystemInDarkTheme()
     val isLab = chatId == TranscriptLab.CHAT_ID
 
@@ -58,6 +61,10 @@ fun SessionScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                colors =
+                    TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                    ),
                 title = { Text(state.title.ifBlank { "Session" }) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -107,6 +114,7 @@ fun SessionScreen(
                 modifier =
                     Modifier
                         .fillMaxSize()
+                        .clipToBounds()
                         .padding(horizontal = 16.dp),
             ) {
                 val viewportWidthDp = maxWidth.value
@@ -114,7 +122,7 @@ fun SessionScreen(
                     viewModel.setViewport(viewportWidthDp, textScale)
                 }
                 AndroidView(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().clipToBounds(),
                     factory = { ctx ->
                         TranscriptListView(ctx).also { host ->
                             host.darkTheme = dark

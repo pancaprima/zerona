@@ -3,6 +3,7 @@ package sh.zeron.zerona.ui
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Context
+import android.graphics.Bitmap
 import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
@@ -22,6 +23,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import sh.zeron.zerona.app.AppModel
 import sh.zeron.zerona.transcript.FrameRelay
+import sh.zeron.zerona.transcript.ImageAttachmentSupport
+import sh.zeron.zerona.transcript.SessionImageLoader
 import sh.zeron.zerona.transcript.TranscriptActions
 import sh.zeron.zerona.transcript.TranscriptLab
 import sh.zeron.zerona.transcript.TranscriptListView
@@ -81,6 +84,8 @@ class SessionViewModel(
     @Volatile
     private var engineLive = false
 
+    private val sessionImageLoader = SessionImageLoader(viewModelScope)
+
     private val transcriptActions =
         object : TranscriptActions {
             override fun toggleRow(key: ULong) {
@@ -95,19 +100,41 @@ class SessionViewModel(
                 transcriptView?.toggleDetail(row, detail, open)
             }
 
-            override fun openUrl(url: String) {
+            override fun imageLoader(): SessionImageLoader = sessionImageLoader
+
+            override fun showImagePreview(
+                context: Context,
+                reference: String,
+                thumbnail: Bitmap?,
+            ) {
+                if (!ImageAttachmentSupport.isAllowedAttachmentReference(reference, allowLabFixture = isLab)) {
+                    return
+                }
+                sessionImageLoader.showPreview(context, reference, thumbnail)
+            }
+
+            override fun openUrl(
+                context: Context,
+                url: String,
+            ) {
+                val previewRef = ImageAttachmentSupport.previewImageReferenceFromUrl(url)
+                if (previewRef != null) {
+                    if (ImageAttachmentSupport.isAllowedAttachmentReference(previewRef, allowLabFixture = isLab)) {
+                        showImagePreview(context, previewRef, null)
+                    }
+                    return
+                }
                 val uri = Uri.parse(url)
                 val scheme = uri.scheme?.lowercase()
                 if (scheme != "http" && scheme != "https") return
                 val intent = Intent(Intent.ACTION_VIEW, uri)
-                val ctx = appModel.applicationContext()
                 try {
-                    val activity = ctx.findActivity()
+                    val activity = context.findActivity()
                     if (activity != null) {
                         activity.startActivity(intent)
                     } else {
                         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        ContextCompat.startActivity(ctx, intent, null)
+                        ContextCompat.startActivity(context.applicationContext, intent, null)
                     }
                 } catch (_: ActivityNotFoundException) {
                 } catch (_: SecurityException) {
@@ -144,6 +171,7 @@ class SessionViewModel(
                 labEntries.addAll(TranscriptLab.initialEntries())
                 tv.setDebugEntries(labEntries.toList(), working = false)
                 engineLive = true
+                sessionImageLoader.bindSession(null, "", labMode = true)
                 _state.update {
                     it.copy(
                         loading = false,
@@ -186,6 +214,7 @@ class SessionViewModel(
         tv: TranscriptView,
         relay: FrameRelay,
     ) {
+        sessionImageLoader.bindSession(null, "", labMode = false)
         relay.shutdown()
         frameRelay = null
         runCatching { tv.closeView() }
@@ -257,6 +286,16 @@ class SessionViewModel(
         val canSteer = c.host.capabilities.midTurnSteering == true
         if (!canSteer && deliveryMode == BusyPolicy.STEER) {
             deliveryMode = BusyPolicy.QUEUE
+        }
+        val hostId = c.host.deviceId
+        val bindingChanged =
+            sessionImageLoader.bindSession(
+                appModel.client,
+                hostId,
+                labMode = false,
+            )
+        if (bindingChanged) {
+            transcriptHost?.reloadImages()
         }
         val queue =
             c.queue.map { q ->
@@ -443,6 +482,7 @@ class SessionViewModel(
 
     override fun onCleared() {
         engineLive = false
+        sessionImageLoader.close()
         stopLabStream()
         transcriptHost?.shutdown()
         transcriptHost = null

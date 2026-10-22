@@ -39,7 +39,7 @@ internal fun buildWidgetView(
                 actions.toggleRow(rowKey)
             }
         is WidgetKind.ToolStatus -> ToolStatusView(context, kind.running, kind.failed)
-        is WidgetKind.Image -> ImagePlaceholderView(context, kind.reference)
+        is WidgetKind.Image -> TranscriptImageWidget(context, kind.reference, actions)
         is WidgetKind.Working -> WorkingLabelView(context, kind.sinceMs, kind.streaming)
         WidgetKind.Spinner -> ProgressBar(context).apply { isIndeterminate = true }
         is WidgetKind.Detail ->
@@ -85,15 +85,6 @@ private fun showDetailDialog(
         .show()
 }
 
-private fun Context.findActivity(): Activity? {
-    var ctx = this
-    while (ctx is ContextWrapper) {
-        if (ctx is Activity) return ctx
-        ctx = ctx.baseContext
-    }
-    return null
-}
-
 private class CopyCodeButton(
     context: Context,
     private val code: String,
@@ -136,17 +127,6 @@ private class ToolStatusView(
                 }
             addView(tv)
         }
-    }
-}
-
-private class ImagePlaceholderView(
-    context: Context,
-    reference: String,
-) : TextView(context) {
-    init {
-        text = "Image"
-        contentDescription = reference
-        gravity = Gravity.CENTER
     }
 }
 

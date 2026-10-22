@@ -15,6 +15,8 @@ Replace the M1 Compose `Text` + `messageText` path with a native Android painter
 
 Review blockers addressed in `apps/android/**`: Geist via `createFromAsset`, math via `Font.Builder` + `Canvas.drawGlyphs` (API 31+) with explicit `MATH_REFERENCE_SIZE` on the paint, logical-dp viewport + canvas density scale, scroller inner `FrameLayout`, frame lifecycle (revision idempotency closes duplicate wrappers; `renderEpoch` on theme/style), hydration on `frameReady` + app refresh tick, lab **Replay streaming** top-bar action (composer locked in lab), JVM unit tests wired via lazy `tasks.matching { assembleDebug }`.
 
+**PR26 feedback (2026-10-22):** Compact transcript via `TranscriptViewportScale` (`0.88f × Configuration.fontScale` → `setViewport` only). Compose + native clipping (`clipToBounds`, `TranscriptListView.dispatchDraw` clip, `RowView.clipChildren`). Glass-inspired opaque composer (`GlassInspired.kt`). `WidgetKind.Image` loads through `CoreClient.readAttachment(hostDeviceId, reference)` with bounded decode + session LRU; lab demo uses `LAB_DEMO_IMAGE_REFERENCE` only (no FFI). `zeron-preview://image?ref=` opens in-app preview; Markdown `![]()` remote images remain links (Rust does not emit image widgets for them). `readAttachment` is not chat-scoped — host path jail on the engine applies.
+
 **Rollback:** Revert the `feat/android-native-transcript` branch; no schema or Rust changes.
 
 ## Verified sources
@@ -31,13 +33,15 @@ Review blockers addressed in `apps/android/**`: Geist via `createFromAsset`, mat
 ## Decisions
 
 1. **Hosting**: `TranscriptListView` (`NestedScrollView` + pooled `RowView`) inside Compose `AndroidView`; not a full `LazyColumn` of text.
-2. **Coordinates**: Viewport width = measured content width in **logical dp** (container minus 16dp padding), `setViewport(widthDp, fontScale)` with `fontScale` from `Configuration.fontScale`. Row views and widgets use px layout params = dp × density; `RowCanvasView` scales the canvas by density so Rust geometry stays in dp.
+2. **Coordinates**: Viewport width = measured content width in **logical dp** (container minus 16dp padding), `setViewport(widthDp, textScale)` with `textScale = TranscriptViewportScale.viewportTextScale(Configuration.fontScale)` (`0.88f` Android body dampening × accessibility scale, not clamped). Row views and widgets use px layout params = dp × density; `RowCanvasView` scales the canvas by density only (no second font scale on canvas).
 3. **Fonts**: Shared `GeistTypefaces` from assets for `AndroidPlatformMeasurer` and `StyleFonts`; missing assets fail fast (no silent system fallback).
 4. **Enumeration**: Virtualize with `frame.rowsIn(y0, y1)` + `placement`; cache `RowDrawModel` keyed by `(key, version, width)` (cap ~500), built synchronously on main (no background prefetch).
 5. **Frames**: `FrameRelay` coalesces `frameReady`; capture scroll anchor before closing previous frame; compute empty/first-row before close; revision idempotency closes unused `frame()` wrappers (`current === frame` never holds); theme/style bumps `renderEpoch` and reconfigures visible rows; all FFI on main thread.
 6. **Lab**: Demo session id `__zerona_transcript_lab__` uses `setDebugEntries` without `attach`. Static fixture markdown is laid out (widgets in fixture content only). **Replay streaming** (top bar) streams UTF-16-safe prefixes of lazy `layoutFixtureMarkdown()` into fixed id `a-stream`. Composer locked in lab; does not claim to test live host tool streams.
 7. **Math**: `mathFontData` + `Font.Builder` / `Canvas.drawGlyphs` isolated in `MathGlyphsApi31` (`@RequiresApi(31)`); `RowDrawModel` / `MathFonts` facade use only `Canvas` + primitives so minSdk 26 never loads `android.graphics.fonts.Font`. API &lt; 31: labeled “Math” placeholder at glyph bounds (no silent empty square). Reference size 16 (matches iOS `Fonts.mathReferenceSize`; no separate FFI).
-8. **Widgets**: Native controls for copy, disclosure, tool status/spinner/working (elapsed label ticks), toggles (`!open`), detail `AlertDialog` + copy, simplified tool rail/shimmer (animator tied to attach/detach).
+8. **Widgets**: Native controls for copy, disclosure, tool status/spinner/working (elapsed label ticks), toggles (`!open`), detail `AlertDialog` + copy, simplified tool rail/shimmer (animator tied to attach/detach). **Images**: `SessionImageLoader` + `TranscriptImageWidget` (`uniffi.zeron_core.maxAttachmentBytes()` cap, `readAttachment`, per-type MIME sniff, sampled decode ≤2048 px edge / ≤16 MiB ARGB per bitmap, session LRU ~16 MiB retained — live widgets may hold additional decoded bitmaps); preview via view `Context` → session-owned `ImagePreviewController` (single dialog, retry, ~70% window; no static dialog state). Lab-only absolute `LAB_DEMO_IMAGE_REFERENCE` (`/__zerona_android_lab__/fixture.png` in attachment trailer) → in-memory gradient; never FFI.
+9. **Composer UI**: Full-width opaque backdrop + glass-inspired floating card (gradient sheen, hairline border, elevation); `OutlinedTextField` opaque containers all states; 14 sp body input. No `Modifier.blur` on composer (readability first).
+10. **Clipping**: `AndroidView` + hosting `Box` use `clipToBounds`; `TranscriptListView` clips scroll viewport in `dispatchDraw` using `(scrollX, scrollY, scrollX+width, scrollY+height)`; `RowView.clipChildren = true` so transcript does not paint through composer region visually.
 
 ## Data flow
 
@@ -57,18 +61,20 @@ flowchart LR
 
 | Layer | Status |
 |-------|--------|
-| JVM unit (18 `@Test` methods in 6 classes, no JNA): UTF-16 slice/clamp/`isValidRange`/surrogate, per-scalar advance aggregation (`TextMeasureAdvances`), link hit-test (scroller viewport), anchor helpers, cache key equality, streaming prefix targets | Under `app/src/test`; `tasks.matching { assembleDebug }` depends on `testDebugUnitTest` |
+| JVM unit (44 `@Test` methods in 8 classes, no JNA): UTF-16 slice/clamp/`isValidRange`/surrogate, per-scalar advance aggregation (`TextMeasureAdvances`), link hit-test (scroller viewport), anchor helpers, cache key equality, streaming prefix targets, `TranscriptViewportScale`, `ImageAttachmentSupport` (MIME, sample plan, preview URL/query parsing, percent-decode, host cache key, stale guard, `ViewportClip` helper) | Under `app/src/test`; `tasks.matching { assembleDebug }` depends on `testDebugUnitTest`; `apps/android/scripts/selfcheck-native-transcript.sh` for static callsite/import checks |
 | Rust layout | Existing `crates/mobile` tests (out of scope) |
 | `assembleDebug` / on-device | **Pending** — not run on this VPS (no Android SDK compile here) |
 
 ### Manual acceptance (pending device)
 
+- [ ] Font scale 0.85–1.3: layout reflow via `setViewport`; transcript not clipped incorrectly
+- [ ] Composer/input/chips: no transcript bleed while scrolling or with IME (light/dark)
+- [ ] Image widget: lab demo fixture; signed-in host attachment / generated image; offline/error/retry; scroll recycle; viewer open/close
 - [ ] Large transcript scroll: no duplicate messages, tool-only rows visible, stable FPS
-- [ ] Font scale 0.85–1.3: layout reflow matches paint
 - [ ] Code block horizontal scroll + copy button
 - [ ] Streaming tail veil on growing row
 - [ ] Tool group disclosure, tool toggle detail, working/spinner chrome
-- [ ] http/https links open externally; other schemes ignored
+- [ ] http/https links open externally; `zeron-preview` stays in-app; other schemes ignored
 - [ ] Rotation / session switch / follow-tail vs anchor
 - [ ] Demo lab + live session composer send regression
 - [ ] Long-press copy uses `copyText`
@@ -79,7 +85,9 @@ flowchart LR
 - `reveal_ms` on `TextRun` not animated (same as iOS painter).
 - Tool rail connector animation simplified vs iOS `ToolRailView`.
 - Shimmer is a reduced gradient sweep.
-- Images (`pending://` / remote) and `Visual` widgets: placeholder only.
+- Markdown `![]()` HTTPS images stay links/alt text (no `WidgetKind.Image` from Rust on mobile).
+- `Visual` widgets: placeholder + `setVisualSource` wired for future scripts; no live visual player in this milestone.
+- `readAttachment` returns full `ByteArray` (client cap); Android enforces size before decode — not streaming decode.
 - Math glyphs on API &lt; 31: labeled placeholder, not TeX layout.
 - Desktop tool/file icon assets not bundled; generic Material icons for named icons where possible.
 - Live session tool *streams* (host-driven) not simulated in lab; only fixture markdown + scripted `setDebugEntries` streaming.

@@ -31,11 +31,11 @@ gradle -p apps/android :app:testDebugUnitTest \
   -PzeronCoreDir=../../target/android-core
 ```
 
-Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link hit-test, anchor/follow, cache keys, streaming prefixes) live under `app/src/test` (18 JVM tests in 6 classes). `assembleDebug` also runs `testDebugUnitTest` (see `app/build.gradle.kts`).
+Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link hit-test, anchor/follow, cache keys, streaming prefixes, viewport scale, image reference/decode planning) live under `app/src/test` (44 JVM `@Test` methods in 8 classes). `assembleDebug` also runs `testDebugUnitTest` (see `app/build.gradle.kts`). Static wiring checks: `apps/android/scripts/selfcheck-native-transcript.sh` (no Gradle).
 
 ## Manual transcript checks (device)
 
-1. **Demo → Transcript lab** — lazy `layoutFixtureMarkdown()` via `setDebugEntries` (widgets from laid-out fixture only). Use top-bar **Replay streaming** for scripted fixture prefixes (`a-stream`); composer locked; live host tool streams need a real session.
+1. **Demo → Transcript lab** — lazy `layoutFixtureMarkdown()` via `setDebugEntries` (widgets from laid-out fixture only). Includes a **lab demo image** row (`LAB_DEMO_IMAGE_REFERENCE`, local gradient only). Use top-bar **Replay streaming** for scripted fixture prefixes (`a-stream`); composer locked; live host tool streams need a real session.
 2. **Demo session** — open any demo chat; scroll a long reply; confirm no duplicate full messages per row.
 3. **Font scale** — system display size 85% / 130%; relayout matches paint.
 4. **Code block** — horizontal scroll inside row; copy button copies payload.
@@ -47,6 +47,7 @@ Visual golden comparison is not automated on Android CI yet (`assembleDebug` onl
 
 ## Known gaps
 
-- Agent `Visual` and remote images: placeholder only.
+- Markdown `![]()` remote images: links only (not `WidgetKind.Image`). Agent `Visual`: placeholder; `setVisualSource` wired for future scripts.
+- Real host attachment thumbnails: manual device test pending (signed-in session).
 - Math glyphs on API &lt; 31: labeled placeholder (real glyphs need API 31+ `drawGlyphs`).
 - Tool rail / shimmer simplified vs iOS.

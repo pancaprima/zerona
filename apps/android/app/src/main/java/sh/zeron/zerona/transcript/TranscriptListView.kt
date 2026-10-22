@@ -1,6 +1,7 @@
 package sh.zeron.zerona.transcript
 
 import android.content.Context
+import android.graphics.Canvas
 import android.util.AttributeSet
 import android.view.View
 import android.widget.FrameLayout
@@ -44,6 +45,9 @@ class TranscriptListView
 
         init {
             isFillViewport = true
+            clipChildren = true
+            clipToPadding = true
+            content.clipChildren = true
             addView(content, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
             setOnScrollChangeListener { _, _, _, _, _ ->
                 if (!programmaticScroll) {
@@ -56,6 +60,20 @@ class TranscriptListView
                         )
                 }
                 layoutRows()
+            }
+        }
+
+        override fun dispatchDraw(canvas: Canvas) {
+            val save = canvas.save()
+            val clip = ImageAttachmentSupport.scrollViewportClipRect(scrollX, scrollY, width, height)
+            canvas.clipRect(clip.left, clip.top, clip.right, clip.bottom)
+            super.dispatchDraw(canvas)
+            canvas.restoreToCount(save)
+        }
+
+        fun reloadImages() {
+            for (row in visible.values) {
+                row.reloadImageWidgets()
             }
         }
 

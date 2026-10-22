@@ -24,6 +24,23 @@ object TranscriptLab {
 
     fun initialEntries(): List<DebugEntry> {
         val entries = mutableListOf<DebugEntry>()
+        entries +=
+            DebugEntry(
+                id = "u-demo-image",
+                user = true,
+                text =
+                    "Image preview lab fixture (local bitmap — not a host read)\n\n" +
+                        "Attached images (local files — open them to view):\n" +
+                        "- $LAB_DEMO_IMAGE_REFERENCE",
+                streaming = false,
+            )
+        entries +=
+            DebugEntry(
+                id = "a-demo-image",
+                user = false,
+                text = "The thumbnail above uses the Android lab demo fixture only.",
+                streaming = false,
+            )
         for (i in 0 until 3) {
             entries +=
                 DebugEntry(
