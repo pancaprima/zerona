@@ -1,32 +1,47 @@
 package sh.zeron.zerona.ui
 
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import sh.zeron.zerona.transcript.TranscriptViewportScale
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import sh.zeron.zerona.app.AppModel
+import sh.zeron.zerona.transcript.TranscriptLab
+import sh.zeron.zerona.transcript.TranscriptListView
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,78 +52,160 @@ fun SessionScreen(
     viewModel: SessionViewModel = viewModel(key = chatId) { SessionViewModel(appModel, chatId) },
 ) {
     val state by viewModel.state.collectAsState()
-    val density = LocalDensity.current
-    val screenWidthDp = LocalConfiguration.current.screenWidthDp
-
-    DisposableEffect(screenWidthDp) {
-        val widthPx = screenWidthDp * density.density
-        viewModel.setViewportWidthPx(widthPx)
-        viewModel.refreshTranscript()
-        onDispose { }
-    }
+    val configuration = LocalConfiguration.current
+    val textScale = TranscriptViewportScale.viewportTextScale(configuration.fontScale)
+    val dark = isSystemInDarkTheme()
+    val isLab = chatId == TranscriptLab.CHAT_ID
 
     val refreshTick by appModel.refreshTick.collectAsState()
     LaunchedEffect(refreshTick) {
-        viewModel.refreshTranscript()
+        viewModel.refreshComposer()
+        viewModel.refreshHydration()
     }
+
+    val appState by appModel.state.collectAsState()
+    val showLoadingShell = state.loading && state.frameTick == 0L && state.error == null
 
     Scaffold(
         topBar = {
             TopAppBar(
+                colors =
+                    TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                    ),
                 title = { Text(state.title.ifBlank { "Session" }) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
+                actions = {
+                    if (isLab) {
+                        val streaming = state.composer.turnRunning
+                        TextButton(
+                            onClick = {
+                                if (streaming) {
+                                    viewModel.stopLabStreaming()
+                                } else {
+                                    viewModel.replayLabStreaming()
+                                }
+                            },
+                        ) {
+                            Text(if (streaming) "Stop" else "Replay streaming")
+                        }
+                    }
+                },
             )
         },
         bottomBar = {
-            Text(
-                "Sign-in required to send (demo)",
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            SessionComposerBar(
+                composer = state.composer,
+                draftText = state.draftText,
+                demoLocked = appState.isDemo || isLab,
+                onDraftChange = viewModel::updateDraft,
+                onDeliveryModeChange = viewModel::setDeliveryMode,
+                onSend = viewModel::send,
+                onRemoveQueued = viewModel::removeQueued,
+                onDeliverQueuedNow = viewModel::deliverQueuedNow,
             )
         },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            Text(
-                state.m2Note,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-            )
             if (state.error != null) {
                 Text(
                     state.error!!,
                     modifier = Modifier.padding(16.dp),
                     color = MaterialTheme.colorScheme.error,
                 )
-            } else if (state.loading && state.rows.isEmpty()) {
-                Text("Loading transcript…", modifier = Modifier.padding(16.dp))
-            } else {
-                LazyColumn(modifier = Modifier.weight(1f)) {
-                    items(state.rows, key = { it.index }) { row ->
-                        Text(
-                            row.text,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        HorizontalDivider()
-                    }
-                    if (state.rows.isEmpty() && state.plainPreview.isNotBlank()) {
-                        item("plain") {
+            }
+            BoxWithConstraints(
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .clipToBounds()
+                        .padding(horizontal = 16.dp),
+            ) {
+                val viewportWidthDp = maxWidth.value
+                LaunchedEffect(viewportWidthDp, textScale) {
+                    viewModel.setViewport(viewportWidthDp, textScale)
+                }
+                AndroidView(
+                    modifier = Modifier.fillMaxSize().clipToBounds(),
+                    factory = { ctx ->
+                        TranscriptListView(ctx).also { host ->
+                            host.darkTheme = dark
+                            host.layoutWidthDp = viewportWidthDp
+                            viewModel.attachTranscriptHost(host)
+                        }
+                    },
+                    update = { host ->
+                        val themeChanged = host.darkTheme != dark
+                        host.darkTheme = dark
+                        host.layoutWidthDp = viewportWidthDp
+                        if (themeChanged) {
+                            host.applyLatestFrame()
+                        }
+                    },
+                    onRelease = { host ->
+                        host.shutdown()
+                        viewModel.clearTranscriptHost(host)
+                    },
+                )
+                if (state.showScrollToLatest && state.error == null && !showLoadingShell) {
+                    val scrollToLatestLabel = "Scroll to latest"
+                    Surface(
+                        onClick = viewModel::jumpToLatest,
+                        modifier =
+                            Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 12.dp)
+                                .semantics { contentDescription = scrollToLatestLabel },
+                        shape = RoundedCornerShape(24.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        shadowElevation = 6.dp,
+                        tonalElevation = 2.dp,
+                    ) {
+                        Row(
+                            modifier =
+                                Modifier
+                                    .heightIn(min = 48.dp)
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.KeyboardArrowDown,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.onSurface,
+                            )
                             Text(
-                                state.plainPreview,
-                                modifier = Modifier.padding(16.dp),
-                                style = MaterialTheme.typography.bodySmall,
+                                "Latest",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
                             )
                         }
                     }
+                }
+                if (state.error == null && showLoadingShell) {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.padding(24.dp))
+                        Text("Loading transcript…")
+                    }
+                } else if (state.error == null && state.loading) {
+                    Text(
+                        "Loading earlier messages…",
+                        modifier =
+                            Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(vertical = 8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }

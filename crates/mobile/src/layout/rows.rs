@@ -705,6 +705,7 @@ fn prepare_user_text(ctx: &mut Ctx, body: &str, style: super::style::Resolved, l
         chip: ((lh - chip_h) / 2.0, chip_h),
         badges,
         math: Vec::new(),
+        images: Vec::new(),
     }
 }
 
@@ -910,9 +911,13 @@ pub(crate) fn content_heap_bytes(content: &Content) -> usize {
     fn math_bytes(t: &PText) -> usize {
         t.math.capacity() * std::mem::size_of::<(usize, zatex::Formula)>() + t.math.iter().map(|(_, f)| formula_bytes(f)).sum::<usize>()
     }
+    fn image_bytes(t: &PText) -> usize {
+        t.images.capacity() * std::mem::size_of::<(usize, super::markdown::InlineImageEmbed)>()
+            + t.images.iter().map(|(_, e)| e.reference.capacity()).sum::<usize>()
+    }
     fn block(b: &PBlock) -> usize {
         match b {
-            PBlock::Text(t) | PBlock::Heading(t) => t.p.heap_bytes() + math_bytes(t),
+            PBlock::Text(t) | PBlock::Heading(t) => t.p.heap_bytes() + math_bytes(t) + image_bytes(t),
             PBlock::Code(c) => c.body.p.heap_bytes() + c.source.len() + c.label.as_ref().map_or(0, |l| l.p.heap_bytes()),
             PBlock::Math(m) => formula_bytes(&m.formula),
             PBlock::Quote(children) => children.iter().map(block).sum(),
@@ -920,7 +925,7 @@ pub(crate) fn content_heap_bytes(content: &Content) -> usize {
                 .iter()
                 .map(|i| i.children.iter().map(block).sum::<usize>() + i.marker.as_ref().map_or(0, |m| m.p.heap_bytes()))
                 .sum(),
-            PBlock::Table(t) => t.cells.iter().flatten().map(|c| c.p.heap_bytes() + math_bytes(c)).sum(),
+            PBlock::Table(t) => t.cells.iter().flatten().map(|c| c.p.heap_bytes() + math_bytes(c) + image_bytes(c)).sum(),
             PBlock::Rule => 0,
         }
     }
