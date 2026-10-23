@@ -31,7 +31,17 @@ gradle -p apps/android :app:testDebugUnitTest \
   -PzeronCoreDir=../../target/android-core
 ```
 
-Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link hit-test, anchor/follow, cache keys, streaming prefixes, viewport scale, image reference/decode planning, message action/copy/link menu models) live under `app/src/test` (64 JVM `@Test` methods in 9 classes). `assembleDebug` also runs `testDebugUnitTest` (see `app/build.gradle.kts`). Static wiring checks: `apps/android/scripts/selfcheck-native-transcript.sh` (no Gradle).
+Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link hit-test, anchor/follow, cache keys, streaming prefixes, viewport scale, image reference/decode planning, message action/copy/link menu models, design tokens/contrast/composer presentation) live under `app/src/test` (117 JVM `@Test` method annotations in 13 classes — static inventory counted by `selfcheck-native-transcript.sh`, not executed native/device tests). `assembleDebug` also runs `testDebugUnitTest` (see `app/build.gradle.kts`). Static wiring checks: `apps/android/scripts/selfcheck-native-transcript.sh` (no Gradle).
+
+### Design refresh helpers (no Gradle)
+
+Calm v1 tokens (`ui/theme/ZeronaColorTokens.kt`, `Contrast.kt`), composer policy (`ui/ComposerPresentation.kt`), and matching unit tests compile on the VPS without the Android SDK:
+
+```sh
+python3 scripts/android/test-design-helpers.py
+```
+
+Optional: `--cache-dir` (or `ZERONA_JVM_CACHE`, default `~/.cache/zerona-jvm`), `GRADLE_USER_HOME` (default `~/.gradle`) for the Kotlin compiler glob, `--compiler-classpath`, `--trove-classpath`, `--stdlib`, `--annotations`, `--junit-classpath`. `PaletteBackgroundTest` and full Compose UI still require `:app:testDebugUnitTest` on CI.
 
 ## Manual transcript checks (device)
 

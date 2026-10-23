@@ -3,7 +3,6 @@ package sh.zeron.zerona.transcript
 import android.app.Activity
 import android.app.Application
 import android.graphics.Bitmap
-import android.graphics.Color
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -62,7 +61,7 @@ internal class ImagePreviewController(
                         maxW,
                         contentH,
                     )
-                setBackgroundColor(Color.parseColor("#101010"))
+                setBackgroundColor(NativeChrome.previewBackdrop(activity))
                 setPadding(pad, pad, pad, pad)
             }
         val imageView =
@@ -101,13 +100,13 @@ internal class ImagePreviewController(
         val errorText =
             TextView(activity).apply {
                 text = "Couldn't load image"
-                setTextColor(Color.WHITE)
+                setTextColor(NativeChrome.previewOnSurface(activity))
                 gravity = Gravity.CENTER
             }
         val retryButton =
             TextView(activity).apply {
                 text = "Retry"
-                setTextColor(Color.parseColor("#90CAF9"))
+                setTextColor(NativeChrome.previewLink(activity))
                 gravity = Gravity.CENTER
                 setPadding(0, pad, 0, pad)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
@@ -121,7 +120,7 @@ internal class ImagePreviewController(
         previewImageView = imageView
 
         val builtDialog =
-            AlertDialog.Builder(activity)
+            NativeChrome.dialogBuilder(activity)
                 .setTitle("Image")
                 .setView(root)
                 .setPositiveButton("Close", null)
@@ -138,6 +137,8 @@ internal class ImagePreviewController(
         dialog = builtDialog
         registerDestroyHook()
         builtDialog.show()
+        NativeChrome.applyDialogList(builtDialog)
+        NativeChrome.applyDialogButtons(builtDialog)
         builtDialog.window?.setLayout(maxW, windowMaxH)
         startLoad(forceReload = false, imageView, progress, errorPanel)
     }

@@ -38,6 +38,7 @@ class TranscriptImageWidget(
             text = "Couldn't load image"
             visibility = GONE
             textSize = 12f
+            setTextColor(NativeChrome.onSurfaceVariant(context))
         }
 
     init {
@@ -54,7 +55,7 @@ class TranscriptImageWidget(
             }
         background =
             GradientDrawable().apply {
-                setColor(0x22000000)
+                setColor(NativeChrome.placeholderWash(NativeChrome.isDark(context)))
                 cornerRadius = cornerPx
             }
         addView(imageView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))

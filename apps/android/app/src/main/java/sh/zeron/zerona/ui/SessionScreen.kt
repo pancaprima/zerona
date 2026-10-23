@@ -1,5 +1,10 @@
 package sh.zeron.zerona.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -73,7 +78,13 @@ fun SessionScreen(
                     TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.surface,
                     ),
-                title = { Text(state.title.ifBlank { "Session" }) },
+                title = {
+                    Text(
+                        state.title.ifBlank { "Session" },
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -151,19 +162,27 @@ fun SessionScreen(
                         viewModel.clearTranscriptHost(host)
                     },
                 )
-                if (state.showScrollToLatest && state.error == null && !showLoadingShell) {
+                val showLatest = state.showScrollToLatest && state.error == null && !showLoadingShell
+                val latestMotionMs = ComposerPresentation.CONTENT_MOTION_DURATION_MS
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = showLatest,
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                    enter =
+                        fadeIn(tween(latestMotionMs)) +
+                            slideInVertically(tween(latestMotionMs)) { it / 3 },
+                    exit = fadeOut(tween(ComposerPresentation.CONTENT_MOTION_DURATION_SHORT_MS)),
+                ) {
                     val scrollToLatestLabel = "Scroll to latest"
                     Surface(
                         onClick = viewModel::jumpToLatest,
                         modifier =
                             Modifier
-                                .align(Alignment.BottomCenter)
                                 .padding(bottom = 12.dp)
                                 .semantics { contentDescription = scrollToLatestLabel },
                         shape = RoundedCornerShape(24.dp),
                         color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        shadowElevation = 6.dp,
-                        tonalElevation = 2.dp,
+                        shadowElevation = 4.dp,
+                        tonalElevation = 1.dp,
                     ) {
                         Row(
                             modifier =
@@ -177,7 +196,7 @@ fun SessionScreen(
                                 imageVector = Icons.Filled.KeyboardArrowDown,
                                 contentDescription = null,
                                 modifier = Modifier.size(20.dp),
-                                tint = MaterialTheme.colorScheme.onSurface,
+                                tint = MaterialTheme.colorScheme.primary,
                             )
                             Text(
                                 "Latest",
