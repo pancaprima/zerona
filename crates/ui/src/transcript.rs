@@ -6831,7 +6831,7 @@ impl Transcript {
                 .iter()
                 .flatten()
                 .for_each(|child| self.prefetch_markdown_images(child, cx)),
-            Block::CodeBlock { .. } | Block::Rule => {}
+            Block::CodeBlock { .. } | Block::Math { .. } | Block::Rule => {}
         }
     }
 
