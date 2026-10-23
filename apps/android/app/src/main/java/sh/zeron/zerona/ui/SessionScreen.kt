@@ -139,8 +139,7 @@ fun SessionScreen(
                 modifier =
                     Modifier
                         .fillMaxSize()
-                        .clipToBounds()
-                        .padding(horizontal = 16.dp),
+                        .clipToBounds(),
             ) {
                 val viewportWidthDp = maxWidth.value
                 LaunchedEffect(viewportWidthDp, textScale) {
