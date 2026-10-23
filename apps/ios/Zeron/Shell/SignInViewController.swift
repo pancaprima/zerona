@@ -2,12 +2,12 @@ import AuthenticationServices
 import UIKit
 
 enum Endpoints {
-    static let edgeURL = URL(string: "https://edge.zeron.sh")!
+    static let edgeURL = URL(string: "https://zerona-edge.pancaprima8.workers.dev")!
     static var workosClientId: String {
         #if DEBUG
         if let id = debugOverride("-workos", key: "debugWorkosClientId") { return id }
         #endif
-        return "client_01KWD0EAKZKD50YCQJNYSRE4BY"
+        return "client_01M5MQRDER15D2DWMP40MCRXRH"
     }
     static let callbackScheme = "zeron"
 

@@ -7,13 +7,13 @@ pub mod paths;
 
 /// Production edge (Cloudflare Worker + Durable Objects on the zeron.sh zone).
 /// `ZERON_EDGE_URL` overrides (local dev / self-hosting).
-pub const DEFAULT_EDGE_URL: &str = "https://edge.zeron.sh";
+pub const DEFAULT_EDGE_URL: &str = "https://zerona-edge.pancaprima8.workers.dev";
 
 /// Production WorkOS AuthKit client id — public knowledge (it appears in every
 /// authorize URL), so baking it in is safe. Overridden by `ZERON_WORKOS_CLIENT_ID`;
 /// set it to the empty string — or set a dev bearer via `ZERON_EDGE_TOKEN` — to
 /// force dev-mode auth instead.
-pub const DEFAULT_WORKOS_CLIENT_ID: &str = "client_01KWD0EAKZKD50YCQJNYSRE4BY";
+pub const DEFAULT_WORKOS_CLIENT_ID: &str = "client_01M5MQRDER15D2DWMP40MCRXRH";
 
 pub fn edge_url_from_env() -> String {
     std::env::var("ZERON_EDGE_URL")

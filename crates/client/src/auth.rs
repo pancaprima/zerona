@@ -27,8 +27,8 @@ pub const EARLY_REFRESH_SECS: i64 = 60;
 
 /// Production endpoints (edge/wrangler.jsonc). Mobile always talks to prod —
 /// a stale override once broke sign-in in the worst ghost way.
-pub const PRODUCTION_EDGE_URL: &str = "https://edge.zeron.sh";
-pub const WORKOS_CLIENT_ID: &str = "client_01KWD0EAKZKD50YCQJNYSRE4BY";
+pub const PRODUCTION_EDGE_URL: &str = "https://zerona-edge.pancaprima8.workers.dev";
+pub const WORKOS_CLIENT_ID: &str = "client_01M5MQRDER15D2DWMP40MCRXRH";
 pub const WORKOS_API_BASE: &str = "https://api.workos.com";
 /// OAuth redirect: `zeron://callback?code=…&state=…`.
 pub const CALLBACK_SCHEME: &str = "zeron";
