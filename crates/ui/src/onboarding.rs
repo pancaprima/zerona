@@ -1395,6 +1395,7 @@ mod tests {
             name: name.into(),
             supports_steering: false,
             steering_mode: zeron_proto::SteeringMode::TurnBoundary,
+            on_demand_steer: false,
             reasoning_levels: Vec::new(),
             installed,
             can_install: true,
