@@ -327,7 +327,7 @@ fn study01_table_and_tool_rows_emit_no_prose_card() {
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
-            })],
+            }],
             created_at: 0,
             device_id: String::new(),
             status: Some(MessageStatus::Complete),
