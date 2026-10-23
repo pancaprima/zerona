@@ -30,14 +30,24 @@ Cross-platform unconditional prose cards were **rejected**. Geometry and `ProseC
 ### Opt-in API and lifecycle
 
 - **Entrypoint:** `TranscriptView::set_assistant_markdown_style(AssistantMarkdownStyle)` (additive; `set_viewport` unchanged).
-- **Invalidation:** Style change clears height memo; next pass bumps layout `revision`. Row **`version`** (placement + `RowDisplay` + Android `ModelKey`) XORs a style discriminator so draw caches invalidate without changing row `key` / identity. Retained older `LayoutFrame` arcs still paint with their snapshotted `assistant_markdown`; repeated same-style setter is a no-op.
+- **Invalidation:** Style change clears height memo; next pass bumps layout `revision`. Row **`version`** (placement + `RowDisplay` + Android `ModelKey`) XORs non-overlapping lanes — `prose_segment` «52..54», `assistant_markdown` style tag «56», `gap` «58+» — so draw caches invalidate without changing row `key` / identity. Retained older `LayoutFrame` arcs still paint with their snapshotted `assistant_markdown`; repeated same-style setter is a no-op.
 - **Frame paint:** `LayoutFrame` stores the style used at measure time so `LayoutFrame::display()` matches heights.
 
 ### What gets a prose card (bounded by block architecture)
 
-One row = one top-level markdown block (`RowKind::Markdown`), not whole messages and not wrapped lines.
+One **virtualized row** still equals one top-level markdown block (`RowKind::Markdown`), not whole messages and not wrapped lines. Study01 **groups** adjacent eligible rows into one continuous card surface (per heading section); row keys, copy text, and measure/display per row are unchanged.
 
-**Card eligible (`block_supports_prose_card`):** `Text`, `Heading`, `Quote`, `List` — **limitation:** multiple blocks in one assistant message ⇒ multiple cards (not one bubble per message).
+**Card eligible (`block_supports_prose_card`):** `Text`, `Heading`, `Quote`, `List`.
+
+**Grouping (Study01 only; Legacy unchanged):** Assistant prose rows in the same message **text part** merge into one card until:
+
+- the next top-level `Heading` (any level) — heading **starts** a new card; following blocks attach until the next heading or break;
+- a non-eligible block row (`Code`, `Math`, `Table`, `Rule`) or non-markdown row (tool, image, visual, working, user, …);
+- a message, role, or **part** boundary (never merge across separate messages or `MessagePart`s).
+
+Intro consecutive prose before the first heading groups together. Prose after an interrupt starts a new group. **User bubbles byte-identical.** Lists/quotes stay single rows; nested code/images inside a list remain inside that row (no cross-row merge).
+
+**Paint:** Core tags each row with private `ProseCardSegment` (`Solo` / `Start` / `Middle` / `End`). Only the group’s outer top/bottom get card radius and `PROSE_CARD_PAD_Y`; continuation rows use `Gap::ProseContinue` (0) and absorb inter-block spacing inside the card fill. Card chrome is an outer segmented silhouette in `ProseCardBorder` then an inset inner `ProseCard` fill (top/bottom caps use a `2r` round-rect plus square continuation so platform radius clamping does not halve corners); middle segments paint side borders only — no horizontal strips or hairlines across interior seams. Row `version` XORs segment so streaming or a new heading invalidates changed ends without stale rounding.
 
 **Not card-wrapped:** `Code`, `Math`, `Table`, `Rule` — fenced code stays dark panel on board background. Tools, user bubbles, chips, standalone image rows: unchanged.
 
@@ -74,7 +84,8 @@ One row = one top-level markdown block (`RowKind::Markdown`), not whole messages
 |------|----------------|
 | `legacy_default_assistant_rows_emit_no_prose_card_roles` | `cargo test -p zeron-mobile` (`.github/workflows/macos.yml`) |
 | `assistant_markdown_row_emits_prose_card_with_padding` | same |
-| `assistant_blocks_get_separate_prose_cards_not_user_bubbles` | same (user row with opt-in enabled) |
+| `study01_prose_groups_by_heading_section` | same (**new**; replaces per-block card expectation in `assistant_blocks_get_separate_prose_cards_not_user_bubbles`) |
+| `assistant_blocks_get_separate_prose_cards_not_user_bubbles` | same (user row never gets `ProseCard`; grouped heading+body ⇒ one shared card surface) |
 | `study01_code_block_row_is_not_wrapped_in_prose_card` | same |
 | `assistant_prose_card_style_change_remeasures_row_heights` | same |
 | `assistant_prose_card_style_change_bumps_display_version_and_retains_legacy_frame` | same (**new**; unexecuted on VPS) |
@@ -86,6 +97,8 @@ One row = one top-level markdown block (`RowKind::Markdown`), not whole messages
 | `proseCardBodyTextPassesAaInBothThemes`, `proseCardSecondaryAndLinkForegroundPassAaOnCardFill`, `proseCardBorderIsVisibleButNotAaBodyTextOnFill` | `:app:testDebugUnitTest` |
 | `TranscriptColorTokensProseCardTest` (`proseCardFillContrastsWithBoardBackground`, `proseCardBorderIsScopedHairlineNotOutlineVariant`) | `scripts/android/test-design-helpers.py` + `:app:testDebugUnitTest` |
 | `python3 scripts/android/test-design-helpers.py` | Cheap JVM: design tokens, contrast (incl. prose card AA), composer presentation, `TranscriptColorTokensProseCardTest`; needs populated `--cache-dir` (kotlin-stdlib etc.) |
+
+**VPS cleanup (2026-10-23):** A prior agent run rustfmt-churned `display`/`markdown`/`tools`/`file_icons` against instructions; those files are restored to HEAD `7aa04b0`. Grouping work is limited to `rows.rs` / `mod.rs` / `tests.rs` + this plan. That prior agent also ran a local Cargo test against the no-build instruction; parent removed its 5.1 GB `target/` directory. No further local builds are permitted. Local layout-test self-reports are not accepted as parent evidence; the new heading-group regressions remain pending exact-SHA CI.
 
 **VPS verification (2026-10-23):** `GRADLE_USER_HOME=/root/.gradle python3 scripts/android/test-design-helpers.py --cache-dir /root/.hermes/profiles/girlfriend/cache/scratch/zerona-jvm` — **42** JUnit methods OK (`ZeronaColorTokensTest`, `ContrastTest`, `TranscriptColorTokensProseCardTest`, `ComposerPresentationTest`). `apps/android/scripts/selfcheck-native-transcript.sh` — OK (**122** `@Test` in **14** classes; `apps/android/README.md` + `plan-android-native-transcript.md` inventory aligned). Gradle `:app:testDebugUnitTest` **not** run on VPS (parent gate).
 

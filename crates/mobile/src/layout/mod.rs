@@ -30,7 +30,7 @@ pub use display::AssistantMarkdownStyle;
 use display::{DisplayBuilder, MathFace, RowDisplay};
 use markdown::{Ctx, MathFailures, MathSettings, Px};
 pub use rows::{PendingUser, RowKind, TranscriptInput};
-use rows::{Gap, Placed, RowBuilder, RowCore, place_row};
+use rows::{Gap, Placed, ProseCardSegment, RowBuilder, RowCore, annotate_prose_card_segments, place_row};
 pub use style::{FaceRole, StyleDesc};
 use style::Typography;
 
@@ -137,6 +137,7 @@ pub struct RowPlacement {
 struct FrameRow {
     core: Arc<RowCore>,
     gap: Gap,
+    prose_segment: ProseCardSegment,
     y: f32,
     height: f32,
     /// A visual's measured-height epoch when the frame was built.
@@ -153,9 +154,11 @@ impl FrameRow {
             AssistantMarkdownStyle::Legacy => 0u64,
             AssistantMarkdownStyle::Study01ProseCard => 1u64,
         };
+        // Reserved XOR lanes (must not overlap): segment «52..54», style «56», gap «58+».
         self.core.version
-            ^ ((self.gap as u64 + 1) << 58)
+            ^ ((self.prose_segment as u64) << 52)
             ^ (style_tag << 56)
+            ^ ((self.gap as u64 + 1) << 58)
             ^ self.epoch.wrapping_mul(0x9e37_79b9_7f4a_7c15)
     }
 }
@@ -241,6 +244,7 @@ impl LayoutFrame {
         let height = place_row(
             &r.core,
             r.gap,
+            r.prose_segment,
             Px(self.scale),
             self.width,
             r.visual,
@@ -563,6 +567,7 @@ pub(crate) fn debug_input(entries: Vec<DebugEntry>, working: bool) -> Transcript
 struct HeightMemo {
     core: Arc<RowCore>,
     gap: Gap,
+    prose_segment: ProseCardSegment,
     width: f32,
     height: f32,
 }
@@ -726,7 +731,9 @@ impl Worker {
                 in_table: false,
                 math_area: 0.0,
             };
-            self.builder.build(&mut ctx, &self.input)
+            let mut placed = self.builder.build(&mut ctx, &self.input);
+            annotate_prose_card_segments(&mut placed, self.assistant_markdown);
+            placed
         };
         let px = Px(self.typo.scale);
         let mut rows = Vec::with_capacity(placed.len());
@@ -744,17 +751,18 @@ impl Worker {
             };
             let height = match self.heights.remove(&p.core.key) {
                 Some(m)
-                    if Arc::ptr_eq(&m.core, &p.core) && m.gap == p.gap && m.width == self.width && visual.is_none() =>
+                    if Arc::ptr_eq(&m.core, &p.core) && m.gap == p.gap && m.prose_segment == p.prose_segment && m.width == self.width && visual.is_none() =>
                 {
                     m.height
                 }
-                _ => place_row(&p.core, p.gap, px, self.width, visual, self.assistant_markdown, None),
+                _ => place_row(&p.core, p.gap, p.prose_segment, px, self.width, visual, self.assistant_markdown, None),
             };
             live.insert(
                 p.core.key,
                 HeightMemo {
                     core: p.core.clone(),
                     gap: p.gap,
+                    prose_segment: p.prose_segment,
                     width: self.width,
                     height,
                 },
@@ -762,6 +770,7 @@ impl Worker {
             rows.push(FrameRow {
                 core: p.core,
                 gap: p.gap,
+                prose_segment: p.prose_segment,
                 y,
                 height,
                 epoch,
