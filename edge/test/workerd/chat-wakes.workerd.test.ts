@@ -9,7 +9,7 @@ import { appendRow, getMeta, logStats, rowsAfter, setMeta } from "../../src/chat
 const owner = "sender-owner";
 const auth = { authorization: `Bearer ${owner}@org` };
 const chatRoom = (chat: string) => env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(`chat2/${chat}`));
-const deviceRoom = (host: string) => env.DEVICE_ROOMS.get(env.DEVICE_ROOMS.idFromName(`d2/${host}`));
+const deviceRoom = (host: string) => env.DEVICE_ROOMS.get(env.DEVICE_ROOMS.idFromName(`d3/${host}`));
 const post = (chat: string, host: string, batch = "prompt") => SELF.fetch(
   `https://edge/chat2/${chat}/rows?device=phone&hostDevice=${host}&batchId=${batch}&chatId=spoofed-chat`,
   { method: "POST", headers: auth, body: new Uint8Array([1, 2, 3]) }

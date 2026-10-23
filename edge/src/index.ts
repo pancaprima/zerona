@@ -360,10 +360,10 @@ export default {
         // Dials never wake a sleeping Cloud session (viewing a chat must not
         // start a billed machine): the dial sees host_offline. Sends do —
         // through the nudge below.
-        // `d2/` — same staging→prod identity break as `s2/` above.
+        // `d3/` — second identity break (same trick as `s2/` above).
         return forward(
           env.DEVICE_ROOMS,
-          `d2/${deviceId}`,
+          `d3/${deviceId}`,
           request,
           auth,
           "/ws",
@@ -371,10 +371,10 @@ export default {
         );
       }
       if (parts[2] === "sidecar" && parts[3] && /^[a-z0-9-]{1,64}$/.test(parts[3])) {
-        return forward(env.DEVICE_ROOMS, `d2/${deviceId}`, request, auth, `/sidecar/${parts[3]}`, "");
+        return forward(env.DEVICE_ROOMS, `d3/${deviceId}`, request, auth, `/sidecar/${parts[3]}`, "");
       }
       if (parts[2] === "status") {
-        return forward(env.DEVICE_ROOMS, `d2/${deviceId}`, request, auth, "/status", "");
+        return forward(env.DEVICE_ROOMS, `d3/${deviceId}`, request, auth, "/status", "");
       }
       // Durable command nudge (§7): "chat X has pending commands — open its
       // doc". Delivered live if the host is connected, else queued in the DO
@@ -383,7 +383,7 @@ export default {
         // A send to a sleeping Cloud session wakes its machine; the nudge
         // queues in the DeviceRoom and replays once its engine reconnects.
         autoWakeCloudDevice(env, ctx, auth, deviceId);
-        return forward(env.DEVICE_ROOMS, `d2/${deviceId}`, request, auth, "/nudge", "");
+        return forward(env.DEVICE_ROOMS, `d3/${deviceId}`, request, auth, "/nudge", "");
       }
     }
 

@@ -1172,7 +1172,7 @@ export class CloudAccount extends DurableObject<Env> {
   private async claimDeviceRoom(deviceId: string, userId: string): Promise<void> {
     const ns = this.env.DEVICE_ROOMS;
     try {
-      const res = await ns.get(ns.idFromName(`d2/${deviceId}`)).fetch(
+      const res = await ns.get(ns.idFromName(`d3/${deviceId}`)).fetch(
         new Request("https://device/claim", { method: "POST", headers: { [AUTH_USER_HEADER]: userId } })
       );
       if (!res.ok) console.warn("cloud: device room claim failed", deviceId, res.status);
