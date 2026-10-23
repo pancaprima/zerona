@@ -10,6 +10,7 @@ import android.view.View
 import android.widget.FrameLayout
 import androidx.core.widget.NestedScrollView
 import kotlin.math.ceil
+import uniffi.zeron_core.AssistantMarkdownStyle
 import uniffi.zeron_core.LayoutFrame
 import uniffi.zeron_core.RowPlacement
 import uniffi.zeron_core.TranscriptView
@@ -142,6 +143,7 @@ class TranscriptListView
         ) {
             clearJumpSettle()
             engine = transcriptView
+            transcriptView?.setAssistantMarkdownStyle(AssistantMarkdownStyle.STUDY01_PROSE_CARD)
             actions = transcriptActions
         }
 

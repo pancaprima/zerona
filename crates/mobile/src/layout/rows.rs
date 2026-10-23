@@ -19,6 +19,7 @@ use zeron_text::WhiteSpace;
 
 use super::display::{ColorRole, DisplayBuilder, FadeEdge, TextRun, WidgetKind};
 use super::file_icons::file_icon_asset;
+use super::display::AssistantMarkdownStyle;
 use super::markdown::{Ctx, PBlock, PText, Px, place, place_text, prepare_block, prepare_plain};
 use super::style::{Family, TYPE, Weight};
 use super::tools::{ThoughtState, ToolGroup, place_tools};
@@ -135,6 +136,9 @@ pub(crate) mod geom {
     pub const BUBBLE_PAD_X: f32 = 15.0;
     pub const BUBBLE_PAD_Y: f32 = 10.0;
     pub const BUBBLE_RADIUS: f32 = 20.0;
+    pub const PROSE_CARD_PAD_X: f32 = 16.0;
+    pub const PROSE_CARD_PAD_Y: f32 = 12.0;
+    pub const PROSE_CARD_RADIUS: f32 = 16.0;
     /// Width of a trailing overflow fade.
     pub const FADE: f32 = 28.0;
     pub const BUBBLE_FOLD_LINES: usize = 8;
@@ -727,6 +731,31 @@ fn chip_row(ctx: &mut Ctx, entry_id: &str, part_id: &str, icon: &'static str, co
     }
 }
 
+/// Prose-shaped top-level blocks get a study01 card; code/math/table/rule rows stay flat.
+pub(crate) fn block_supports_prose_card(block: &PBlock) -> bool {
+    matches!(
+        block,
+        PBlock::Text(_) | PBlock::Heading(_) | PBlock::Quote(_) | PBlock::List { .. }
+    )
+}
+
+/// One assistant markdown block: white card with inner padding (study01 chat).
+fn place_prose_block(block: &PBlock, px: Px, x: f32, y: f32, cw: f32, out: Option<&mut DisplayBuilder>) -> f32 {
+    use geom::*;
+    let pad_x = px.v(PROSE_CARD_PAD_X);
+    let pad_y = px.v(PROSE_CARD_PAD_Y);
+    let inner_w = (cw - pad_x * 2.0).max(1.0);
+    let inner_h = place(block, px, 0.0, 0.0, inner_w, None);
+    let card_h = inner_h + pad_y * 2.0;
+    if let Some(out) = out {
+        let radius = px.v(PROSE_CARD_RADIUS);
+        out.fill(x, y, cw, card_h, radius, ColorRole::ProseCard);
+        out.hairline(x, y, cw, card_h, radius, ColorRole::ProseCardBorder);
+        place(block, px, x + pad_x, y + pad_y, inner_w, Some(out));
+    }
+    card_h
+}
+
 /// The message column's width in a viewport `width` wide.
 pub(crate) fn column_width(px: Px, width: f32) -> f32 {
     use geom::*;
@@ -743,6 +772,7 @@ pub(crate) fn place_row(
     px: Px,
     width: f32,
     visual: Option<f32>,
+    assistant_markdown: AssistantMarkdownStyle,
     mut out: Option<&mut DisplayBuilder>,
 ) -> f32 {
     use geom::*;
@@ -751,7 +781,13 @@ pub(crate) fn place_row(
     let x = ((width - cw) / 2.0).max(margin).floor();
     let top = gap.px(px);
     let body = match &core.content {
-        Content::Block(b) => place(b, px, x, top, cw, out),
+        Content::Block(b) => {
+            if assistant_markdown.prose_cards() && block_supports_prose_card(b) {
+                place_prose_block(b, px, x, top, cw, out)
+            } else {
+                place(b, px, x, top, cw, out)
+            }
+        }
         Content::User(u) => place_user(u, px, x, top, cw, out),
         Content::Tools(t) => place_tools(t, px, x, top, cw, out),
         Content::Chip(c) => {

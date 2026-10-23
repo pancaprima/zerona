@@ -89,6 +89,16 @@ object Palette {
                     tokenRgb(ZeronaColorTokens.LIGHT_PRIMARY_CONTAINER),
                     tokenRgb(ZeronaColorTokens.DARK_PRIMARY_CONTAINER),
                 )
+            ColorRole.PROSE_CARD ->
+                dynamic(
+                    tokenRgb(TranscriptColorTokens.LIGHT_PROSE_CARD),
+                    tokenRgb(TranscriptColorTokens.DARK_PROSE_CARD),
+                )
+            ColorRole.PROSE_CARD_BORDER ->
+                dynamic(
+                    tokenRgb(TranscriptColorTokens.LIGHT_PROSE_CARD_BORDER),
+                    tokenRgb(TranscriptColorTokens.DARK_PROSE_CARD_BORDER),
+                )
             ColorRole.CHIP_BACKGROUND ->
                 dynamic(
                     tokenRgb(ZeronaColorTokens.LIGHT_SURFACE_VARIANT),
@@ -112,12 +122,22 @@ object Palette {
                     tokenRgb(TranscriptColorTokens.DARK_TEXT_FAINT),
                 )
             ColorRole.TEXT_SOFT -> dynamic(0x303035, 0xE8E8EA, 0.85f)
-            ColorRole.TOOL_RAIL -> dual(0.162f, 0.12f)
-            ColorRole.TOOL_BADGE -> dual(0.06f, 0.06f)
-            ColorRole.TOOL_WELL -> if (dark) Color.argb(41, 0, 0, 0) else Color.argb(41, 255, 255, 255)
-            ColorRole.AGENT_CARD -> dual(0.03f, 0.03f)
-            ColorRole.AGENT_CARD_BORDER -> dual(0.0945f, 0.07f)
-            ColorRole.AGENT_TILE -> dual(0.08f, 0.08f)
+            ColorRole.TOOL_RAIL -> dual(0.12f, 0.10f)
+            ColorRole.TOOL_BADGE ->
+                if (dark) {
+                    Color.argb(38, 255, 255, 255)
+                } else {
+                    Color.argb(48, 0xE8, 0xDF, 0xF8)
+                }
+            ColorRole.TOOL_WELL ->
+                if (dark) {
+                    Color.argb(36, 0, 0, 0)
+                } else {
+                    Color.argb(52, 255, 255, 255)
+                }
+            ColorRole.AGENT_CARD -> dual(0.025f, 0.04f)
+            ColorRole.AGENT_CARD_BORDER -> dual(0.08f, 0.065f)
+            ColorRole.AGENT_TILE -> dual(0.06f, 0.07f)
             ColorRole.DIFF_ADD_WASH -> dynamic(0x15803D, 0x34D399, 0.055f)
             ColorRole.DIFF_DEL_WASH -> dynamic(0xDC2626, 0xF87171, 0.055f)
             ColorRole.DIFF_ADD_BAR -> dynamic(0x15803D, 0x34D399, 0.55f)

@@ -37,6 +37,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.background
+import androidx.compose.ui.text.font.FontWeight
+import sh.zeron.zerona.transcript.Palette
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -81,8 +85,10 @@ fun SessionScreen(
                 title = {
                     Text(
                         state.title.ifBlank { "Session" },
-                        style = MaterialTheme.typography.titleLarge,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
                     )
                 },
                 navigationIcon = {
@@ -141,7 +147,11 @@ fun SessionScreen(
                     viewModel.setViewport(viewportWidthDp, textScale)
                 }
                 AndroidView(
-                    modifier = Modifier.fillMaxSize().clipToBounds(),
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .clipToBounds()
+                            .background(Color(Palette.background(dark))),
                     factory = { ctx ->
                         TranscriptListView(ctx).also { host ->
                             host.darkTheme = dark

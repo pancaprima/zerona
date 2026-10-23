@@ -128,6 +128,234 @@ fn transcript_one(text: &str) -> TranscriptInput {
     debug_input(vec![DebugEntry { id: "a".into(), user: false, text: text.into(), streaming: false }], false)
 }
 
+fn prose_card_vertical_pad() -> f32 {
+    Px(1.0).v(rows::geom::PROSE_CARD_PAD_Y) * 2.0
+}
+
+fn rows_pass_with_style(md: &str, width: f32, style: display::AssistantMarkdownStyle) -> RowsPass {
+    let mut w = worker(width);
+    w.set_assistant_markdown_style(style);
+    w.input = transcript_one(md);
+    let frame = w.pass();
+    let style_metrics = frame
+        .styles()
+        .iter()
+        .map(|desc| {
+            let m = w.typo.book.metrics(StyleId(desc.id));
+            (desc.id, (m.ascent, m.descent))
+        })
+        .collect();
+    let rows = (0..frame.row_count()).map(|i| frame.display(i).unwrap()).collect();
+    RowsPass { rows, style_metrics }
+}
+
+fn rows_of_study01(md: &str, width: f32) -> Vec<RowDisplay> {
+    rows_pass_with_style(md, width, display::AssistantMarkdownStyle::Study01ProseCard).rows
+}
+
+#[test]
+fn legacy_default_assistant_rows_emit_no_prose_card_roles() {
+    let d = rows_of("Hello **world**.", 390.0).remove(0);
+    assert!(!d.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+    assert!(!d.boxes.iter().any(|b| b.color == display::ColorRole::ProseCardBorder));
+    let fenced = rows_of("```rust\nfn main() {}\n```", 390.0).remove(0);
+    assert!(fenced.boxes.iter().any(|b| b.color == display::ColorRole::CodeBackground));
+    assert!(!fenced.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+}
+
+#[test]
+fn assistant_markdown_row_emits_prose_card_with_padding() {
+    let d = rows_of_study01("Hello **world**.", 390.0).remove(0);
+    assert_eq!(d.boxes.iter().filter(|b| b.color == display::ColorRole::ProseCard).count(), 1);
+    assert!(d.boxes.iter().any(|b| b.color == display::ColorRole::ProseCardBorder));
+    let column = rows::column_width(Px(1.0), 390.0);
+    let x0 = ((390.0 - column) / 2.0).max(rows::geom::MARGIN_X).floor();
+    let min_x = x0 + Px(1.0).v(rows::geom::PROSE_CARD_PAD_X) - 0.5;
+    for run in &d.runs {
+        if run.scroller.is_none() {
+            assert!(run.x >= min_x, "{run:?}");
+        }
+    }
+}
+
+#[test]
+fn assistant_blocks_get_separate_prose_cards_not_user_bubbles() {
+    let rows = rows_of_study01("# Title\n\nBody paragraph.", 390.0);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.iter().filter(|d| d.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard)).count(), 2);
+    let mut w = worker(390.0);
+    w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard);
+    w.input = debug_input(vec![DebugEntry { id: "u".into(), user: true, text: "Hi".into(), streaming: false }], false);
+    let user = w.pass().display(0).unwrap();
+    assert!(!user.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+    assert!(user.boxes.iter().any(|b| b.color == display::ColorRole::UserBubble));
+}
+
+#[test]
+fn study01_code_block_row_is_not_wrapped_in_prose_card() {
+    let d = rows_of_study01("Intro line.\n\n```js\nconsole.log(1)\n```", 390.0);
+    let prose_rows = d.iter().filter(|r| r.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard)).count();
+    let code_rows = d.iter().filter(|r| r.boxes.iter().any(|b| b.color == display::ColorRole::CodeBackground)).count();
+    assert_eq!(prose_rows, 1, "only the intro paragraph row");
+    assert_eq!(code_rows, 1);
+    let code = d.iter().find(|r| r.boxes.iter().any(|b| b.color == display::ColorRole::CodeBackground)).unwrap();
+    assert!(!code.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+}
+
+#[test]
+fn assistant_prose_card_style_change_remeasures_row_heights() {
+    let md = "Hello **world**.";
+    let mut w = worker(390.0);
+    w.input = transcript_one(md);
+    let legacy_h = w.pass().display(0).unwrap().height;
+    assert!(w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard));
+    let card_h = w.pass().display(0).unwrap().height;
+    assert!(card_h > legacy_h + prose_card_vertical_pad() - 0.5);
+    assert!(w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Legacy));
+    let again = w.pass().display(0).unwrap().height;
+    assert!((again - legacy_h).abs() < 0.01);
+}
+
+#[test]
+fn assistant_prose_card_style_change_bumps_display_version_and_retains_legacy_frame() {
+    let md = "Hello **world**.";
+    let mut w = worker(390.0);
+    w.input = transcript_one(md);
+    let legacy_frame = w.pass();
+    let legacy_disp = legacy_frame.display(0).unwrap();
+    let legacy_ver = legacy_frame.placement(0).unwrap().version;
+    assert!(!legacy_disp.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+
+    assert!(w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard));
+    let card_frame = w.pass();
+    let card_ver = card_frame.placement(0).unwrap().version;
+    assert_ne!(legacy_ver, card_ver);
+    assert!(card_frame.display(0).unwrap().boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+
+    let retained = legacy_frame.display(0).unwrap();
+    assert!(!retained.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+    assert!((retained.height - legacy_disp.height).abs() < 0.01);
+    assert_eq!(retained.copy_text, legacy_disp.copy_text);
+
+    assert!(!w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard));
+}
+
+#[test]
+fn study01_prose_cards_measure_matches_display_at_narrow_width_and_scale() {
+    for width in [280.0, 320.0] {
+        let mut w = worker(width);
+        w.typo.scale = 1.15;
+        w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard);
+        w.input = transcript_one("Narrow **card** at larger scale.");
+        let frame = w.pass();
+        let p = frame.placement(0).unwrap();
+        let d = frame.display(0).unwrap();
+        assert!((d.height - p.height).abs() < 0.01, "width {width}");
+        assert!(d.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+        let column = rows::column_width(Px(w.typo.scale), width);
+        let x0 = ((width - column) / 2.0).max(rows::geom::MARGIN_X).floor();
+        let min_x = x0 + Px(w.typo.scale).v(rows::geom::PROSE_CARD_PAD_X) - 0.5;
+        for run in &d.runs {
+            if run.scroller.is_none() {
+                assert!(run.x >= min_x, "width {width}: {run:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn study01_prose_card_links_and_inline_images_stay_inside_card_padding() {
+    let md = "See [docs](https://example.com) and ![shot](/tmp/uploads/a/shot.png).";
+    let d = rows_of_study01(md, 390.0).remove(0);
+    assert!(d.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+    assert!(d.links.iter().any(|l| l.url == "https://example.com"));
+    assert!(d.widgets.iter().any(|w| matches!(&w.kind, display::WidgetKind::Image { reference } if reference.ends_with("shot.png"))));
+    let column = rows::column_width(Px(1.0), 390.0);
+    let x0 = ((390.0 - column) / 2.0).max(rows::geom::MARGIN_X).floor();
+    let min_x = x0 + Px(1.0).v(rows::geom::PROSE_CARD_PAD_X) - 0.5;
+    let max_x = x0 + column - Px(1.0).v(rows::geom::PROSE_CARD_PAD_X) + 0.5;
+    for link in &d.links {
+        assert!(link.x >= min_x && link.x + link.w <= max_x + 0.5, "{link:?}");
+    }
+    for widget in &d.widgets {
+        if matches!(&widget.kind, display::WidgetKind::Image { .. }) {
+            assert!(widget.x >= min_x && widget.x + widget.w <= max_x + 0.5, "{widget:?}");
+        }
+    }
+}
+
+#[test]
+fn study01_streaming_prose_card_reuses_stable_prefix_versions() {
+    let mut w = worker(390.0);
+    w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard);
+    let base = "# Title\n\nFirst paragraph.\n\nSecond paragraph that keeps growing";
+    w.input = debug_input(vec![DebugEntry { id: "a".into(), user: false, text: base.into(), streaming: true }], true);
+    let f1 = w.pass();
+    w.input = debug_input(vec![DebugEntry { id: "a".into(), user: false, text: format!("{base} with more words"), streaming: true }], true);
+    let f2 = w.pass();
+    for i in 0..2 {
+        assert_eq!(f1.placement(i).unwrap().version, f2.placement(i).unwrap().version);
+    }
+    assert_ne!(f1.placement(2).unwrap().version, f2.placement(2).unwrap().version);
+    assert!(f2.display(0).unwrap().boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+}
+
+#[test]
+fn study01_table_and_tool_rows_emit_no_prose_card() {
+    let table = rows_of_study01("| a | b |\n|---|---|\n| 1 | 2 |", 390.0).remove(0);
+    assert!(!table.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+
+    use zeron_doc::parts::{MessagePart, MessageStatus};
+    use zeron_doc::schema::{MessageRole, SessionMessageEntry};
+    let mut w = worker(390.0);
+    w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard);
+    w.input = TranscriptInput {
+        entries: vec![Arc::new(SessionMessageEntry {
+            id: "a".into(),
+            role: MessageRole::Assistant,
+            parts: vec![MessagePart::Tool {
+                id: "t0".into(),
+                call: zeron_proto::ToolCall::Unknown { name: "read_file".into(), input: None },
+                is_error: false,
+                resolved: true,
+                output: Some("ok".into()),
+                diff: None,
+                output_ref: None,
+                output_bytes: None,
+                diff_ref: None,
+                diff_stats: None,
+                subagent_ref: None,
+                subagent_status: None,
+                subagent_tail: None,
+            })],
+            created_at: 0,
+            device_id: String::new(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+            duration_ms: None,
+        })],
+        ..Default::default()
+    };
+    let tool = w.pass().display(0).unwrap();
+    assert!(!tool.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+}
+
+#[test]
+fn study01_prose_card_preserves_copy_text_and_code_scroller_geometry() {
+    let wide_line = "x".repeat(120);
+    let md = format!("Intro line.\n\n```js\n{wide_line}\n```");
+    let legacy = rows_of(&md, 320.0);
+    let study = rows_pass_with_style(&md, 320.0, display::AssistantMarkdownStyle::Study01ProseCard).rows;
+    assert_eq!(legacy.len(), study.len());
+    for (a, b) in legacy.iter().zip(study.iter()) {
+        assert_eq!(a.copy_text, b.copy_text);
+    }
+    let code = study.iter().find(|r| r.boxes.iter().any(|b| b.color == display::ColorRole::CodeBackground)).unwrap();
+    assert!(!code.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+    assert_eq!(code.scrollers.len(), 1);
+    assert!(code.scrollers[0].content_width > code.scrollers[0].w);
+}
+
 #[test]
 fn stable_prefix_rows_are_reused_while_streaming() {
     let mut w = worker(390.0);

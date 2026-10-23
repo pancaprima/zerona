@@ -62,6 +62,10 @@ pub enum ColorRole {
     DiffAddBar,
     DiffDelBar,
     DiffHunk,
+    /// Assistant markdown row: filled card behind prose (opt-in; not user bubbles or tools).
+    ProseCard,
+    /// Hairline around [`ProseCard`].
+    ProseCardBorder,
 }
 
 /// Text decorations, painted relative to the run's baseline.
@@ -154,6 +158,22 @@ impl From<MathFace> for zatex::bundled::Face {
             MathFace::Pagella => Self::Pagella,
             MathFace::Euler => Self::Euler,
         }
+    }
+}
+
+/// How assistant markdown block rows are framed. Default is legacy (no card
+/// geometry); study01 prose cards are opt-in per [`TranscriptView`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, uniffi::Enum)]
+pub enum AssistantMarkdownStyle {
+    #[default]
+    Legacy,
+    /// White rounded card behind prose block rows (Android study01 chat).
+    Study01ProseCard,
+}
+
+impl AssistantMarkdownStyle {
+    pub(crate) fn prose_cards(self) -> bool {
+        matches!(self, Self::Study01ProseCard)
     }
 }
 
