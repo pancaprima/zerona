@@ -97,3 +97,10 @@ export const apnsPayload = (chatId: string, title: string, category: Category) =
   chatId,
   category
 });
+
+/** FCM message body (no device token): notification + data + Android channel. */
+export const fcmPayload = (chatId: string, title: string, category: Category) => ({
+  notification: { title, body: bodyFor(category) },
+  data: { chatId, category },
+  android: { notification: { channel_id: "sessions" } }
+});

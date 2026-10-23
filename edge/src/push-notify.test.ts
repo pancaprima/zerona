@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { apnsPayload, chatForNotification, notificationFor, parsePrefs, SESSION_STALE_MS } from "./push-notify";
+import {
+  apnsPayload,
+  chatForNotification,
+  fcmPayload,
+  notificationFor,
+  parsePrefs,
+  SESSION_STALE_MS
+} from "./push-notify";
 import type { Row } from "./registry-core";
 
 const NOW = 1_800_000_000_000;
@@ -86,5 +93,11 @@ describe("prefs and payload", () => {
     expect(p.aps.alert).toEqual({ title: "Fix login", body: "Waiting on your input" });
     expect(p.chatId).toBe("c1");
     expect(p.aps["thread-id"]).toBe("c1");
+  });
+  it("builds FCM notification, data, and Android channel", () => {
+    const p = fcmPayload("c1", "Fix login", "input");
+    expect(p.notification).toEqual({ title: "Fix login", body: "Waiting on your input" });
+    expect(p.data).toEqual({ chatId: "c1", category: "input" });
+    expect(p.android.notification).toEqual({ channel_id: "sessions" });
   });
 });

@@ -33,6 +33,9 @@ export interface Env {
   /** Apple team id and the app's bundle id (defaults: the Zeron iOS app). */
   APNS_TEAM_ID?: string;
   APNS_TOPIC?: string;
+  /** Firebase service account JSON (wrangler secret). Unset ⇒ Android push
+   * is decided and logged, not sent. */
+  FCM_SERVICE_ACCOUNT?: string;
 
   // ── Cloud device (docs/design/cloud-device.md). Every binding is optional:
   //    deployments without them (the dev/test wrangler configs) answer
@@ -119,6 +122,18 @@ export const apnsConfig = (env: Env) =>
         topic: env.APNS_TOPIC ?? "sh.zeron.ios"
       }
     : undefined;
+
+/** FCM settings, when Android push is set up for this deployment. */
+export const fcmConfig = (env: Env) => {
+  if (!env.FCM_SERVICE_ACCOUNT) return undefined;
+  try {
+    const parsed = JSON.parse(env.FCM_SERVICE_ACCOUNT) as { project_id?: string };
+    if (typeof parsed.project_id !== "string" || parsed.project_id === "") return undefined;
+    return { serviceAccountJson: env.FCM_SERVICE_ACCOUNT, projectId: parsed.project_id };
+  } catch {
+    return undefined;
+  }
+};
 
 /** Header the Worker stamps on requests it forwards into DOs after verifying
  * the caller's JWT. DOs trust it blindly — they are only reachable through
