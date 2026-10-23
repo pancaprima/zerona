@@ -244,7 +244,7 @@ fun SessionComposerBar(
                         )
                     } else {
                         val sendTargetHeight = ComposerPresentation.SEND_TOUCH_TARGET_DP.dp
-                        val draftHorizontalPadding = 4.dp
+                        val draftHorizontalPadding = 12.dp
                         val draftFieldShape = RoundedCornerShape(8.dp)
                         val draftVerticalPadding =
                             with(LocalDensity.current) {

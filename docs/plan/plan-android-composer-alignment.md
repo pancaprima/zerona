@@ -16,3 +16,8 @@ Rust/mobile plan, callbacks, queue/state, gradle/CI/device verification.
 ## Verification (pending device)
 - Empty single-line placeholder aligned with send.
 - Typed single line centered; multiline growth; IME + `fontScale` > 1; focused border without clip.
+
+## Decision (PR #30 composer feedback — internal draft padding)
+- **Issue**: Placeholder "Message" and typed text sat too close to the focus border inside the signed-in `BasicTextField` decoration shell.
+- **Change**: Raise symmetric **internal** `decorationBox` horizontal padding only (`draftHorizontalPadding` 4dp → 12dp) so `inner()` and placeholder share the same padded content bounds.
+- **Preserved**: 48dp min height, derived vertical padding, send target/icon position, EdgeDock full width, multiline limits, queue/gating/callbacks; no outer margin/gutter, demo field, or `SessionScreen`/core edits.
