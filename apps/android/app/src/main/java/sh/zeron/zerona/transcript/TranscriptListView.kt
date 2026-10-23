@@ -61,6 +61,7 @@ class TranscriptListView
         private var pendingAutoTailAfterLayout = false
         private var pendingAutoTailFromEmpty = false
         private var pendingMarkReadyAfterAutoTail = false
+        private var pendingMarkReadyAfterRowSync = false
         private var replayScrollToLatestGeneration = 0
         private var jumpSettleDeadlineMs = 0L
         private var jumpSettleArmedAtMs = 0L
@@ -134,6 +135,8 @@ class TranscriptListView
             transcriptActions: TranscriptActions?,
         ) {
             clearJumpSettle()
+            cancelPendingJump()
+            cancelPendingAutoTail()
             engine = transcriptView
             transcriptView?.setAssistantMarkdownStyle(AssistantMarkdownStyle.STUDY01_PROSE_CARD)
             actions = transcriptActions
@@ -383,6 +386,7 @@ class TranscriptListView
         private fun cancelPendingJump() {
             pendingJumpAfterLayout = false
             jumpRowSyncInProgress = false
+            pendingMarkReadyAfterRowSync = false
             jumpRowSyncGeneration++
         }
 
@@ -416,7 +420,8 @@ class TranscriptListView
                 pendingAutoTailFromEmpty = false
                 pendingMarkReadyAfterAutoTail = false
                 programmaticScrollToMax()
-                scheduleJumpRowSyncAfterScroll()
+                pendingMarkReadyAfterRowSync = true
+                scheduleTailRowSyncAfterScroll()
                 return
             }
             if (pendingAutoTailAfterLayout) {
@@ -426,9 +431,20 @@ class TranscriptListView
                 val fromEmpty = pendingAutoTailFromEmpty
                 pendingAutoTailFromEmpty = false
                 if (following || fromEmpty) {
-                    scrollToBottom(false)
-                }
-                if (markReady) {
+                    if (fromEmpty) {
+                        jumpRowSyncInProgress = true
+                        programmaticScrollToMax()
+                        if (markReady) {
+                            pendingMarkReadyAfterRowSync = true
+                        }
+                        scheduleTailRowSyncAfterScroll()
+                    } else {
+                        scrollToBottom(false)
+                        if (markReady) {
+                            markReadyForScrollToLatestUi()
+                        }
+                    }
+                } else if (markReady) {
                     markReadyForScrollToLatestUi()
                 }
             }
@@ -453,27 +469,27 @@ class TranscriptListView
             }
         }
 
-        private fun scheduleJumpRowSyncAfterScroll() {
+        private fun scheduleTailRowSyncAfterScroll() {
             val gen = ++jumpRowSyncGeneration
             val bindGen = bindGeneration
             post {
                 if (destroyed || bindGen != bindGeneration || gen != jumpRowSyncGeneration) {
                     return@post
                 }
-                runJumpRowSyncPass(gen, bindGen, pass = 1) {
+                runTailRowSyncPass(gen, bindGen, pass = 1) {
                     postOnAnimation {
                         if (destroyed || bindGen != bindGeneration || gen != jumpRowSyncGeneration) {
                             return@postOnAnimation
                         }
-                        runJumpRowSyncPass(gen, bindGen, pass = 2) {
-                            finishJumpRowSync(gen, bindGen, forced = true)
+                        runTailRowSyncPass(gen, bindGen, pass = 2) {
+                            finishTailRowSync(gen, bindGen, forced = true)
                         }
                     }
                 }
             }
         }
 
-        private fun runJumpRowSyncPass(
+        private fun runTailRowSyncPass(
             gen: Int,
             bindGen: Int,
             pass: Int,
@@ -486,13 +502,13 @@ class TranscriptListView
             programmaticScroll = false
             layoutRows()
             if (isTailViewportSatisfied()) {
-                finishJumpRowSync(gen, bindGen, forced = false)
+                finishTailRowSync(gen, bindGen, forced = false)
             } else {
                 onIncomplete()
             }
         }
 
-        private fun finishJumpRowSync(
+        private fun finishTailRowSync(
             gen: Int,
             bindGen: Int,
             forced: Boolean,
@@ -506,7 +522,9 @@ class TranscriptListView
             val tailOk = isTailViewportSatisfied()
             jumpRowSyncInProgress = false
             following = tailOk
-            if (tailOk || forced) {
+            val markReady = pendingMarkReadyAfterRowSync
+            pendingMarkReadyAfterRowSync = false
+            if ((tailOk || forced) && markReady) {
                 markReadyForScrollToLatestUi()
             }
             if (!tailOk) {
