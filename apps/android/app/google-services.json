@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "734239169706",
+    "project_id": "zerona-b44bb",
+    "storage_bucket": "zerona-b44bb.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:734239169706:android:3b33d62d98a17416aec4d3",
+        "android_client_info": {
+          "package_name": "sh.zeron.zerona"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCR7jWOlzztZ51qdPZ3L9E76q3Zn0KuPU8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
