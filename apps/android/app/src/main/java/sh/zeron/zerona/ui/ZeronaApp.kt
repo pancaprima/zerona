@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -18,6 +19,7 @@ import sh.zeron.zerona.ui.theme.ZeronaTheme
 fun ZeronaApp(appModel: AppModel = viewModel()) {
     val nav = rememberNavController()
     val state by appModel.state.collectAsState()
+    val pendingChatId by appModel.pendingChatId.collectAsState()
     ZeronaTheme {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             val loadError = state.loadError
@@ -28,6 +30,21 @@ fun ZeronaApp(appModel: AppModel = viewModel()) {
             if (!state.signedIn) {
                 SignInScreen(appModel = appModel)
                 return@Surface
+            }
+            LaunchedEffect(pendingChatId, state.signedIn, state.isDemo, state.loadError, appModel.client) {
+                val chatId = pendingChatId ?: return@LaunchedEffect
+                if (!state.signedIn || state.isDemo || state.loadError != null) return@LaunchedEffect
+                if (appModel.client == null) return@LaunchedEffect
+                val current = nav.currentBackStackEntry
+                val currentChatId = current?.arguments?.getString("chatId")
+                if (current?.destination?.route == "session/{chatId}" && currentChatId == chatId) {
+                    appModel.clearPendingChatFromNotification()
+                    return@LaunchedEffect
+                }
+                nav.navigate("session/$chatId") {
+                    launchSingleTop = true
+                }
+                appModel.clearPendingChatFromNotification()
             }
             NavHost(navController = nav, startDestination = "sessions") {
                 composable("sessions") {

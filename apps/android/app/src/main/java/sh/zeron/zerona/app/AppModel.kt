@@ -106,6 +106,9 @@ class AppModel(
     private val _state = MutableStateFlow(AppUiState())
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
+    private val _pendingChatId = MutableStateFlow<String?>(null)
+    val pendingChatId: StateFlow<String?> = _pendingChatId.asStateFlow()
+
     private val refreshCounter = MutableStateFlow(0L)
     val refreshTick: StateFlow<Long> = refreshCounter.asStateFlow()
 
@@ -127,6 +130,14 @@ class AppModel(
     fun textSystemOrNull(): TextSystem? = textSystem
 
     fun applicationContext(): Context = appContext
+
+    fun openChatFromNotification(chatId: String) {
+        _pendingChatId.value = chatId
+    }
+
+    fun clearPendingChatFromNotification() {
+        _pendingChatId.value = null
+    }
 
     init {
         FcmTokenStore.onTokenSaved = { token -> registerFcmIfReady(token) }
@@ -229,6 +240,7 @@ class AppModel(
         val wasDemo = _state.value.isDemo
         stopClient(keepLiveDataDir = !wasDemo)
         credentialsStore.clear()
+        clearPendingChatFromNotification()
         if (!wasDemo) {
             liveCoreDir().deleteRecursively()
         }
@@ -465,6 +477,7 @@ class AppModel(
         unregisterFcmPushTargetIfNeeded()
         shutdownClient()
         credentialsStore.clear()
+        clearPendingChatFromNotification()
         _state.update {
             AppUiState(
                 coreVersion = it.coreVersion.ifEmpty { coreVersion() },

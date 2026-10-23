@@ -84,18 +84,21 @@ object Notifications {
         context: Context,
         title: String,
         body: String,
+        chatId: String? = null,
     ) {
         ensureSessionsChannel(context)
         if (!hasPostNotificationsPermission(context)) return
 
+        val notificationId = chatId?.hashCode() ?: SESSION_NOTIFICATION_ID
         val launchIntent =
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                chatId?.let { putExtra("chatId", it) }
             }
         val pendingIntent =
             PendingIntent.getActivity(
                 context,
-                0,
+                notificationId,
                 launchIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
@@ -110,6 +113,6 @@ object Notifications {
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .build()
 
-        NotificationManagerCompat.from(context).notify(SESSION_NOTIFICATION_ID, notification)
+        NotificationManagerCompat.from(context).notify(notificationId, notification)
     }
 }

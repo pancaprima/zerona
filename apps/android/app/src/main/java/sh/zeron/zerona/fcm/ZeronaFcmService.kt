@@ -12,6 +12,11 @@ class ZeronaFcmService : FirebaseMessagingService() {
         val notification = message.notification
         val title = notification?.title?.takeIf { it.isNotBlank() } ?: return
         val body = notification.body ?: ""
-        Notifications.showSessionNotification(applicationContext, title, body)
+        Notifications.showSessionNotification(
+            applicationContext,
+            title,
+            body,
+            message.data["chatId"],
+        )
     }
 }

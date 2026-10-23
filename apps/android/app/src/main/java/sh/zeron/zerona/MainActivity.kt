@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import sh.zeron.zerona.app.AppModel
+import sh.zeron.zerona.fcm.NotificationChatId
 import sh.zeron.zerona.fcm.Notifications
 import sh.zeron.zerona.ui.ZeronaApp
 
@@ -54,6 +55,7 @@ class MainActivity : ComponentActivity() {
         }
         if (savedInstanceState == null) {
             deliverAuthIntent(intent)
+            deliverNotificationChatId(intent)
         }
         setContent {
             ZeronaApp(appModel = appModel)
@@ -62,9 +64,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        deliverAuthIntent(intent)
-        intent.data = null
         setIntent(intent)
+        deliverAuthIntent(intent)
+        deliverNotificationChatId(intent)
     }
 
     private fun deliverAuthIntent(intent: Intent?) {
@@ -72,6 +74,16 @@ class MainActivity : ComponentActivity() {
         if (uri.scheme != "zeron") return
         appModel.handleAuthCallback(uri)
         intent.data = null
+        if (intent === getIntent()) {
+            setIntent(Intent(intent))
+        }
+    }
+
+    private fun deliverNotificationChatId(intent: Intent?) {
+        if (intent == null) return
+        val chatId = NotificationChatId.validate(intent.getStringExtra("chatId")) ?: return
+        appModel.openChatFromNotification(chatId)
+        intent.removeExtra("chatId")
         if (intent === getIntent()) {
             setIntent(Intent(intent))
         }
