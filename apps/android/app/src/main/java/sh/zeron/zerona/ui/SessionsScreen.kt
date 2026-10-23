@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Person
@@ -33,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,12 +48,16 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.Locale
+import kotlinx.coroutines.delay
 import sh.zeron.zerona.app.AppModel
 import sh.zeron.zerona.app.AppUiState
 import sh.zeron.zerona.app.SessionRowUi
+import sh.zeron.zerona.app.SessionStatusKind
 import sh.zeron.zerona.transcript.TranscriptLab
 
 private val sessionListHorizontalInset = 24.dp
@@ -60,6 +66,9 @@ private val sessionRowPressShape = RoundedCornerShape(16.dp)
 private val labRowShape = RoundedCornerShape(20.dp)
 private val sessionTimeMinWidth = 48.dp
 private val sessionTimeMaxWidth = 80.dp
+private val sessionStatusMaxWidth = 88.dp
+private val sessionMetaColumnMaxWidth = 96.dp
+private const val sessionsListRefreshIntervalMs = 30_000L
 private const val sessionsListHeaderKey = "sessions-list-header"
 private val accountButtonVisualSize = 40.dp
 private val accountButtonTouchSize = 48.dp
@@ -79,6 +88,13 @@ fun SessionsScreen(
 ) {
     val state by appModel.state.collectAsState()
     var menuOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(state.signedIn, state.isDemo) {
+        if (!state.signedIn || state.isDemo) return@LaunchedEffect
+        while (true) {
+            delay(sessionsListRefreshIntervalMs)
+            appModel.refreshSessionsList()
+        }
+    }
     val scheme = MaterialTheme.colorScheme
     val screenBackground = scheme.background
     val groupFill = sessionGroupFillColor()
@@ -442,6 +458,17 @@ private fun SessionRowItem(
     val horizontalPad = 12.dp
     val verticalPad = if (groupPosition == GroupRowPosition.Top || groupPosition == GroupRowPosition.Only) 6.dp else 0.dp
     val bottomPad = if (groupPosition == GroupRowPosition.Bottom || groupPosition == GroupRowPosition.Only) 6.dp else 0.dp
+    val rowDescription =
+        buildString {
+            append(row.title)
+            if (row.status != SessionStatusKind.NONE) {
+                append(", ")
+                append(row.status.label)
+            }
+            append(", ")
+            append(row.timeLabel)
+        }
+    val statusColor = sessionStatusColor(row.status, scheme)
     Box(
         modifier =
             modifier
@@ -462,6 +489,7 @@ private fun SessionRowItem(
                     .heightIn(min = 48.dp)
                     .clip(sessionRowPressShape)
                     .background(pressColor)
+                    .semantics { contentDescription = rowDescription }
                     .clickable(
                         interactionSource = interactionSource,
                         indication = ripple(),
@@ -490,20 +518,60 @@ private fun SessionRowItem(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(
-                row.timeLabel,
-                modifier =
-                    Modifier.widthIn(
-                        min = sessionTimeMinWidth,
-                        max = sessionTimeMaxWidth,
-                    ),
-                style = MaterialTheme.typography.labelSmall,
-                fontSize = 11.sp,
-                color = scheme.onSurfaceVariant,
-                textAlign = TextAlign.End,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Column(
+                horizontalAlignment = Alignment.End,
+                modifier = Modifier.widthIn(max = sessionMetaColumnMaxWidth),
+            ) {
+                if (row.status != SessionStatusKind.NONE) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.widthIn(max = sessionStatusMaxWidth),
+                    ) {
+                        Box(
+                            modifier =
+                                Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(statusColor),
+                        )
+                        Text(
+                            row.status.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 11.sp,
+                            color = statusColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                Text(
+                    row.timeLabel,
+                    modifier =
+                        Modifier.widthIn(
+                            min = sessionTimeMinWidth,
+                            max = sessionTimeMaxWidth,
+                        ),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 11.sp,
+                    color = scheme.onSurfaceVariant,
+                    textAlign = TextAlign.End,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
+
+private fun sessionStatusColor(
+    kind: SessionStatusKind,
+    scheme: ColorScheme,
+): Color =
+    when (kind) {
+        SessionStatusKind.WORKING -> scheme.primary
+        SessionStatusKind.NEEDS_INPUT -> scheme.tertiary
+        SessionStatusKind.FAILED -> scheme.error
+        SessionStatusKind.DONE -> scheme.onSurfaceVariant
+        SessionStatusKind.NONE -> scheme.onSurfaceVariant
+    }

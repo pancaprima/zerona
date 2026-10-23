@@ -43,6 +43,8 @@ import uniffi.zeron_core.DemoOptions
 import uniffi.zeron_core.FrontPage
 import uniffi.zeron_core.ProjectView
 import uniffi.zeron_core.PushPrefs
+import uniffi.zeron_core.ChatIndicator
+import uniffi.zeron_core.SendState
 import uniffi.zeron_core.SessionRow
 import uniffi.zeron_core.StreamSpeed
 import uniffi.zeron_core.TextSystem
@@ -61,6 +63,7 @@ data class SessionRowUi(
     val id: String,
     val title: String,
     val timeLabel: String,
+    val status: SessionStatusKind = SessionStatusKind.NONE,
 )
 
 data class SessionSectionUi(
@@ -568,6 +571,12 @@ class AppModel(
         )
     }
 
+    fun refreshSessionsList() {
+        val core = client ?: return
+        if (_state.value.isDemo || !_state.value.signedIn) return
+        refreshWorkspace(core)
+    }
+
     private fun refreshWorkspace(core: CoreClient) {
         val ws = core.workspace()
         val sections = buildSections(ws)
@@ -663,7 +672,29 @@ class AppModel(
             id = id,
             title = title,
             timeLabel = timeLabel,
+            status =
+                sessionStatusKind(
+                    indicator.toSessionIndicator(),
+                    unseen,
+                    sendState?.toSessionSendState(),
+                ),
         )
+
+    private fun ChatIndicator.toSessionIndicator(): SessionIndicator =
+        when (this) {
+            ChatIndicator.WORKING -> SessionIndicator.WORKING
+            ChatIndicator.AWAITING_INPUT -> SessionIndicator.AWAITING_INPUT
+            ChatIndicator.ERRORED -> SessionIndicator.ERRORED
+            ChatIndicator.COMPLETED -> SessionIndicator.COMPLETED
+            ChatIndicator.IDLE -> SessionIndicator.IDLE
+        }
+
+    private fun SendState.toSessionSendState(): SessionSendState =
+        when (this) {
+            SendState.SENDING -> SessionSendState.SENDING
+            SendState.QUEUED -> SessionSendState.QUEUED
+            SendState.FAILED -> SessionSendState.FAILED
+        }
 
     private fun stableDeviceId(): String {
         val prefs = appContext.getSharedPreferences("zerona", Context.MODE_PRIVATE)

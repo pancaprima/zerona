@@ -41,6 +41,7 @@ def trove_glob(gradle_home: str) -> str:
     )
 
 PRODUCTION_SOURCES = [
+    "apps/android/app/src/main/java/sh/zeron/zerona/app/SessionStatusMarker.kt",
     "apps/android/app/src/main/java/sh/zeron/zerona/ui/theme/ZeronaColorTokens.kt",
     "apps/android/app/src/main/java/sh/zeron/zerona/ui/theme/TranscriptColorTokens.kt",
     "apps/android/app/src/main/java/sh/zeron/zerona/ui/theme/Contrast.kt",
@@ -49,6 +50,7 @@ PRODUCTION_SOURCES = [
 ]
 
 TEST_SOURCES = [
+    "apps/android/app/src/test/java/sh/zeron/zerona/app/SessionStatusMarkerTest.kt",
     "apps/android/app/src/test/java/sh/zeron/zerona/ui/theme/ZeronaColorTokensTest.kt",
     "apps/android/app/src/test/java/sh/zeron/zerona/ui/theme/ContrastTest.kt",
     "apps/android/app/src/test/java/sh/zeron/zerona/ui/theme/TranscriptColorTokensProseCardTest.kt",
@@ -57,6 +59,7 @@ TEST_SOURCES = [
 ]
 
 TEST_CLASSES = [
+    "sh.zeron.zerona.app.SessionStatusMarkerTest",
     "sh.zeron.zerona.ui.theme.ZeronaColorTokensTest",
     "sh.zeron.zerona.ui.theme.ContrastTest",
     "sh.zeron.zerona.ui.theme.TranscriptColorTokensProseCardTest",
