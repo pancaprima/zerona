@@ -19,6 +19,7 @@ use zeron_text::WhiteSpace;
 
 use super::display::{ColorRole, DisplayBuilder, FadeEdge, TextRun, WidgetKind};
 use super::file_icons::file_icon_asset;
+use super::display::AssistantMarkdownStyle;
 use super::markdown::{Ctx, PBlock, PText, Px, place, place_text, prepare_block, prepare_plain};
 use super::style::{Family, TYPE, Weight};
 use super::tools::{ThoughtState, ToolGroup, place_tools};
@@ -112,6 +113,26 @@ pub(crate) struct RowCore {
 pub(crate) struct Placed {
     pub core: Arc<RowCore>,
     pub gap: Gap,
+    /// Text-part identity for study01 prose grouping (`None` for non-markdown rows).
+    pub prose_part: Option<u64>,
+    pub prose_segment: ProseCardSegment,
+}
+
+/// Where a study01 prose row sits inside a heading-section card group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub(crate) enum ProseCardSegment {
+    #[default]
+    None,
+    Solo,
+    Start,
+    Middle,
+    End,
+}
+
+impl ProseCardSegment {
+    pub(crate) fn has_card(self) -> bool {
+        !matches!(self, Self::None)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -121,7 +142,28 @@ pub(crate) enum Gap {
     Reply,
     Block,
     Heading,
+    /// Study01 continuation inside a grouped prose card (no board gap above).
+    ProseContinue,
 }
+
+fn placed_row(core: Arc<RowCore>, gap: Gap) -> Placed {
+    Placed {
+        core,
+        gap,
+        prose_part: None,
+        prose_segment: ProseCardSegment::None,
+    }
+}
+
+fn placed_markdown(core: Arc<RowCore>, gap: Gap, prose_part: u64) -> Placed {
+    Placed {
+        core,
+        gap,
+        prose_part: Some(prose_part),
+        prose_segment: ProseCardSegment::None,
+    }
+}
+
 
 pub(crate) mod geom {
     pub const MARGIN_X: f32 = 18.0;
@@ -135,6 +177,9 @@ pub(crate) mod geom {
     pub const BUBBLE_PAD_X: f32 = 15.0;
     pub const BUBBLE_PAD_Y: f32 = 10.0;
     pub const BUBBLE_RADIUS: f32 = 20.0;
+    pub const PROSE_CARD_PAD_X: f32 = 16.0;
+    pub const PROSE_CARD_PAD_Y: f32 = 12.0;
+    pub const PROSE_CARD_RADIUS: f32 = 16.0;
     /// Width of a trailing overflow fade.
     pub const FADE: f32 = 28.0;
     pub const BUBBLE_FOLD_LINES: usize = 8;
@@ -156,6 +201,7 @@ impl Gap {
             Gap::Reply => GAP_REPLY,
             Gap::Block => GAP_BLOCK,
             Gap::Heading => GAP_HEADING,
+            Gap::ProseContinue => 0.0,
         })
     }
 }
@@ -268,7 +314,7 @@ impl RowBuilder {
                 self.pending.insert(p.id.clone(), (p.text.clone(), row.clone()));
                 row
             });
-            out.push(Placed { core, gap });
+            out.push(placed_row(core, gap));
         }
         self.pending.retain(|id, _| live_pending.contains(id));
 
@@ -291,7 +337,7 @@ impl RowBuilder {
                 }));
             }
             let core = self.working.clone().expect("set above");
-            out.push(Placed { core, gap: Gap::Reply });
+            out.push(placed_row(core, Gap::Reply));
         }
         out
     }
@@ -343,7 +389,7 @@ impl RowBuilder {
                 .collect::<Vec<_>>()
                 .join("\n");
             let gap = if first { Gap::First } else { Gap::Turn };
-            rows.push(Placed { core: Arc::new(self.user_row(ctx, &entry.id, &text, false)), gap });
+            rows.push(placed_row(Arc::new(self.user_row(ctx, &entry.id, &text, false)), gap));
             return rows;
         }
         let streaming = entry.status == Some(MessageStatus::Streaming);
@@ -358,7 +404,7 @@ impl RowBuilder {
             let gap = gap_for(rows, false);
             let agents = tools.iter().any(|p| matches!(p, MessagePart::Tool { call, .. } if call.is_subagent_spawn()));
             let row = this.tool_row(ctx, &entry.id, &id, tools, streaming && tail, agents);
-            rows.push(Placed { core: Arc::new(row), gap });
+            rows.push(placed_row(Arc::new(row), gap));
             tools.clear();
         };
         let nparts = entry.parts.len();
@@ -393,10 +439,11 @@ impl RowBuilder {
                             live_parts.insert(pkey.clone());
                             let part_streaming = streaming && pi + 1 == nparts;
                             let blocks = self.text_blocks(ctx, &pkey, text, part_streaming);
+                            let prose_part = row_key(&pkey);
                             for (bi, (_, core)) in blocks.iter().enumerate() {
                                 let heading = matches!(core.content, Content::Block(PBlock::Heading(_)));
                                 let gap = gap_for(&rows, heading && bi > 0);
-                                rows.push(Placed { core: core.clone(), gap });
+                                rows.push(placed_markdown(core.clone(), gap, prose_part));
                             }
                         }
                         MessagePart::Image { id, path, .. } => {
@@ -409,7 +456,7 @@ impl RowBuilder {
                                 content: Content::Image { reference: path.clone() },
                                 copy_text: String::new(),
                             });
-                            rows.push(Placed { core, gap });
+                            rows.push(placed_row(core, gap));
                         }
                         MessagePart::Visual { id, path, title } => {
                             let gap = gap_for(&rows, false);
@@ -426,7 +473,7 @@ impl RowBuilder {
                                 content: Content::Visual(slot),
                                 copy_text: title.clone(),
                             });
-                            rows.push(Placed { core, gap });
+                            rows.push(placed_row(core, gap));
                         }
                         MessagePart::Input { id, questions, resolved, .. } => {
                             let text = if *resolved {
@@ -435,16 +482,16 @@ impl RowBuilder {
                                 questions.first().map_or("Awaiting your answer…".to_owned(), |q| q.question.clone())
                             };
                             let gap = gap_for(&rows, false);
-                            rows.push(Placed { core: Arc::new(chip_row(ctx, &entry.id, id, "questionmark.bubble", ColorRole::Accent, &text)), gap });
+                            rows.push(placed_row(Arc::new(chip_row(ctx, &entry.id, id, "questionmark.bubble", ColorRole::Accent, &text)), gap));
                         }
                         MessagePart::Error { id, message } => {
                             let gap = gap_for(&rows, false);
-                            rows.push(Placed { core: Arc::new(chip_row(ctx, &entry.id, id, "exclamationmark.triangle", ColorRole::Danger, message)), gap });
+                            rows.push(placed_row(Arc::new(chip_row(ctx, &entry.id, id, "exclamationmark.triangle", ColorRole::Danger, message)), gap));
                         }
                         MessagePart::Fork { id, source_title, .. } => {
                             let gap = gap_for(&rows, false);
                             let text = format!("Forked from {source_title}");
-                            rows.push(Placed { core: Arc::new(chip_row(ctx, &entry.id, id, "arrow.triangle.branch", ColorRole::TextTertiary, &text)), gap });
+                            rows.push(placed_row(Arc::new(chip_row(ctx, &entry.id, id, "arrow.triangle.branch", ColorRole::TextTertiary, &text)), gap));
                         }
                         _ => {}
                     }
@@ -705,6 +752,7 @@ fn prepare_user_text(ctx: &mut Ctx, body: &str, style: super::style::Resolved, l
         chip: ((lh - chip_h) / 2.0, chip_h),
         badges,
         math: Vec::new(),
+        images: Vec::new(),
     }
 }
 
@@ -726,6 +774,244 @@ fn chip_row(ctx: &mut Ctx, entry_id: &str, part_id: &str, icon: &'static str, co
     }
 }
 
+/// Prose-shaped top-level blocks get a study01 card; code/math/table/rule rows stay flat.
+pub(crate) fn block_supports_prose_card(block: &PBlock) -> bool {
+    matches!(
+        block,
+        PBlock::Text(_) | PBlock::Heading(_) | PBlock::Quote(_) | PBlock::List { .. }
+    )
+}
+
+fn prose_eligible(p: &Placed) -> bool {
+    matches!(&p.core.content, Content::Block(b) if block_supports_prose_card(b))
+}
+
+/// Study01: merge adjacent eligible markdown rows per heading section (see plan).
+pub(crate) fn annotate_prose_card_segments(placed: &mut [Placed], style: AssistantMarkdownStyle) {
+    if !style.prose_cards() {
+        return;
+    }
+    let mut i = 0usize;
+    while i < placed.len() {
+        if !prose_eligible(&placed[i]) {
+            placed[i].prose_segment = ProseCardSegment::None;
+            i += 1;
+            continue;
+        }
+        let part = placed[i].prose_part;
+        let entry = placed[i].core.entry_id.clone();
+        let mut j = i + 1;
+        while j < placed.len() {
+            if !prose_eligible(&placed[j]) {
+                break;
+            }
+            if placed[j].prose_part != part || placed[j].core.entry_id != entry {
+                break;
+            }
+            if matches!(&placed[j].core.content, Content::Block(PBlock::Heading(_))) {
+                break;
+            }
+            j += 1;
+        }
+        let len = j - i;
+        for (k, row) in placed[i..j].iter_mut().enumerate() {
+            row.prose_segment = match len {
+                1 => ProseCardSegment::Solo,
+                _ => match k {
+                    0 => ProseCardSegment::Start,
+                    k if k == len - 1 => ProseCardSegment::End,
+                    _ => ProseCardSegment::Middle,
+                },
+            };
+            if matches!(row.prose_segment, ProseCardSegment::Middle | ProseCardSegment::End) {
+                row.gap = Gap::ProseContinue;
+            }
+        }
+        i = j;
+    }
+}
+
+/// Corner radius that survives platform `drawRoundRect` clamping (`min(w/2, h/2)`).
+fn prose_corner_radius(r: f32, cw: f32, h: f32) -> f32 {
+    r.min(cw * 0.5).min(h * 0.5)
+}
+
+fn paint_prose_solo_rounded(
+    out: &mut DisplayBuilder,
+    x: f32,
+    y: f32,
+    cw: f32,
+    h: f32,
+    r: f32,
+    color: ColorRole,
+) {
+    if h <= 0.0 || cw <= 0.0 {
+        return;
+    }
+    let rad = prose_corner_radius(r, cw, h);
+    out.fill(x, y, cw, h, rad, color);
+}
+
+/// Top-outer corners only: tall cap round-rect (height `2r`) plus a square continuation from `y + r`.
+fn paint_prose_top_rounded(
+    out: &mut DisplayBuilder,
+    x: f32,
+    y: f32,
+    cw: f32,
+    h: f32,
+    r: f32,
+    color: ColorRole,
+) {
+    if h <= 0.0 || cw <= 0.0 {
+        return;
+    }
+    let rad = r.min(cw * 0.5);
+    if h < rad * 2.0 {
+        out.fill(x, y, cw, h, prose_corner_radius(rad, cw, h), color);
+        return;
+    }
+    out.fill(x, y, cw, rad * 2.0, rad, color);
+    out.fill(x, y + rad, cw, h - rad, 0.0, color);
+}
+
+/// Bottom-outer corners only: square body through `y + h - r`, then a `2r` cap round-rect.
+fn paint_prose_bottom_rounded(
+    out: &mut DisplayBuilder,
+    x: f32,
+    y: f32,
+    cw: f32,
+    h: f32,
+    r: f32,
+    color: ColorRole,
+) {
+    if h <= 0.0 || cw <= 0.0 {
+        return;
+    }
+    let rad = r.min(cw * 0.5);
+    if h < rad * 2.0 {
+        out.fill(x, y, cw, h, prose_corner_radius(rad, cw, h), color);
+        return;
+    }
+    out.fill(x, y, cw, h - rad, 0.0, color);
+    out.fill(x, y + h - rad * 2.0, cw, rad * 2.0, rad, color);
+}
+
+fn paint_prose_segment_silhouette(
+    out: &mut DisplayBuilder,
+    x: f32,
+    y: f32,
+    cw: f32,
+    h: f32,
+    segment: ProseCardSegment,
+    r: f32,
+    color: ColorRole,
+) {
+    match segment {
+        ProseCardSegment::Solo => paint_prose_solo_rounded(out, x, y, cw, h, r, color),
+        ProseCardSegment::Start => paint_prose_top_rounded(out, x, y, cw, h, r, color),
+        ProseCardSegment::End => paint_prose_bottom_rounded(out, x, y, cw, h, r, color),
+        ProseCardSegment::Middle => out.fill(x, y, cw, h, 0.0, color),
+        ProseCardSegment::None => paint_prose_solo_rounded(out, x, y, cw, h, r, color),
+    }
+}
+
+/// Segmented outer border (fill ring) then inset inner card fill; interior row seams are fill-only.
+fn paint_prose_card_background(
+    out: &mut DisplayBuilder,
+    x: f32,
+    y: f32,
+    cw: f32,
+    h: f32,
+    segment: ProseCardSegment,
+    px: Px,
+) {
+    use geom::PROSE_CARD_RADIUS;
+    if h <= 0.0 || cw <= 0.0 {
+        return;
+    }
+    let r = px.v(PROSE_CARD_RADIUS);
+    let t = px.v(1.0).max(1.0);
+    match segment {
+        ProseCardSegment::Middle => {
+            if t < cw {
+                out.fill(x, y, t, h, 0.0, ColorRole::ProseCardBorder);
+                out.fill(x + cw - t, y, t, h, 0.0, ColorRole::ProseCardBorder);
+            }
+            let ix = x + t;
+            let iw = cw - t * 2.0;
+            if iw > 0.0 {
+                out.fill(ix, y, iw, h, 0.0, ColorRole::ProseCard);
+            }
+        }
+        ProseCardSegment::Solo
+        | ProseCardSegment::Start
+        | ProseCardSegment::End
+        | ProseCardSegment::None => {
+            paint_prose_segment_silhouette(
+                out,
+                x,
+                y,
+                cw,
+                h,
+                segment,
+                r,
+                ColorRole::ProseCardBorder,
+            );
+            let (ix, iy, iw, ih) = match segment {
+                ProseCardSegment::Start => (x + t, y + t, cw - t * 2.0, h - t),
+                ProseCardSegment::End => (x + t, y, cw - t * 2.0, h - t),
+                _ => (x + t, y + t, cw - t * 2.0, h - t * 2.0),
+            };
+            if iw > 0.0 && ih > 0.0 {
+                let ri = (r - t).max(0.0);
+                paint_prose_segment_silhouette(
+                    out,
+                    ix,
+                    iy,
+                    iw,
+                    ih,
+                    segment,
+                    ri,
+                    ColorRole::ProseCard,
+                );
+            }
+        }
+    }
+}
+
+/// One assistant markdown block inside a study01 prose card group.
+fn place_prose_group_block(
+    block: &PBlock,
+    segment: ProseCardSegment,
+    px: Px,
+    x: f32,
+    y: f32,
+    cw: f32,
+    out: Option<&mut DisplayBuilder>,
+) -> f32 {
+    use geom::*;
+    let pad_x = px.v(PROSE_CARD_PAD_X);
+    let pad_y = px.v(PROSE_CARD_PAD_Y);
+    let block_gap = px.v(GAP_BLOCK);
+    let inner_w = (cw - pad_x * 2.0).max(1.0);
+    let inner_h = place(block, px, 0.0, 0.0, inner_w, None);
+    let (pad_top, pad_bottom) = match segment {
+        ProseCardSegment::Solo => (pad_y, pad_y),
+        ProseCardSegment::Start => (pad_y, 0.0),
+        ProseCardSegment::Middle => (block_gap, 0.0),
+        ProseCardSegment::End => (block_gap, pad_y),
+        ProseCardSegment::None => (pad_y, pad_y),
+    };
+    let card_h = pad_top + inner_h + pad_bottom;
+    if let Some(out) = out {
+        paint_prose_card_background(out, x, y, cw, card_h, segment, px);
+        place(block, px, x + pad_x, y + pad_top, inner_w, Some(out));
+    }
+    card_h
+}
+
+/// The message column
+
 /// The message column's width in a viewport `width` wide.
 pub(crate) fn column_width(px: Px, width: f32) -> f32 {
     use geom::*;
@@ -739,9 +1025,11 @@ pub(crate) fn column_width(px: Px, width: f32) -> f32 {
 pub(crate) fn place_row(
     core: &RowCore,
     gap: Gap,
+    prose_segment: ProseCardSegment,
     px: Px,
     width: f32,
     visual: Option<f32>,
+    assistant_markdown: AssistantMarkdownStyle,
     mut out: Option<&mut DisplayBuilder>,
 ) -> f32 {
     use geom::*;
@@ -750,7 +1038,13 @@ pub(crate) fn place_row(
     let x = ((width - cw) / 2.0).max(margin).floor();
     let top = gap.px(px);
     let body = match &core.content {
-        Content::Block(b) => place(b, px, x, top, cw, out),
+        Content::Block(b) => {
+            if assistant_markdown.prose_cards() && prose_segment.has_card() && block_supports_prose_card(b) {
+                place_prose_group_block(b, prose_segment, px, x, top, cw, out)
+            } else {
+                place(b, px, x, top, cw, out)
+            }
+        }
         Content::User(u) => place_user(u, px, x, top, cw, out),
         Content::Tools(t) => place_tools(t, px, x, top, cw, out),
         Content::Chip(c) => {
@@ -910,9 +1204,13 @@ pub(crate) fn content_heap_bytes(content: &Content) -> usize {
     fn math_bytes(t: &PText) -> usize {
         t.math.capacity() * std::mem::size_of::<(usize, zatex::Formula)>() + t.math.iter().map(|(_, f)| formula_bytes(f)).sum::<usize>()
     }
+    fn image_bytes(t: &PText) -> usize {
+        t.images.capacity() * std::mem::size_of::<(usize, super::markdown::InlineImageEmbed)>()
+            + t.images.iter().map(|(_, e)| e.reference.capacity()).sum::<usize>()
+    }
     fn block(b: &PBlock) -> usize {
         match b {
-            PBlock::Text(t) | PBlock::Heading(t) => t.p.heap_bytes() + math_bytes(t),
+            PBlock::Text(t) | PBlock::Heading(t) => t.p.heap_bytes() + math_bytes(t) + image_bytes(t),
             PBlock::Code(c) => c.body.p.heap_bytes() + c.source.len() + c.label.as_ref().map_or(0, |l| l.p.heap_bytes()),
             PBlock::Math(m) => formula_bytes(&m.formula),
             PBlock::Quote(children) => children.iter().map(block).sum(),
@@ -920,7 +1218,7 @@ pub(crate) fn content_heap_bytes(content: &Content) -> usize {
                 .iter()
                 .map(|i| i.children.iter().map(block).sum::<usize>() + i.marker.as_ref().map_or(0, |m| m.p.heap_bytes()))
                 .sum(),
-            PBlock::Table(t) => t.cells.iter().flatten().map(|c| c.p.heap_bytes() + math_bytes(c)).sum(),
+            PBlock::Table(t) => t.cells.iter().flatten().map(|c| c.p.heap_bytes() + math_bytes(c) + image_bytes(c)).sum(),
             PBlock::Rule => 0,
         }
     }

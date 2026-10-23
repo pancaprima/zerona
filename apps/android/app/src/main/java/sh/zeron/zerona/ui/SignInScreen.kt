@@ -49,9 +49,12 @@ fun SignInScreen(appModel: AppModel) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        ZeronaDecorMark()
+        Spacer(modifier = Modifier.height(16.dp))
         Text(
             "Zerona",
             style = MaterialTheme.typography.headlineLarge,
+            color = MaterialTheme.colorScheme.onBackground,
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="zerona_background">#141218</color>
+    <color name="zerona_surface">#1C1B22</color>
+    <color name="zerona_on_surface">#ECE8F4</color>
+    <color name="zerona_on_surface_variant">#A8A2B4</color>
+    <color name="zerona_primary">#B8A0F0</color>
+    <color name="zerona_outline">#48445A</color>
+</resources>

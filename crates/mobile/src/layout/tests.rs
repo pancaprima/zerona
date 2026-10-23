@@ -1,5 +1,8 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+
+use zeron_text::StyleId;
 
 use super::*;
 
@@ -123,6 +126,569 @@ fn streaming_converges_to_full_parse() {
 
 fn transcript_one(text: &str) -> TranscriptInput {
     debug_input(vec![DebugEntry { id: "a".into(), user: false, text: text.into(), streaming: false }], false)
+}
+
+fn prose_card_vertical_pad() -> f32 {
+    Px(1.0).v(rows::geom::PROSE_CARD_PAD_Y) * 2.0
+}
+
+fn rows_pass_with_style(md: &str, width: f32, style: display::AssistantMarkdownStyle) -> RowsPass {
+    let mut w = worker(width);
+    w.set_assistant_markdown_style(style);
+    w.input = transcript_one(md);
+    let frame = w.pass();
+    let style_metrics = frame
+        .styles()
+        .iter()
+        .map(|desc| {
+            let m = w.typo.book.metrics(StyleId(desc.id));
+            (desc.id, (m.ascent, m.descent))
+        })
+        .collect();
+    let rows = (0..frame.row_count()).map(|i| frame.display(i).unwrap()).collect();
+    RowsPass { rows, style_metrics }
+}
+
+fn rows_of_study01(md: &str, width: f32) -> Vec<RowDisplay> {
+    rows_pass_with_style(md, width, display::AssistantMarkdownStyle::Study01ProseCard).rows
+}
+
+fn study01_frame(md: &str, width: f32) -> (std::sync::Arc<LayoutFrame>, Vec<RowDisplay>) {
+    let mut w = worker(width);
+    w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard);
+    w.input = transcript_one(md);
+    let frame = w.pass();
+    let rows = (0..frame.row_count())
+        .map(|i| frame.display(i).unwrap())
+        .collect();
+    (frame, rows)
+}
+
+fn prose_card_fills(d: &RowDisplay) -> Vec<&display::BoxPrim> {
+    d.boxes
+        .iter()
+        .filter(|b| b.color == display::ColorRole::ProseCard && b.style == display::BoxStyle::Fill)
+        .collect()
+}
+
+fn prose_card_border_fills(d: &RowDisplay) -> Vec<&display::BoxPrim> {
+    d.boxes
+        .iter()
+        .filter(|b| {
+            b.color == display::ColorRole::ProseCardBorder && b.style == display::BoxStyle::Fill
+        })
+        .collect()
+}
+
+fn prose_full_width_horizontal_border_strip(d: &RowDisplay, column: f32) -> bool {
+    d.boxes.iter().any(|b| {
+        b.color == display::ColorRole::ProseCardBorder
+            && (b.w - column).abs() < 1.0
+            && b.h < Px(1.0).v(4.0)
+    })
+}
+
+fn rounded_cap_boxes(d: &RowDisplay) -> Vec<&display::BoxPrim> {
+    prose_card_border_fills(d)
+        .iter()
+        .chain(prose_card_fills(d).iter())
+        .filter(|b| b.radius > 0.0)
+        .copied()
+        .collect()
+}
+
+fn assert_prose_start_cap_geometry(d: &RowDisplay, r_nom: f32) {
+    let rounded = rounded_cap_boxes(d);
+    assert!(
+        !rounded.is_empty(),
+        "start row needs a rounded cap primitive"
+    );
+    let cap = rounded
+        .iter()
+        .max_by(|a, b| a.h.partial_cmp(&b.h).unwrap())
+        .unwrap();
+    assert!(
+        cap.h >= r_nom * 2.0 - 0.5,
+        "cap must be tall enough for unclamped radius: {cap:?}"
+    );
+    assert!((cap.radius - r_nom).abs() < 0.5, "cap radius {cap:?}");
+}
+
+fn assert_prose_end_cap_geometry(d: &RowDisplay, r_nom: f32) {
+    let chrome: Vec<_> = d
+        .boxes
+        .iter()
+        .filter(|b| b.color == display::ColorRole::ProseCard || b.color == display::ColorRole::ProseCardBorder)
+        .collect();
+    let bottom = chrome.iter().map(|b| b.y + b.h).fold(0.0_f32, f32::max);
+    let rounded = rounded_cap_boxes(d);
+    assert!(!rounded.is_empty(), "end row needs a rounded cap primitive");
+    let cap = rounded
+        .iter()
+        .filter(|b| (b.y + b.h) >= bottom - 0.5)
+        .max_by(|a, b| a.h.partial_cmp(&b.h).unwrap())
+        .unwrap_or_else(|| {
+            rounded
+                .iter()
+                .max_by(|a, b| a.h.partial_cmp(&b.h).unwrap())
+                .unwrap()
+        });
+    assert!(
+        cap.h >= r_nom * 2.0 - 0.5,
+        "cap must be tall enough for unclamped radius: {cap:?}"
+    );
+    assert!(
+        (cap.y + cap.h - bottom).abs() < 0.5,
+        "bottom cap flush with card chrome: {cap:?} bottom={bottom}"
+    );
+    assert!((cap.radius - r_nom).abs() < 0.5, "cap radius {cap:?}");
+}
+
+/// Study01 grouped rows share one column-wide fill with only outer corners rounded.
+fn assert_prose_group_surface(
+    frame: &crate::layout::LayoutFrame,
+    rows: &[RowDisplay],
+    indices: &[u32],
+) {
+    let column = rows::column_width(Px(1.0), frame.width());
+    let x0 = ((frame.width() - column) / 2.0)
+        .max(rows::geom::MARGIN_X)
+        .floor();
+    let border = Px(1.0).v(1.0).max(1.0);
+    let inner_x0 = x0 + border;
+    let inner_w = column - border * 2.0;
+    let r_nom = Px(1.0).v(rows::geom::PROSE_CARD_RADIUS);
+    let mut prev_bottom: Option<f32> = None;
+    for (pos, &ix) in indices.iter().enumerate() {
+        let place = frame.placement(ix).unwrap();
+        let d = &rows[ix as usize];
+        let fills = prose_card_fills(d);
+        assert!(!fills.is_empty(), "row {ix} missing prose fill");
+        assert!(
+            d.boxes
+                .iter()
+                .filter(|b| b.color == display::ColorRole::ProseCardBorder)
+                .all(|b| b.style == display::BoxStyle::Fill),
+            "row {ix}: prose border is a fill ring, not hairline strips"
+        );
+        let chrome: Vec<_> = d
+            .boxes
+            .iter()
+            .filter(|b| b.color == display::ColorRole::ProseCard || b.color == display::ColorRole::ProseCardBorder)
+            .collect();
+        let outer_left = chrome.iter().map(|b| b.x).fold(f32::INFINITY, f32::min);
+        let outer_right = chrome.iter().map(|b| b.x + b.w).fold(0.0_f32, f32::max);
+        assert!((outer_left - x0).abs() < 0.5, "row {ix}: outer left {outer_left} vs {x0}");
+        assert!((outer_right - (x0 + column)).abs() < 0.5, "row {ix}: outer right");
+        for b in &fills {
+            assert!((b.x - inner_x0).abs() < 0.5, "row {ix}: {b:?}");
+            assert!((b.w - inner_w).abs() < 0.5, "row {ix}: {b:?}");
+        }
+        let top_local = fills.iter().map(|b| b.y).fold(f32::INFINITY, f32::min);
+        let bottom_local = fills.iter().map(|b| b.y + b.h).fold(0.0_f32, f32::max);
+        let top_frame = place.y + top_local;
+        let bottom_frame = place.y + bottom_local;
+        if let Some(pb) = prev_bottom {
+            assert!(
+                (top_frame - pb).abs() < 0.5,
+                "row {ix} gap between group members"
+            );
+        }
+        let rounded_top = fills
+            .iter()
+            .any(|b| b.radius > 0.0 && b.y <= top_local + 0.5);
+        let rounded_bottom = fills
+            .iter()
+            .any(|b| b.radius > 0.0 && (b.y + b.h) >= bottom_local - 0.5);
+        let is_first = pos == 0;
+        let is_last = pos + 1 == indices.len();
+        if is_first {
+            assert!(rounded_top, "row {ix} needs outer top radius");
+            if indices.len() > 1 {
+                assert_prose_start_cap_geometry(d, r_nom);
+                assert!(
+                    !prose_full_width_horizontal_border_strip(d, column),
+                    "row {ix}: no square top border strip across rounded corners"
+                );
+            }
+        }
+        if is_last {
+            assert!(rounded_bottom, "row {ix} needs outer bottom radius");
+            if indices.len() > 1 {
+                assert_prose_end_cap_geometry(d, r_nom);
+                assert!(
+                    !prose_full_width_horizontal_border_strip(d, column),
+                    "row {ix}: no square bottom border strip across rounded corners"
+                );
+            }
+        }
+        if indices.len() > 1 && !is_first && !is_last {
+            assert!(!rounded_top, "middle row {ix} must not round top");
+            assert!(!rounded_bottom, "middle row {ix} must not round bottom");
+            assert!(
+                !prose_full_width_horizontal_border_strip(d, column),
+                "middle row {ix} must not paint a horizontal border seam"
+            );
+            let borders = prose_card_border_fills(d);
+            assert!(
+                borders.iter().all(|b| b.w < column * 0.5),
+                "middle row {ix} keeps side borders only: {borders:?}"
+            );
+        }
+        if !is_last {
+            assert!(
+                !prose_full_width_horizontal_border_strip(d, column),
+                "row {ix} must not paint a bottom border seam before the next segment"
+            );
+        }
+        prev_bottom = Some(bottom_frame);
+    }
+}
+
+#[test]
+fn row_display_version_xor_lanes_distinguish_style_segment_and_gap() {
+    let mut w = worker(390.0);
+    w.input = transcript_one("Hello.");
+    let legacy_ver = w.pass().placement(0).unwrap().version;
+    w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard);
+    let study_solo = w.pass().placement(0).unwrap().version;
+    assert_ne!(legacy_ver, study_solo, "style lane at bit 56");
+
+    let (frame, _) = study01_frame("# Title\n\nBody\n\nTail.", 390.0);
+    let v_start = frame.placement(0).unwrap().version;
+    let v_mid = frame.placement(1).unwrap().version;
+    let v_end = frame.placement(2).unwrap().version;
+    assert_ne!(v_start, v_mid, "segment/gap lanes");
+    assert_ne!(v_mid, v_end, "segment/gap lanes");
+    // `ProseCardSegment::End` (4) at «52 must not collide with `Study01` style tag at «56.
+    assert_ne!(v_end, study_solo);
+
+    w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Legacy);
+    let legacy_again = w.pass().placement(0).unwrap().version;
+    assert_eq!(legacy_ver, legacy_again, "legacy lane unchanged");
+}
+
+#[test]
+fn legacy_default_assistant_rows_emit_no_prose_card_roles() {
+    let d = rows_of("Hello **world**.", 390.0).remove(0);
+    assert!(!d.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+    assert!(!d.boxes.iter().any(|b| b.color == display::ColorRole::ProseCardBorder));
+    let fenced = rows_of("```rust\nfn main() {}\n```", 390.0).remove(0);
+    assert!(fenced.boxes.iter().any(|b| b.color == display::ColorRole::CodeBackground));
+    assert!(!fenced.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+}
+
+#[test]
+fn assistant_markdown_row_emits_prose_card_with_padding() {
+    let d = rows_of_study01("Hello **world**.", 390.0).remove(0);
+    assert_eq!(d.boxes.iter().filter(|b| b.color == display::ColorRole::ProseCard).count(), 1);
+    assert!(d.boxes.iter().any(|b| b.color == display::ColorRole::ProseCardBorder));
+    let column = rows::column_width(Px(1.0), 390.0);
+    let x0 = ((390.0 - column) / 2.0).max(rows::geom::MARGIN_X).floor();
+    let min_x = x0 + Px(1.0).v(rows::geom::PROSE_CARD_PAD_X) - 0.5;
+    for run in &d.runs {
+        if run.scroller.is_none() {
+            assert!(run.x >= min_x, "{run:?}");
+        }
+    }
+}
+
+#[test]
+fn assistant_blocks_get_separate_prose_cards_not_user_bubbles() {
+    let (frame, rows) = study01_frame("# Title\n\nBody paragraph.", 390.0);
+    assert_eq!(rows.len(), 2);
+    assert_prose_group_surface(&frame, &rows, &[0, 1]);
+    let mut w = worker(390.0);
+    w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard);
+    w.input = debug_input(
+        vec![DebugEntry {
+            id: "u".into(),
+            user: true,
+            text: "Hi".into(),
+            streaming: false,
+        }],
+        false,
+    );
+    let user = w.pass().display(0).unwrap();
+    assert!(
+        !user
+            .boxes
+            .iter()
+            .any(|b| b.color == display::ColorRole::ProseCard)
+    );
+    assert!(
+        user.boxes
+            .iter()
+            .any(|b| b.color == display::ColorRole::UserBubble)
+    );
+}
+
+#[test]
+fn study01_prose_groups_by_heading_section() {
+    let md = "# Section\n\nIntro paragraph.\n\n- one\n- two\n\n## Next\n\nTail text.";
+    let (frame, rows) = study01_frame(md, 390.0);
+    assert_eq!(rows.len(), 5);
+    assert_prose_group_surface(&frame, &rows, &[0, 1, 2]);
+    assert_prose_group_surface(&frame, &rows, &[3, 4]);
+    let legacy = rows_of(
+        "# Section\n\nIntro paragraph.\n\n- one\n- two\n\n## Next\n\nTail text.",
+        390.0,
+    );
+    assert_eq!(legacy.len(), rows.len());
+    for (a, b) in legacy.iter().zip(rows.iter()) {
+        assert_eq!(a.copy_text, b.copy_text);
+    }
+}
+
+#[test]
+fn study01_intro_prose_groups_before_first_heading() {
+    let (frame, rows) = study01_frame(
+        "Lead-in line.\n\nAnother line.\n\n# Heading\n\nUnder heading.",
+        390.0,
+    );
+    assert_eq!(rows.len(), 4);
+    assert_prose_group_surface(&frame, &rows, &[0, 1]);
+    assert_prose_group_surface(&frame, &rows, &[2, 3]);
+}
+
+#[test]
+fn study01_prose_group_breaks_at_code_table_tool_and_message() {
+    let (frame, rows) = study01_frame("Before code.\n\n```js\nx()\n```\n\nAfter code.", 390.0);
+    assert_eq!(rows.len(), 3);
+    assert_prose_group_surface(&frame, &rows, &[0]);
+    assert_prose_group_surface(&frame, &rows, &[2]);
+    let table = rows_of_study01("| a | b |\n|---|---|\n| 1 | 2 |", 390.0);
+    assert!(
+        !table[0]
+            .boxes
+            .iter()
+            .any(|b| b.color == display::ColorRole::ProseCard)
+    );
+    let mut w = worker(390.0);
+    w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard);
+    w.input = debug_input(
+        vec![
+            DebugEntry {
+                id: "a".into(),
+                user: false,
+                text: "First message.".into(),
+                streaming: false,
+            },
+            DebugEntry {
+                id: "b".into(),
+                user: false,
+                text: "Second message.".into(),
+                streaming: false,
+            },
+        ],
+        false,
+    );
+    let f = w.pass();
+    let r0 = f.display(0).unwrap();
+    let r1 = f.display(1).unwrap();
+    assert_eq!(prose_card_fills(&r0).len(), 1);
+    assert_eq!(prose_card_fills(&r1).len(), 1);
+}
+
+#[test]
+fn study01_streaming_heading_splits_group_and_bumps_tail_versions() {
+    let mut w = worker(390.0);
+    w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard);
+    w.input = debug_input(
+        vec![DebugEntry {
+            id: "a".into(),
+            user: false,
+            text: "Intro.\n\n# Part".into(),
+            streaming: true,
+        }],
+        true,
+    );
+    let f1 = w.pass();
+    w.input = debug_input(
+        vec![DebugEntry {
+            id: "a".into(),
+            user: false,
+            text: "Intro.\n\n# Partial title growing".into(),
+            streaming: true,
+        }],
+        true,
+    );
+    let f2 = w.pass();
+    assert_eq!(
+        f1.placement(0).unwrap().version,
+        f2.placement(0).unwrap().version
+    );
+    assert_ne!(
+        f1.placement(1).unwrap().version,
+        f2.placement(1).unwrap().version
+    );
+    let (_, rows) = study01_frame("Intro.\n\n# Title\n\nBody", 390.0);
+    assert_eq!(rows.len(), 3);
+}
+
+#[test]
+fn study01_code_block_row_is_not_wrapped_in_prose_card() {
+    let d = rows_of_study01("Intro line.\n\n```js\nconsole.log(1)\n```", 390.0);
+    let prose_rows = d.iter().filter(|r| r.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard)).count();
+    let code_rows = d.iter().filter(|r| r.boxes.iter().any(|b| b.color == display::ColorRole::CodeBackground)).count();
+    assert_eq!(prose_rows, 1, "only the intro paragraph row");
+    assert_eq!(code_rows, 1);
+    let code = d.iter().find(|r| r.boxes.iter().any(|b| b.color == display::ColorRole::CodeBackground)).unwrap();
+    assert!(!code.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+}
+
+#[test]
+fn assistant_prose_card_style_change_remeasures_row_heights() {
+    let md = "Hello **world**.";
+    let mut w = worker(390.0);
+    w.input = transcript_one(md);
+    let legacy_h = w.pass().display(0).unwrap().height;
+    assert!(w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard));
+    let card_h = w.pass().display(0).unwrap().height;
+    assert!(card_h > legacy_h + prose_card_vertical_pad() - 0.5);
+    assert!(w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Legacy));
+    let again = w.pass().display(0).unwrap().height;
+    assert!((again - legacy_h).abs() < 0.01);
+}
+
+#[test]
+fn assistant_prose_card_style_change_bumps_display_version_and_retains_legacy_frame() {
+    let md = "Hello **world**.";
+    let mut w = worker(390.0);
+    w.input = transcript_one(md);
+    let legacy_frame = w.pass();
+    let legacy_disp = legacy_frame.display(0).unwrap();
+    let legacy_ver = legacy_frame.placement(0).unwrap().version;
+    assert!(!legacy_disp.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+
+    assert!(w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard));
+    let card_frame = w.pass();
+    let card_ver = card_frame.placement(0).unwrap().version;
+    assert_ne!(legacy_ver, card_ver);
+    assert!(card_frame.display(0).unwrap().boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+
+    let retained = legacy_frame.display(0).unwrap();
+    assert!(!retained.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+    assert!((retained.height - legacy_disp.height).abs() < 0.01);
+    assert_eq!(retained.copy_text, legacy_disp.copy_text);
+
+    assert!(!w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard));
+}
+
+#[test]
+fn study01_prose_cards_measure_matches_display_at_narrow_width_and_scale() {
+    for width in [280.0, 320.0] {
+        let mut w = worker(width);
+        w.typo.scale = 1.15;
+        w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard);
+        w.input = transcript_one("Narrow **card** at larger scale.");
+        let frame = w.pass();
+        let p = frame.placement(0).unwrap();
+        let d = frame.display(0).unwrap();
+        assert!((d.height - p.height).abs() < 0.01, "width {width}");
+        assert!(d.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+        let column = rows::column_width(Px(w.typo.scale), width);
+        let x0 = ((width - column) / 2.0).max(rows::geom::MARGIN_X).floor();
+        let min_x = x0 + Px(w.typo.scale).v(rows::geom::PROSE_CARD_PAD_X) - 0.5;
+        for run in &d.runs {
+            if run.scroller.is_none() {
+                assert!(run.x >= min_x, "width {width}: {run:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn study01_prose_card_links_and_inline_images_stay_inside_card_padding() {
+    let md = "See [docs](https://example.com) and ![shot](/tmp/uploads/a/shot.png).";
+    let d = rows_of_study01(md, 390.0).remove(0);
+    assert!(d.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+    assert!(d.links.iter().any(|l| l.url == "https://example.com"));
+    assert!(d.widgets.iter().any(|w| matches!(&w.kind, display::WidgetKind::Image { reference } if reference.ends_with("shot.png"))));
+    let column = rows::column_width(Px(1.0), 390.0);
+    let x0 = ((390.0 - column) / 2.0).max(rows::geom::MARGIN_X).floor();
+    let min_x = x0 + Px(1.0).v(rows::geom::PROSE_CARD_PAD_X) - 0.5;
+    let max_x = x0 + column - Px(1.0).v(rows::geom::PROSE_CARD_PAD_X) + 0.5;
+    for link in &d.links {
+        assert!(link.x >= min_x && link.x + link.w <= max_x + 0.5, "{link:?}");
+    }
+    for widget in &d.widgets {
+        if matches!(&widget.kind, display::WidgetKind::Image { .. }) {
+            assert!(widget.x >= min_x && widget.x + widget.w <= max_x + 0.5, "{widget:?}");
+        }
+    }
+}
+
+#[test]
+fn study01_streaming_prose_card_reuses_stable_prefix_versions() {
+    let mut w = worker(390.0);
+    w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard);
+    let base = "# Title\n\nFirst paragraph.\n\nSecond paragraph that keeps growing";
+    w.input = debug_input(vec![DebugEntry { id: "a".into(), user: false, text: base.into(), streaming: true }], true);
+    let f1 = w.pass();
+    w.input = debug_input(vec![DebugEntry { id: "a".into(), user: false, text: format!("{base} with more words"), streaming: true }], true);
+    let f2 = w.pass();
+    for i in 0..2 {
+        assert_eq!(f1.placement(i).unwrap().version, f2.placement(i).unwrap().version);
+    }
+    assert_ne!(f1.placement(2).unwrap().version, f2.placement(2).unwrap().version);
+    assert!(f2.display(0).unwrap().boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+}
+
+#[test]
+fn study01_table_and_tool_rows_emit_no_prose_card() {
+    let table = rows_of_study01("| a | b |\n|---|---|\n| 1 | 2 |", 390.0).remove(0);
+    assert!(!table.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+
+    use zeron_doc::parts::{MessagePart, MessageStatus};
+    use zeron_doc::schema::{MessageRole, SessionMessageEntry};
+    let mut w = worker(390.0);
+    w.set_assistant_markdown_style(display::AssistantMarkdownStyle::Study01ProseCard);
+    w.input = TranscriptInput {
+        entries: vec![Arc::new(SessionMessageEntry {
+            id: "a".into(),
+            role: MessageRole::Assistant,
+            parts: vec![MessagePart::Tool {
+                id: "t0".into(),
+                call: zeron_proto::ToolCall::Unknown { name: "read_file".into(), input: None },
+                is_error: false,
+                resolved: true,
+                output: Some("ok".into()),
+                diff: None,
+                output_ref: None,
+                output_bytes: None,
+                diff_ref: None,
+                diff_stats: None,
+                subagent_ref: None,
+                subagent_status: None,
+                subagent_tail: None,
+            }],
+            created_at: 0,
+            device_id: String::new(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+            duration_ms: None,
+        })],
+        ..Default::default()
+    };
+    let tool = w.pass().display(0).unwrap();
+    assert!(!tool.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+}
+
+#[test]
+fn study01_prose_card_preserves_copy_text_and_code_scroller_geometry() {
+    let wide_line = "x".repeat(120);
+    let md = format!("Intro line.\n\n```js\n{wide_line}\n```");
+    let legacy = rows_of(&md, 320.0);
+    let study = rows_pass_with_style(&md, 320.0, display::AssistantMarkdownStyle::Study01ProseCard).rows;
+    assert_eq!(legacy.len(), study.len());
+    for (a, b) in legacy.iter().zip(study.iter()) {
+        assert_eq!(a.copy_text, b.copy_text);
+    }
+    let code = study.iter().find(|r| r.boxes.iter().any(|b| b.color == display::ColorRole::CodeBackground)).unwrap();
+    assert!(!code.boxes.iter().any(|b| b.color == display::ColorRole::ProseCard));
+    assert_eq!(code.scrollers.len(), 1);
+    assert!(code.scrollers[0].content_width > code.scrollers[0].w);
 }
 
 #[test]
@@ -649,12 +1215,32 @@ fn visual_rows_take_the_height_their_worker_measures() {
     view.close();
 }
 
-/// Every row of a one-message transcript at `width`.
-fn rows_of(md: &str, width: f32) -> Vec<RowDisplay> {
+/// Layout pass for a one-message transcript at `width`, with per-style ink metrics
+/// from the same [`Typography`] that produced the frame (no duplicate sizing).
+struct RowsPass {
+    rows: Vec<RowDisplay>,
+    style_metrics: HashMap<u16, (f32, f32)>,
+}
+
+fn rows_pass(md: &str, width: f32) -> RowsPass {
     let mut w = worker(width);
     w.input = transcript_one(md);
     let frame = w.pass();
-    (0..frame.row_count()).map(|i| frame.display(i).unwrap()).collect()
+    let style_metrics = frame
+        .styles()
+        .iter()
+        .map(|desc| {
+            let m = w.typo.book.metrics(StyleId(desc.id));
+            (desc.id, (m.ascent, m.descent))
+        })
+        .collect();
+    let rows = (0..frame.row_count()).map(|i| frame.display(i).unwrap()).collect();
+    RowsPass { rows, style_metrics }
+}
+
+/// Every row of a one-message transcript at `width`.
+fn rows_of(md: &str, width: f32) -> Vec<RowDisplay> {
+    rows_pass(md, width).rows
 }
 
 /// Inline math paints as glyphs on the text's baseline, never as TeX, and
@@ -1255,4 +1841,263 @@ fn math_tables_keep_a_bounded_canvas() {
     assert!(canvas < 8e6, "table canvas {canvas} pt²");
     let small = rows_of("| a | b |\n|---|---|\n| $x^2$ | $\\frac{1}{2}$ |", 390.0).remove(0);
     assert!(!small.glyphs.is_empty(), "a small math table renders its formulas");
+}
+
+fn image_widget_refs(d: &RowDisplay) -> Vec<&str> {
+    d.widgets
+        .iter()
+        .filter_map(|w| match &w.kind {
+            display::WidgetKind::Image { reference } => Some(reference.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn run_ink_rect(r: &display::TextRun, metrics: &HashMap<u16, (f32, f32)>) -> (f32, f32, f32, f32) {
+    let (ascent, descent) = metrics.get(&r.style).copied().unwrap_or((0.0, 0.0));
+    (r.x, r.baseline - ascent, r.x + r.width, r.baseline + descent)
+}
+
+fn rects_overlap(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
+    a.0 < b.2 && a.2 > b.0 && a.1 < b.3 && a.3 > b.1
+}
+
+/// Conservative ink-vs-widget overlap using the frame's resolved style metrics.
+fn run_overlaps_image(r: &display::TextRun, img: &display::Widget, metrics: &HashMap<u16, (f32, f32)>) -> bool {
+    let ink = run_ink_rect(r, metrics);
+    let widget = (img.x, img.y, img.x + img.w, img.y + img.h);
+    rects_overlap(ink, widget)
+}
+
+fn row0(md: &str) -> RowDisplay {
+    rows_of(md, 390.0).remove(0)
+}
+
+#[test]
+fn markdown_local_image_emits_widget_with_exact_reference() {
+    let md = "![A07 screenshot](/tmp/uploads/ab12-shot.png)";
+    let d = row0(md);
+    assert_eq!(image_widget_refs(&d), ["/tmp/uploads/ab12-shot.png"]);
+    assert!(!d.text.contains("A07 screenshot"), "alt is not painted: {}", d.text);
+    assert!(!d.runs.iter().any(|r| r.color == display::ColorRole::Link));
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_image_mixed_paragraph_preserves_order() {
+    let md = "Before ![cap](/tmp/a.png) after";
+    let pass = rows_pass(md, 390.0);
+    let d = &pass.rows[0];
+    let metrics = &pass.style_metrics;
+    assert_eq!(image_widget_refs(d), ["/tmp/a.png"]);
+    assert!(d.text.contains("Before") && d.text.contains("after"), "{}", d.text);
+    let utf16_off = |byte: usize| d.text[..byte].encode_utf16().count() as u32;
+    let before_byte = d.text.find("Before").expect("Before in row text");
+    let after_byte = d.text.find("after").expect("after in row text");
+    let fffc_byte = d.text.find('\u{FFFC}').expect("image placeholder in row text");
+    let before_u16 = utf16_off(before_byte);
+    let fffc_u16 = utf16_off(fffc_byte);
+    let after_u16 = utf16_off(after_byte);
+    assert!(before_u16 < fffc_u16 && fffc_u16 < after_u16, "text order: {before_u16} {fffc_u16} {after_u16}");
+    let before = d.runs.iter().find(|r| run_text(d, r).trim() == "Before").expect("before");
+    let after = d.runs.iter().find(|r| run_text(d, r).trim() == "after").expect("after");
+    assert!(before.baseline <= after.baseline);
+    let img = d.widgets.iter().find(|w| matches!(&w.kind, display::WidgetKind::Image { .. })).expect("widget");
+    for r in &d.runs {
+        assert!(!run_overlaps_image(r, img, metrics), "run {:?} overlaps image", r);
+    }
+    if (before.baseline - after.baseline).abs() < 0.5 {
+        assert!(before.x + before.width <= img.x + 0.5, "text before image on line");
+        assert!(img.x + img.w <= after.x + 0.5, "text after image on line");
+    }
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_two_inline_images_in_one_paragraph() {
+    let md = "![one](/tmp/one.png) and ![two](/tmp/two.png)";
+    let d = row0(md);
+    assert_eq!(image_widget_refs(&d), ["/tmp/one.png", "/tmp/two.png"]);
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_pending_image_emits_widget() {
+    let md = "![](pending://u1/x.png)";
+    let d = row0(md);
+    assert_eq!(image_widget_refs(&d), ["pending://u1/x.png"]);
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_plain_link_to_png_is_not_an_image_widget() {
+    let md = "[notes](/tmp/ending.png)";
+    let d = row0(md);
+    assert!(image_widget_refs(&d).is_empty());
+    assert!(!d.links.is_empty());
+    assert!(d.text.contains("notes"));
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_https_image_stays_alt_and_link() {
+    let md = "![remote](https://example.com/a.png)";
+    let d = row0(md);
+    assert!(image_widget_refs(&d).is_empty());
+    assert!(d.text.contains("remote"));
+    assert!(d.runs.iter().any(|r| r.color == display::ColorRole::Link));
+    assert!(!d.links.is_empty());
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_unsafe_and_relative_image_sources_stay_link_fallback() {
+    for md in [
+        "![f](file:///tmp/x.png)",
+        "![d](data:image/png;base64,abc)",
+        "![r](relative.png)",
+        "![j](javascript:alert(1))",
+    ] {
+        let d = row0(md);
+        assert!(image_widget_refs(&d).is_empty(), "{md}");
+        assert!(d.runs.iter().any(|r| r.color == display::ColorRole::Link), "{md}");
+        assert_eq!(d.copy_text, md);
+    }
+}
+
+#[test]
+fn markdown_image_syntax_inside_code_is_literal() {
+    let fenced = "```\n![a](/tmp/b.png)\n```";
+    let d = row0(fenced);
+    assert!(image_widget_refs(&d).is_empty());
+    assert!(d.text.contains("![a](/tmp/b.png)"), "{}", d.text);
+    assert_eq!(d.copy_text, fenced);
+
+    let inline = "Use `![a](/tmp/b.png)` here.";
+    let d = row0(inline);
+    assert!(image_widget_refs(&d).is_empty());
+    assert!(d.text.contains("![a](/tmp/b.png)"), "{}", d.text);
+    assert_eq!(d.copy_text, inline);
+}
+
+#[test]
+fn markdown_linked_image_uses_source_without_link_overlay_on_widget() {
+    let md = "[![cap](/tmp/inner.png)](https://example.com/outer)";
+    let d = row0(md);
+    assert_eq!(image_widget_refs(&d), ["/tmp/inner.png"]);
+    let img = d.widgets.iter().find(|w| matches!(&w.kind, display::WidgetKind::Image { .. })).unwrap();
+    assert!(d.links.iter().all(|l| {
+        let overlaps = l.x < img.x + img.w && l.x + l.w > img.x && l.y < img.y + img.h && l.y + l.h > img.y;
+        !overlaps
+    }));
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_image_streaming_appears_only_when_complete() {
+    // Streaming layout uses `IncrementalParser::display_tree` (mended tail). Incomplete
+    // `](url` destinations become `zeron:pending-link` in the AST — not embeddable host paths
+    // (see `crates/markdown` `display_tree_never_leaks_streaming_urls` / `links_mend_to_pending_sentinel`).
+    let full = "![A07](/tmp/a07.png)";
+    let host_path = "/tmp/a07.png";
+    let mut w = worker(390.0);
+    for (shown, expect_widget) in [
+        ("![A07", false),
+        ("![A07](", false),
+        ("![A07](/tmp/a07.png", false),
+        (full, true),
+    ] {
+        w.input = debug_input(vec![DebugEntry { id: "a".into(), user: false, text: shown.to_owned(), streaming: true }], true);
+        let d = w.pass().display(0).unwrap();
+        let refs = image_widget_refs(&d);
+        assert_eq!(!refs.is_empty(), expect_widget, "widget at {shown:?}");
+        if !expect_widget {
+            assert!(
+                !refs.iter().any(|r| *r == host_path),
+                "host path must not widget before complete source: {shown:?} -> {refs:?}"
+            );
+        }
+    }
+    w.input = transcript_one(full);
+    let d = w.pass().display(0).unwrap();
+    assert_eq!(image_widget_refs(&d), [host_path]);
+    assert_eq!(d.copy_text, full);
+}
+
+#[test]
+fn markdown_image_narrow_viewport_fits_without_text_overlap() {
+    let md = "Hi ![x](/tmp/wide.png) there";
+    let width = 120.0;
+    let pass = rows_pass(md, width);
+    let d = &pass.rows[0];
+    let metrics = &pass.style_metrics;
+    let img = d.widgets.iter().find(|w| matches!(&w.kind, display::WidgetKind::Image { .. })).expect("image");
+    assert!(img.w > 0.0 && img.h > 0.0 && img.w <= width + 0.5);
+    assert!(img.x >= 0.0 && img.x + img.w <= width + 0.5);
+    assert!(img.w <= img.h + 0.5, "image is square at paint");
+    for r in &d.runs {
+        assert!(
+            !run_overlaps_image(r, img, metrics),
+            "run {:?} overlaps image {:?}",
+            r,
+            img
+        );
+    }
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_image_same_line_viewport_no_text_overlap() {
+    let md = "Hi ![x](/tmp/wide.png) there";
+    let pass = rows_pass(md, 390.0);
+    let d = &pass.rows[0];
+    let metrics = &pass.style_metrics;
+    let img = d.widgets.iter().find(|w| matches!(&w.kind, display::WidgetKind::Image { .. })).expect("image");
+    for r in &d.runs {
+        assert!(!run_overlaps_image(r, img, metrics), "run {:?} overlaps image", r);
+    }
+    assert_eq!(d.copy_text, md);
+}
+
+#[test]
+fn markdown_image_in_list_does_not_crash() {
+    let d = row0("- ![item](/tmp/item.png)\n- text");
+    assert_eq!(image_widget_refs(&d), ["/tmp/item.png"]);
+}
+
+#[test]
+fn embeddable_image_reference_policy() {
+    use super::markdown::{embeddable_image_reference, MAX_IMAGE_SOURCE_LEN};
+    assert!(embeddable_image_reference("/tmp/a.png"));
+    assert!(embeddable_image_reference("/tmp/my file.png"), "spaces are not trimmed");
+    assert!(embeddable_image_reference("pending://u/x"));
+    assert!(!embeddable_image_reference("pending://"));
+    assert!(embeddable_image_reference(r"C:\shots\a.png"));
+    assert!(embeddable_image_reference(r"C:/shots/a.png"));
+    assert!(!embeddable_image_reference("C:"));
+    assert!(!embeddable_image_reference("C:foo"));
+    assert!(embeddable_image_reference(r"\\server\share\a.png"));
+    assert!(!embeddable_image_reference("https://x/a.png"));
+    assert!(!embeddable_image_reference("relative.png"));
+    assert!(!embeddable_image_reference("file:///tmp/a.png"));
+    assert!(!embeddable_image_reference(""));
+    assert!(!embeddable_image_reference("/tmp/\0bad"));
+    assert!(!embeddable_image_reference("\t/tmp/a.png"));
+    let ok = format!("/{}", "a".repeat(MAX_IMAGE_SOURCE_LEN - 1));
+    assert_eq!(ok.len(), MAX_IMAGE_SOURCE_LEN);
+    assert!(embeddable_image_reference(&ok));
+    let too_long = format!("/{}", "a".repeat(MAX_IMAGE_SOURCE_LEN));
+    assert_eq!(too_long.len(), MAX_IMAGE_SOURCE_LEN + 1);
+    assert!(!embeddable_image_reference(&too_long));
+}
+
+#[test]
+fn markdown_inline_image_row_cap_is_sixteen() {
+    let md = (0..17)
+        .map(|i| format!("![n{i}](/tmp/img{i}.png)"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let d = row0(&md);
+    assert_eq!(image_widget_refs(&d).len(), 16);
+    assert_eq!(d.copy_text, md);
 }

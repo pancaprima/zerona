@@ -262,6 +262,13 @@ pub(crate) struct SpanPaint {
     pub chip: bool,
 }
 
+/// Inline markdown image prepared as an atomic box (U+FFFC); outer `[![]](…)`
+/// links are never painted as link hits over the widget.
+#[derive(Debug, Clone)]
+pub(crate) struct InlineImageEmbed {
+    pub reference: String,
+}
+
 /// A wrapped run of rich text (paragraph, heading, cell, label).
 pub(crate) struct PText {
     pub p: Prepared,
@@ -277,6 +284,46 @@ pub(crate) struct PText {
     /// Spans that are inline formulas (an inline box over one U+FFFC), with
     /// each one's layout.
     pub math: Vec<(usize, Arc<zatex::Formula>)>,
+    /// Spans that are inline images (also U+FFFC), keyed by span index.
+    pub images: Vec<(usize, InlineImageEmbed)>,
+}
+
+/// Most inline images prepared into one text row (paragraph, cell, heading).
+const MAX_INLINE_IMAGES_PER_ROW: usize = 16;
+/// Longer sources stay alt+link so layout never holds huge strings in widgets.
+pub(crate) const MAX_IMAGE_SOURCE_LEN: usize = 4096;
+
+/// Whether `source` from `style.image` may become [`WidgetKind::Image`]: opaque
+/// host paths and `pending://` only — not URLs, `file:`, relatives, or guesses.
+pub(crate) fn embeddable_image_reference(source: &str) -> bool {
+    if source.is_empty() || source.len() > MAX_IMAGE_SOURCE_LEN {
+        return false;
+    }
+    if source.bytes().any(|b| b == 0 || b < 0x20 || b == 0x7f) {
+        return false;
+    }
+    if source.starts_with("pending://") {
+        return source.len() > "pending://".len();
+    }
+    if source.starts_with('/') {
+        return true;
+    }
+    if source.starts_with("\\\\") {
+        return true;
+    }
+    let bytes = source.as_bytes();
+    if bytes.len() >= 3 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        return bytes[2] == b'\\' || bytes[2] == b'/';
+    }
+    if let Some(colon) = source.find(':') {
+        let scheme = &source[..colon];
+        if !scheme.is_empty()
+            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        {
+            return false;
+        }
+    }
+    false
 }
 
 pub(crate) struct PCode {
@@ -350,10 +397,42 @@ pub(crate) fn prepare_runs(ctx: &mut Ctx, runs: &[InlineRun], kind: TextKind, mu
     let mut paints = Vec::with_capacity(runs.len());
     let mut links: Vec<String> = Vec::new();
     let mut math = Vec::new();
+    let mut images = Vec::new();
+    let mut inline_images = 0usize;
     for run in runs {
         let s = &run.style;
         if s.task.is_some() {
             continue; // Lists draw task markers as checkboxes.
+        }
+        if let Some(img) = &s.image {
+            if inline_images < MAX_INLINE_IMAGES_PER_ROW && embeddable_image_reference(&img.source) {
+                inline_images += 1;
+                let side = ctx.typo.px(geom::IMAGE);
+                let style = if s.bold {
+                    ctx.typo.style(Family::Sans, Weight::Semibold.max(base_weight), s.italic, size)
+                } else {
+                    ctx.typo.style(Family::Sans, base_weight, s.italic, size)
+                };
+                let start = text.len();
+                text.push('\u{FFFC}');
+                images.push((
+                    spans.len(),
+                    InlineImageEmbed {
+                        reference: img.source.clone(),
+                    },
+                ));
+                spans.push(
+                    Span::new(start..text.len(), style.id)
+                        .with_inline_box(InlineBox { width: side, ascent: side, descent: 0.0 }),
+                );
+                paints.push(SpanPaint {
+                    color: if muted { ColorRole::TextSecondary } else { ColorRole::Text },
+                    decoration: if s.strikethrough { Decoration::Strikethrough } else { Decoration::None },
+                    link: None,
+                    chip: false,
+                });
+                continue;
+            }
         }
         let (content, link) = match &s.image {
             Some(img) => (
@@ -456,6 +535,7 @@ pub(crate) fn prepare_runs(ctx: &mut Ctx, runs: &[InlineRun], kind: TextKind, mu
         chip: ((lh - chip_h) / 2.0, chip_h),
         badges: Vec::new(),
         math,
+        images,
     }
 }
 
@@ -501,6 +581,7 @@ pub(crate) fn prepare_plain(
         chip: (0.0, 0.0),
         badges: Vec::new(),
         math: Vec::new(),
+        images: Vec::new(),
     }
 }
 
@@ -614,10 +695,13 @@ fn prepare_table(
     let formula_cap = ctx.typo.px(1200.0);
     let widest_box = |t: &PText| {
         let spans = t.p.spans();
-        t.math
-            .iter()
-            .map(|(s, f)| (f.span() + spans[*s].pad_start + spans[*s].pad_end).min(formula_cap))
-            .fold(0f32, f32::max)
+        let from_math = t.math.iter().map(|(s, f)| {
+            (f.span() + spans[*s].pad_start + spans[*s].pad_end).min(formula_cap)
+        });
+        let from_images = t.images.iter().filter_map(|(s, _)| {
+            spans[*s].inline_box.map(|b| b.width + spans[*s].pad_start + spans[*s].pad_end)
+        });
+        from_math.chain(from_images).fold(0f32, f32::max)
     };
     let cols: Vec<f32> = (0..ncols)
         .map(|c| {
@@ -745,6 +829,7 @@ fn prepare_code(ctx: &mut Ctx, language: Option<&str>, code: &str) -> PCode {
         chip: (0.0, 0.0),
         badges: Vec::new(),
         math: Vec::new(),
+        images: Vec::new(),
     };
     let label = language.filter(|l| !l.is_empty()).map(|l| {
         let (size, lh) = TYPE.small;
@@ -776,6 +861,8 @@ pub(crate) mod geom {
     pub const RULE_HEIGHT: f32 = 21.0;
     /// Above and below display math.
     pub const MATH_PAD_Y: f32 = 6.0;
+    /// Inline markdown images: logical square extent (capped to line width at paint).
+    pub const IMAGE: f32 = 260.0;
 }
 
 /// Layout scale (text scale) for geometry constants.
@@ -805,6 +892,12 @@ pub(crate) fn place_text(t: &PText, x: f32, y: f32, width: f32, out: Option<&mut
     for (span, formula) in &t.math {
         if let Some(slot) = formulas.get_mut(*span) {
             *slot = Some(&**formula);
+        }
+    }
+    let mut embeds: Vec<Option<&InlineImageEmbed>> = vec![None; spans.len()];
+    for (span, embed) in &t.images {
+        if let Some(slot) = embeds.get_mut(*span) {
+            *slot = Some(embed);
         }
     }
     let mut top = y;
@@ -853,8 +946,20 @@ pub(crate) fn place_text(t: &PText, x: f32, y: f32, width: f32, out: Option<&mut
                 continue;
             }
             let start = base16 + f.utf16.start as u32;
-            // A formula's placeholder is never drawn as text.
-            if let Some(formula) = formulas.get(f.span).copied().flatten() {
+            // Object-replacement placeholders are never drawn as text.
+            if let Some(embed) = embeds.get(f.span).copied().flatten() {
+                let ib = span.inline_box.unwrap_or(InlineBox { width: 0.0, ascent: 0.0, descent: 0.0 });
+                let avail = (x + width - text_x - span.pad_end).max(0.0);
+                let side = ib.width.min(avail).max(0.0);
+                if side > 0.0 {
+                    let widget_y = baseline - side;
+                    out.widget(
+                        WidgetKind::Image { reference: embed.reference.clone() },
+                        (text_x, widget_y, side, side),
+                        None,
+                    );
+                }
+            } else if let Some(formula) = formulas.get(f.span).copied().flatten() {
                 // A formula wider than the column (alone on its line — it's
                 // atomic) shrinks to fit. Only the paint scales: the line's
                 // extents stay those of the unscaled box in both the measure
