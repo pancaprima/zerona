@@ -1333,6 +1333,39 @@ impl Client {
         Ok(())
     }
 
+    /// Ask for session notifications on this device: its FCM `token`, and
+    /// which kinds to send. Re-register whenever any of them changes.
+    pub async fn register_fcm_push_target(&self, token: &str, prefs: PushPrefs) -> Result<()> {
+        let Some(live) = self.inner.live() else {
+            return Ok(());
+        };
+        let url = crate::live::urls::registry_push_target(
+            &live.edge,
+            self.inner.credentials.org_id(),
+            &self.inner.config.device_id,
+        );
+        let token_value = self.inner.tokens.bearer().await?;
+        let body = serde_json::json!({
+            "kind": "fcm",
+            "token": token,
+            "prefs": { "done": prefs.done, "input": prefs.input, "failed": prefs.failed },
+        });
+        let response = crate::auth::http()
+            .post(url)
+            .bearer_auth(token_value)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ClientError::Network(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(ClientError::HostError(format!(
+                "push registration http {}",
+                response.status()
+            )));
+        }
+        Ok(())
+    }
+
     /// Stop notifications to this device (sign-out, turned off).
     pub async fn unregister_push_target(&self) -> Result<()> {
         let Some(live) = self.inner.live() else {
