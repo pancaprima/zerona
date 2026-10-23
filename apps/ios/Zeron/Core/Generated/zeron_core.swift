@@ -3728,6 +3728,11 @@ public protocol TranscriptViewProtocol: AnyObject, Sendable {
     func frame()  -> LayoutFrame
     
     /**
+     * Assistant markdown row framing (default [`AssistantMarkdownStyle::Legacy`]).
+     */
+    func setAssistantMarkdownStyle(style: AssistantMarkdownStyle) 
+    
+    /**
      * Feed markdown fixtures directly (demo screens, benchmarks, tests).
      */
     func setDebugEntries(entries: [DebugEntry], working: Bool) 
@@ -3861,6 +3866,18 @@ open func frame() -> LayoutFrame  {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
+}
+    
+    /**
+     * Assistant markdown row framing (default [`AssistantMarkdownStyle::Legacy`]).
+     */
+open func setAssistantMarkdownStyle(style: AssistantMarkdownStyle)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_zeron_mobile_fn_method_transcriptview_set_assistant_markdown_style(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeAssistantMarkdownStyle_lower(style),uniffiCallStatus
+    )
+}
 }
     
     /**
@@ -10889,6 +10906,79 @@ public func FfiConverterTypeWorktreeSpec_lower(_ value: WorktreeSpec) -> RustBuf
 }
 
 
+/**
+ * How assistant markdown block rows are framed. Default is legacy (no card
+ * geometry); study01 prose cards are opt-in per [`TranscriptView`].
+ */
+
+public enum AssistantMarkdownStyle: Equatable, Hashable {
+    
+    case legacy
+    /**
+     * White rounded card behind prose block rows (Android study01 chat).
+     */
+    case study01ProseCard
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AssistantMarkdownStyle: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAssistantMarkdownStyle: FfiConverterRustBuffer {
+    typealias SwiftType = AssistantMarkdownStyle
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AssistantMarkdownStyle {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .legacy
+        
+        case 2: return .study01ProseCard
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AssistantMarkdownStyle, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .legacy:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .study01ProseCard:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAssistantMarkdownStyle_lift(_ buf: RustBuffer) throws -> AssistantMarkdownStyle {
+    return try FfiConverterTypeAssistantMarkdownStyle.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAssistantMarkdownStyle_lower(_ value: AssistantMarkdownStyle) -> RustBuffer {
+    return FfiConverterTypeAssistantMarkdownStyle.lower(value)
+}
+
+
+
 
 public enum AuthCallback: Equatable, Hashable {
     
@@ -11401,6 +11491,14 @@ public enum ColorRole: Equatable, Hashable {
     case diffAddBar
     case diffDelBar
     case diffHunk
+    /**
+     * Assistant markdown row: filled card behind prose (opt-in; not user bubbles or tools).
+     */
+    case proseCard
+    /**
+     * Hairline around [`ProseCard`].
+     */
+    case proseCardBorder
 
 
 
@@ -11513,6 +11611,10 @@ public struct FfiConverterTypeColorRole: FfiConverterRustBuffer {
         case 45: return .diffDelBar
         
         case 46: return .diffHunk
+        
+        case 47: return .proseCard
+        
+        case 48: return .proseCardBorder
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -11704,6 +11806,14 @@ public struct FfiConverterTypeColorRole: FfiConverterRustBuffer {
         
         case .diffHunk:
             writeInt(&buf, Int32(46))
+        
+        
+        case .proseCard:
+            writeInt(&buf, Int32(47))
+        
+        
+        case .proseCardBorder:
+            writeInt(&buf, Int32(48))
         
         }
     }
@@ -17644,6 +17754,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_zeron_mobile_checksum_method_transcriptview_frame() != 19133) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_zeron_mobile_checksum_method_transcriptview_set_assistant_markdown_style() != 45724) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_zeron_mobile_checksum_method_transcriptview_set_debug_entries() != 54762) {

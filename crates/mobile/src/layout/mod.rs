@@ -26,10 +26,11 @@ use zeron_doc::parts::MessageStatus;
 use zeron_doc::schema::{MessageRole, SessionMessageEntry};
 use zeron_text::WidthCache;
 
+pub use display::AssistantMarkdownStyle;
 use display::{DisplayBuilder, MathFace, RowDisplay};
 use markdown::{Ctx, MathFailures, MathSettings, Px};
 pub use rows::{PendingUser, RowKind, TranscriptInput};
-use rows::{Gap, Placed, RowBuilder, RowCore, place_row};
+use rows::{Gap, Placed, ProseCardSegment, RowBuilder, RowCore, annotate_prose_card_segments, place_row};
 pub use style::{FaceRole, StyleDesc};
 use style::Typography;
 
@@ -136,6 +137,7 @@ pub struct RowPlacement {
 struct FrameRow {
     core: Arc<RowCore>,
     gap: Gap,
+    prose_segment: ProseCardSegment,
     y: f32,
     height: f32,
     /// A visual's measured-height epoch when the frame was built.
@@ -145,8 +147,19 @@ struct FrameRow {
 }
 
 impl FrameRow {
-    fn version(&self) -> u64 {
-        self.core.version ^ ((self.gap as u64 + 1) << 58) ^ self.epoch.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+    /// Row paint cache keys must change when assistant markdown framing changes
+    /// even if [`RowCore::version`] is unchanged (height memo is cleared separately).
+    fn version(&self, assistant_markdown: AssistantMarkdownStyle) -> u64 {
+        let style_tag = match assistant_markdown {
+            AssistantMarkdownStyle::Legacy => 0u64,
+            AssistantMarkdownStyle::Study01ProseCard => 1u64,
+        };
+        // Reserved XOR lanes (must not overlap): segment «52..54», style «56», gap «58+».
+        self.core.version
+            ^ ((self.prose_segment as u64) << 52)
+            ^ (style_tag << 56)
+            ^ ((self.gap as u64 + 1) << 58)
+            ^ self.epoch.wrapping_mul(0x9e37_79b9_7f4a_7c15)
     }
 }
 
@@ -156,6 +169,7 @@ pub struct LayoutFrame {
     revision: u64,
     width: f32,
     scale: f32,
+    assistant_markdown: AssistantMarkdownStyle,
     rows: Vec<FrameRow>,
     total: f32,
     styles: Arc<Vec<StyleDesc>>,
@@ -227,11 +241,20 @@ impl LayoutFrame {
     pub fn display(&self, index: u32) -> Option<RowDisplay> {
         let r = self.rows.get(index as usize)?;
         let mut out = DisplayBuilder::default();
-        let height = place_row(&r.core, r.gap, Px(self.scale), self.width, r.visual, Some(&mut out));
+        let height = place_row(
+            &r.core,
+            r.gap,
+            r.prose_segment,
+            Px(self.scale),
+            self.width,
+            r.visual,
+            self.assistant_markdown,
+            Some(&mut out),
+        );
         debug_assert!((height - r.height).abs() < 0.01, "paint/measure divergence");
         Some(RowDisplay {
             key: r.core.key,
-            version: r.version(),
+            version: r.version(self.assistant_markdown),
             width: self.width,
             height: r.height,
             text: out.text,
@@ -281,7 +304,7 @@ impl LayoutFrame {
         RowPlacement {
             index: index as u32,
             key: r.core.key,
-            version: r.version(),
+            version: r.version(self.assistant_markdown),
             y: r.y,
             height: r.height,
             kind: r.core.kind,
@@ -293,6 +316,7 @@ impl LayoutFrame {
             revision: 0,
             width: 0.0,
             scale: 1.0,
+            assistant_markdown: AssistantMarkdownStyle::default(),
             rows: Vec::new(),
             total: 0.0,
             styles: Arc::new(Vec::new()),
@@ -353,6 +377,7 @@ enum Msg {
     Input(TranscriptInput),
     Viewport { width: f32, scale: f32 },
     Math(MathSettings),
+    AssistantMarkdown(AssistantMarkdownStyle),
     Toggle(u64),
     ToggleDetail { row: u64, detail: u64, open: bool },
     /// A visual row's height changed (its key), or visuals got a source.
@@ -462,6 +487,11 @@ impl TranscriptView {
         self.send(Msg::Math(MathSettings::new(enabled, face.into(), size_percent)));
     }
 
+    /// Assistant markdown row framing (default [`AssistantMarkdownStyle::Legacy`]).
+    pub fn set_assistant_markdown_style(&self, style: AssistantMarkdownStyle) {
+        self.send(Msg::AssistantMarkdown(style));
+    }
+
     /// Expand/collapse a disclosure (tool group, long user message).
     pub fn toggle(&self, key: u64) {
         self.send(Msg::Toggle(key));
@@ -537,6 +567,7 @@ pub(crate) fn debug_input(entries: Vec<DebugEntry>, working: bool) -> Transcript
 struct HeightMemo {
     core: Arc<RowCore>,
     gap: Gap,
+    prose_segment: ProseCardSegment,
     width: f32,
     height: f32,
 }
@@ -549,6 +580,7 @@ pub(crate) struct Worker {
     input: TranscriptInput,
     width: f32,
     math: MathSettings,
+    assistant_markdown: AssistantMarkdownStyle,
     /// Formulas zatex rejected (bounded; see `MathFailures`).
     math_failures: MathFailures,
     revision: u64,
@@ -572,6 +604,7 @@ impl Worker {
             input: TranscriptInput::default(),
             width: 0.0,
             math: MathSettings::default(),
+            assistant_markdown: AssistantMarkdownStyle::default(),
             math_failures: MathFailures::default(),
             revision: 0,
             shared,
@@ -602,6 +635,7 @@ impl Worker {
                         dirty = true;
                     }
                     Msg::Math(math) => dirty |= self.set_math(math),
+                    Msg::AssistantMarkdown(style) => dirty |= self.set_assistant_markdown_style(style),
                     Msg::ToggleDetail { row, detail, open } => {
                         self.builder.detail_open.insert(detail, !open);
                         self.builder.invalidate(row);
@@ -653,6 +687,16 @@ impl Worker {
         true
     }
 
+    /// Prose-card framing for assistant markdown rows; true if that changed.
+    pub(crate) fn set_assistant_markdown_style(&mut self, style: AssistantMarkdownStyle) -> bool {
+        if self.assistant_markdown == style {
+            return false;
+        }
+        self.assistant_markdown = style;
+        self.heights.clear();
+        true
+    }
+
     /// Drop every prepared row so the next pass rebuilds them all (with new
     /// versions) — but what the user opened or folded stays so.
     fn rebuild(&mut self) {
@@ -687,7 +731,9 @@ impl Worker {
                 in_table: false,
                 math_area: 0.0,
             };
-            self.builder.build(&mut ctx, &self.input)
+            let mut placed = self.builder.build(&mut ctx, &self.input);
+            annotate_prose_card_segments(&mut placed, self.assistant_markdown);
+            placed
         };
         let px = Px(self.typo.scale);
         let mut rows = Vec::with_capacity(placed.len());
@@ -705,17 +751,18 @@ impl Worker {
             };
             let height = match self.heights.remove(&p.core.key) {
                 Some(m)
-                    if Arc::ptr_eq(&m.core, &p.core) && m.gap == p.gap && m.width == self.width && visual.is_none() =>
+                    if Arc::ptr_eq(&m.core, &p.core) && m.gap == p.gap && m.prose_segment == p.prose_segment && m.width == self.width && visual.is_none() =>
                 {
                     m.height
                 }
-                _ => place_row(&p.core, p.gap, px, self.width, visual, None),
+                _ => place_row(&p.core, p.gap, p.prose_segment, px, self.width, visual, self.assistant_markdown, None),
             };
             live.insert(
                 p.core.key,
                 HeightMemo {
                     core: p.core.clone(),
                     gap: p.gap,
+                    prose_segment: p.prose_segment,
                     width: self.width,
                     height,
                 },
@@ -723,6 +770,7 @@ impl Worker {
             rows.push(FrameRow {
                 core: p.core,
                 gap: p.gap,
+                prose_segment: p.prose_segment,
                 y,
                 height,
                 epoch,
@@ -738,6 +786,7 @@ impl Worker {
             revision: self.revision,
             width: self.width,
             scale: self.typo.scale,
+            assistant_markdown: self.assistant_markdown,
             rows,
             total,
             styles: Arc::new(self.typo.table().to_vec()),

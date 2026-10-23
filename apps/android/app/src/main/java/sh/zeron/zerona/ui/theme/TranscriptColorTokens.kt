@@ -5,6 +5,17 @@ package sh.zeron.zerona.ui.theme
  * fenced-code and inline-code roles from these constants so JVM tests exercise production RGB.
  */
 object TranscriptColorTokens {
+    /** Assistant prose card (study01 chat); mapped from core `ProseCard` roles. */
+    const val LIGHT_PROSE_CARD = 0xFFFFFFFF.toInt()
+    const val DARK_PROSE_CARD = 0xFF1C1B22.toInt()
+    const val LIGHT_PROSE_CARD_BORDER = 0xFFE2DEE8.toInt()
+    const val DARK_PROSE_CARD_BORDER = 0xFF3A3844.toInt()
+
+    fun proseCardArgb(dark: Boolean): Int = if (dark) DARK_PROSE_CARD else LIGHT_PROSE_CARD
+
+    fun proseCardBorderArgb(dark: Boolean): Int =
+        if (dark) DARK_PROSE_CARD_BORDER else LIGHT_PROSE_CARD_BORDER
+
     /** Fenced code blocks use a dark stage in both UI themes (catalog mock). */
     const val CODE_BLOCK_BACKGROUND = 0xFF0E0D12.toInt()
     const val CODE_BLOCK_TEXT = 0xFFECE8F4.toInt()

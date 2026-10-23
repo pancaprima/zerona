@@ -39,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -67,9 +68,11 @@ fun SessionComposerBar(
     val canSend = ComposerPresentation.canSend(draftNonBlank, composer.sendInFlight)
     val scheme = MaterialTheme.colorScheme
     val dockColor = GlassInspired.composerDockColor()
+    val bodyMedium = MaterialTheme.typography.bodyMedium
     val fieldTextStyle =
-        MaterialTheme.typography.bodyMedium.copy(
+        bodyMedium.copy(
             fontSize = 14.sp,
+            lineHeight = bodyMedium.lineHeight,
             color = scheme.onSurface,
         )
     val revealSpec =
@@ -240,6 +243,14 @@ fun SessionComposerBar(
                             maxLines = ComposerPresentation.MAX_DRAFT_LINES,
                         )
                     } else {
+                        val sendTargetHeight = ComposerPresentation.SEND_TOUCH_TARGET_DP.dp
+                        val draftHorizontalPadding = 12.dp
+                        val draftFieldShape = RoundedCornerShape(8.dp)
+                        val draftVerticalPadding =
+                            with(LocalDensity.current) {
+                                val lineHeightDp = fieldTextStyle.lineHeight.toDp()
+                                ((sendTargetHeight - lineHeightDp) / 2).coerceAtLeast(0.dp)
+                            }
                         val interactionSource = remember { MutableInteractionSource() }
                         val focused by interactionSource.collectIsFocusedAsState()
                         val fieldModifier =
@@ -247,12 +258,11 @@ fun SessionComposerBar(
                                 .weight(1f)
                                 .then(
                                     if (focused) {
-                                        Modifier.border(2.dp, scheme.primary, RoundedCornerShape(8.dp))
+                                        Modifier.border(2.dp, scheme.primary, draftFieldShape)
                                     } else {
                                         Modifier
                                     },
                                 )
-                                .padding(horizontal = 4.dp, vertical = 6.dp)
                                 .semantics { contentDescription = "Message" }
                         BasicTextField(
                             value = draftText,
@@ -264,7 +274,17 @@ fun SessionComposerBar(
                             maxLines = ComposerPresentation.MAX_DRAFT_LINES,
                             interactionSource = interactionSource,
                             decorationBox = { inner ->
-                                Box {
+                                Box(
+                                    modifier =
+                                        Modifier
+                                            .defaultMinSize(minHeight = sendTargetHeight)
+                                            .fillMaxWidth()
+                                            .padding(
+                                                horizontal = draftHorizontalPadding,
+                                                vertical = draftVerticalPadding,
+                                            ),
+                                    contentAlignment = Alignment.TopStart,
+                                ) {
                                     if (draftText.isEmpty()) {
                                         Text(
                                             "Message",

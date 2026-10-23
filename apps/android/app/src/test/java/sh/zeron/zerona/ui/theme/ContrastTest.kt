@@ -181,6 +181,53 @@ class ContrastTest {
     }
 
     @Test
+    fun proseCardBodyTextPassesAaInBothThemes() {
+        assertAa(ZeronaColorTokens.LIGHT_ON_SURFACE, TranscriptColorTokens.LIGHT_PROSE_CARD)
+        assertAa(ZeronaColorTokens.DARK_ON_SURFACE, TranscriptColorTokens.DARK_PROSE_CARD)
+    }
+
+    @Test
+    fun proseCardSecondaryAndLinkForegroundPassAaOnCardFill() {
+        assertAa(
+            ZeronaColorTokens.LIGHT_ON_SURFACE_VARIANT,
+            TranscriptColorTokens.LIGHT_PROSE_CARD,
+        )
+        assertAa(
+            ZeronaColorTokens.DARK_ON_SURFACE_VARIANT,
+            TranscriptColorTokens.DARK_PROSE_CARD,
+        )
+        assertAa(
+            ZeronaColorTokens.linkAccentArgb(false),
+            TranscriptColorTokens.LIGHT_PROSE_CARD,
+        )
+        assertAa(
+            ZeronaColorTokens.linkAccentArgb(true),
+            TranscriptColorTokens.DARK_PROSE_CARD,
+        )
+    }
+
+    /** Decorative hairline borders are not body text — AA 4.5:1 would force a heavy stroke. */
+    @Test
+    fun proseCardBorderIsVisibleButNotAaBodyTextOnFill() {
+        fun assertHairlineSeparates(border: Int, fill: Int) {
+            org.junit.Assert.assertNotEquals(border, fill)
+            val ratio = Contrast.contrastRatio(border, fill)
+            org.junit.Assert.assertTrue(
+                "hairline should read on card fill without AA body-text contrast (ratio=$ratio)",
+                ratio >= 1.15 && ratio < Contrast.AA_NORMAL_TEXT_MIN,
+            )
+        }
+        assertHairlineSeparates(
+            TranscriptColorTokens.LIGHT_PROSE_CARD_BORDER,
+            TranscriptColorTokens.LIGHT_PROSE_CARD,
+        )
+        assertHairlineSeparates(
+            TranscriptColorTokens.DARK_PROSE_CARD_BORDER,
+            TranscriptColorTokens.DARK_PROSE_CARD,
+        )
+    }
+
+    @Test
     fun transcriptTertiaryReadableOnProseAndChipPassesAa() {
         assertAa(
             TranscriptColorTokens.textTertiaryArgb(false),

@@ -50,12 +50,14 @@ PRODUCTION_SOURCES = [
 TEST_SOURCES = [
     "apps/android/app/src/test/java/sh/zeron/zerona/ui/theme/ZeronaColorTokensTest.kt",
     "apps/android/app/src/test/java/sh/zeron/zerona/ui/theme/ContrastTest.kt",
+    "apps/android/app/src/test/java/sh/zeron/zerona/ui/theme/TranscriptColorTokensProseCardTest.kt",
     "apps/android/app/src/test/java/sh/zeron/zerona/ui/ComposerPresentationTest.kt",
 ]
 
 TEST_CLASSES = [
     "sh.zeron.zerona.ui.theme.ZeronaColorTokensTest",
     "sh.zeron.zerona.ui.theme.ContrastTest",
+    "sh.zeron.zerona.ui.theme.TranscriptColorTokensProseCardTest",
     "sh.zeron.zerona.ui.ComposerPresentationTest",
 ]
 
