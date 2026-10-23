@@ -1,0 +1,118 @@
+name: Android app
+
+on:
+  pull_request:
+    paths:
+      - 'apps/android/**'
+      - 'crates/mobile/**'
+      - 'crates/client/**'
+      - 'scripts/android/**'
+      - '.github/workflows/android-app.yml'
+      - 'Cargo.lock'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/android/**'
+      - 'crates/mobile/**'
+      - 'crates/client/**'
+      - 'scripts/android/**'
+      - '.github/workflows/android-app.yml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+    inputs:
+      abis:
+        description: 'Comma-separated ABIs to package (e.g. arm64-v8a or arm64-v8a,x86_64)'
+        required: false
+        default: 'arm64-v8a'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-app-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      GRADLE_ABIS: ${{ github.event_name == 'workflow_dispatch' && inputs.abis || 'arm64-v8a' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-linux-android x86_64-linux-android
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: Android NDK
+        run: |
+          if [[ -z "${ANDROID_NDK_HOME:-}" ]]; then
+            echo "ANDROID_NDK_HOME is unset; installing NDK via sdkmanager" >&2
+            sdkmanager --install "ndk;27.2.12479018"
+            echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          fi
+          echo "$ANDROID_NDK_HOME"
+          if [[ ! -d "${ANDROID_NDK_HOME:-}" ]]; then
+            echo "ANDROID_NDK_HOME is unset or not a directory: ${ANDROID_NDK_HOME:-}" >&2
+            exit 1
+          fi
+          ls -la "$ANDROID_NDK_HOME"
+      - name: Install cargo-ndk
+        run: |
+          if command -v cargo-ndk >/dev/null; then
+            echo "cargo-ndk already installed: $(command -v cargo-ndk)"
+          else
+            cargo install cargo-ndk --locked
+          fi
+      - name: Build mobile core for Android
+        run: |
+          ANDROID_ABIS="${GRADLE_ABIS//,/ }" REQUIRE_SO=1 \
+            scripts/android/build-core.sh "$GITHUB_WORKSPACE/target/android-core"
+      - name: Upload Kotlin bindings (small, for debugging)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-kotlin-bindings
+          path: target/android-core/kotlin
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: JDK 17
+        run: |
+          echo "JAVA_HOME=${JAVA_HOME_17_X64}" >> "$GITHUB_ENV"
+          echo "PATH=${JAVA_HOME_17_X64}/bin:$PATH" >> "$GITHUB_ENV"
+          java -version
+      - name: Gradle 8.11.1
+        run: |
+          curl -fsSL -o /tmp/gradle-8.11.1-bin.zip \
+            https://services.gradle.org/distributions/gradle-8.11.1-bin.zip
+          unzip -q /tmp/gradle-8.11.1-bin.zip -d /tmp
+          echo "GRADLE_HOME=/tmp/gradle-8.11.1" >> "$GITHUB_ENV"
+          echo "PATH=/tmp/gradle-8.11.1/bin:$PATH" >> "$GITHUB_ENV"
+          gradle --version
+      - name: Android SDK licenses
+        run: yes | sdkmanager --licenses || true
+      - name: Assemble debug APK
+        run: |
+          gradle -p apps/android :app:assembleDebug \
+            -PzeronCoreDir="$GITHUB_WORKSPACE/target/android-core" \
+            -PzeronAbis="$GRADLE_ABIS" \
+            --no-daemon --stacktrace
+      - name: APK details
+        run: |
+          apk="apps/android/app/build/outputs/apk/debug/app-debug.apk"
+          ls -l "$apk"
+          unzip -l "$apk" 'lib/*/libzeron_mobile.so'
+          if ! unzip -l "$apk" 'lib/arm64-v8a/libc++_shared.so' | grep -q 'libc++_shared.so'; then
+            echo "missing lib/arm64-v8a/libc++_shared.so in APK" >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zerona-android-debug
+          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

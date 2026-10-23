@@ -12,7 +12,7 @@ pub mod display;
 mod markdown;
 mod file_icons;
 mod rows;
-mod style;
+pub(crate) mod style;
 mod tools;
 
 use std::collections::HashMap;
@@ -26,10 +26,11 @@ use zeron_doc::parts::MessageStatus;
 use zeron_doc::schema::{MessageRole, SessionMessageEntry};
 use zeron_text::WidthCache;
 
-use display::{DisplayBuilder, RowDisplay};
-use markdown::{Ctx, Px};
+pub use display::AssistantMarkdownStyle;
+use display::{DisplayBuilder, MathFace, RowDisplay};
+use markdown::{Ctx, MathFailures, MathSettings, Px};
 pub use rows::{PendingUser, RowKind, TranscriptInput};
-use rows::{Gap, Placed, RowBuilder, RowCore, place_row};
+use rows::{Gap, Placed, ProseCardSegment, RowBuilder, RowCore, annotate_prose_card_segments, place_row};
 pub use style::{FaceRole, StyleDesc};
 use style::Typography;
 
@@ -73,6 +74,19 @@ impl zeron_text::FallbackMeasurer for MeasurerBridge {
     }
 }
 
+/// Faces and fallback measurement for one layout thread (a transcript, a
+/// visual).
+pub(crate) fn typography(text: &TextSystem) -> Typography {
+    let styles = Arc::new(Mutex::new(HashMap::new()));
+    let fallback = text.measurer.clone().map(|platform| {
+        Arc::new(MeasurerBridge {
+            platform,
+            styles: styles.clone(),
+        }) as Arc<dyn zeron_text::FallbackMeasurer>
+    });
+    Typography::new(&text.faces, fallback, styles)
+}
+
 #[derive(uniffi::Record)]
 pub struct FaceData {
     pub role: FaceRole,
@@ -82,7 +96,9 @@ pub struct FaceData {
 /// Registered faces + fallback measurer, shared by every transcript.
 #[derive(uniffi::Object)]
 pub struct TextSystem {
-    faces: Vec<(FaceRole, Arc<Vec<u8>>)>,
+    /// Leaked once here: every transcript and visual measures with the same
+    /// bytes (a font book holds its faces for the process).
+    faces: Vec<(FaceRole, &'static [u8])>,
     measurer: Option<Arc<dyn PlatformMeasurer>>,
 }
 
@@ -91,7 +107,10 @@ impl TextSystem {
     #[uniffi::constructor]
     pub fn new(faces: Vec<FaceData>, measurer: Option<Arc<dyn PlatformMeasurer>>) -> Arc<Self> {
         Arc::new(Self {
-            faces: faces.into_iter().map(|f| (f.role, Arc::new(f.bytes))).collect(),
+            faces: faces
+                .into_iter()
+                .map(|f| (f.role, &*Box::leak(f.bytes.into_boxed_slice())))
+                .collect(),
             measurer,
         })
     }
@@ -118,13 +137,29 @@ pub struct RowPlacement {
 struct FrameRow {
     core: Arc<RowCore>,
     gap: Gap,
+    prose_segment: ProseCardSegment,
     y: f32,
     height: f32,
+    /// A visual's measured-height epoch when the frame was built.
+    epoch: u64,
+    /// The visual's height this frame was measured with (painted the same).
+    visual: Option<f32>,
 }
 
 impl FrameRow {
-    fn version(&self) -> u64 {
-        self.core.version ^ ((self.gap as u64 + 1) << 58)
+    /// Row paint cache keys must change when assistant markdown framing changes
+    /// even if [`RowCore::version`] is unchanged (height memo is cleared separately).
+    fn version(&self, assistant_markdown: AssistantMarkdownStyle) -> u64 {
+        let style_tag = match assistant_markdown {
+            AssistantMarkdownStyle::Legacy => 0u64,
+            AssistantMarkdownStyle::Study01ProseCard => 1u64,
+        };
+        // Reserved XOR lanes (must not overlap): segment «52..54», style «56», gap «58+».
+        self.core.version
+            ^ ((self.prose_segment as u64) << 52)
+            ^ (style_tag << 56)
+            ^ ((self.gap as u64 + 1) << 58)
+            ^ self.epoch.wrapping_mul(0x9e37_79b9_7f4a_7c15)
     }
 }
 
@@ -134,6 +169,7 @@ pub struct LayoutFrame {
     revision: u64,
     width: f32,
     scale: f32,
+    assistant_markdown: AssistantMarkdownStyle,
     rows: Vec<FrameRow>,
     total: f32,
     styles: Arc<Vec<StyleDesc>>,
@@ -205,15 +241,25 @@ impl LayoutFrame {
     pub fn display(&self, index: u32) -> Option<RowDisplay> {
         let r = self.rows.get(index as usize)?;
         let mut out = DisplayBuilder::default();
-        let height = place_row(&r.core, r.gap, Px(self.scale), self.width, Some(&mut out));
+        let height = place_row(
+            &r.core,
+            r.gap,
+            r.prose_segment,
+            Px(self.scale),
+            self.width,
+            r.visual,
+            self.assistant_markdown,
+            Some(&mut out),
+        );
         debug_assert!((height - r.height).abs() < 0.01, "paint/measure divergence");
         Some(RowDisplay {
             key: r.core.key,
-            version: r.version(),
+            version: r.version(self.assistant_markdown),
             width: self.width,
             height: r.height,
             text: out.text,
             runs: out.runs,
+            glyphs: out.glyphs,
             boxes: out.boxes,
             links: out.links,
             scrollers: out.scrollers,
@@ -258,7 +304,7 @@ impl LayoutFrame {
         RowPlacement {
             index: index as u32,
             key: r.core.key,
-            version: r.version(),
+            version: r.version(self.assistant_markdown),
             y: r.y,
             height: r.height,
             kind: r.core.kind,
@@ -270,6 +316,7 @@ impl LayoutFrame {
             revision: 0,
             width: 0.0,
             scale: 1.0,
+            assistant_markdown: AssistantMarkdownStyle::default(),
             rows: Vec::new(),
             total: 0.0,
             styles: Arc::new(Vec::new()),
@@ -329,8 +376,12 @@ pub struct DebugEntry {
 enum Msg {
     Input(TranscriptInput),
     Viewport { width: f32, scale: f32 },
+    Math(MathSettings),
+    AssistantMarkdown(AssistantMarkdownStyle),
     Toggle(u64),
     ToggleDetail { row: u64, detail: u64, open: bool },
+    /// A visual row's height changed (its key), or visuals got a source.
+    Visual(Option<u64>),
     Shutdown,
 }
 
@@ -345,6 +396,7 @@ pub struct TranscriptView {
     shared: Arc<Shared>,
     /// Live session subscription (Rust→Rust; rows never cross FFI).
     watch: Mutex<Option<zeron_client::SnapshotWatch>>,
+    visuals: Arc<crate::visual::VisualHub>,
 }
 
 #[uniffi::export]
@@ -355,16 +407,43 @@ impl TranscriptView {
         let shared = Arc::new(Shared {
             frame: Mutex::new(Arc::new(LayoutFrame::empty())),
         });
+        let remeasure = Mutex::new(tx.clone());
+        let visuals = Arc::new(crate::visual::VisualHub::new(
+            text.clone(),
+            Arc::new(move |key| {
+                let _ = remeasure.lock().unwrap().send(Msg::Visual(Some(key)));
+            }),
+        ));
         let worker_shared = shared.clone();
+        let worker_visuals = visuals.clone();
         thread::Builder::new()
             .name("zeron-layout".into())
-            .spawn(move || Worker::new(&text, worker_shared, listener).run(rx))
+            // Math layout recurses per nesting level; a debug build needs
+            // about 1.5 MB at zatex's depth limit (see `Options::max_depth`).
+            .stack_size(8 << 20)
+            .spawn(move || Worker::new(&text, worker_shared, listener, Some(worker_visuals)).run(rx))
             .expect("spawn layout thread");
         Arc::new(Self {
             tx: Mutex::new(tx),
             shared,
             watch: Mutex::new(None),
+            visuals,
         })
+    }
+
+    /// Where this transcript's visuals load their scripts from (the chat's
+    /// host device), and the screen's pixel density for their frames.
+    pub fn set_visual_source(&self, client: Arc<crate::client_ffi::CoreClient>, device_id: String, pixel_scale: f32) {
+        if device_id.is_empty() {
+            return;
+        }
+        self.visuals.set_source(client.client().clone(), device_id, pixel_scale);
+        self.send(Msg::Visual(None));
+    }
+
+    /// The live visual behind a `WidgetKind::Visual` (by its visual id).
+    pub fn visual(&self, id: String) -> Option<Arc<crate::visual::VisualSession>> {
+        self.visuals.session(&id)
     }
 
     /// Follow a session's transcript: every snapshot (coalesced by the
@@ -402,6 +481,17 @@ impl TranscriptView {
         });
     }
 
+    /// Render formulas (in `face`, at `size_percent` of the text around
+    /// them, clamped to 75–200), or show them as their TeX source.
+    pub fn set_math(&self, enabled: bool, face: MathFace, size_percent: u16) {
+        self.send(Msg::Math(MathSettings::new(enabled, face.into(), size_percent)));
+    }
+
+    /// Assistant markdown row framing (default [`AssistantMarkdownStyle::Legacy`]).
+    pub fn set_assistant_markdown_style(&self, style: AssistantMarkdownStyle) {
+        self.send(Msg::AssistantMarkdown(style));
+    }
+
     /// Expand/collapse a disclosure (tool group, long user message).
     pub fn toggle(&self, key: u64) {
         self.send(Msg::Toggle(key));
@@ -424,6 +514,7 @@ impl TranscriptView {
 
     pub fn close(&self) {
         self.watch.lock().unwrap().take();
+        self.visuals.shutdown();
         self.send(Msg::Shutdown);
     }
 }
@@ -441,6 +532,7 @@ impl TranscriptView {
 
 impl Drop for TranscriptView {
     fn drop(&mut self) {
+        self.visuals.shutdown();
         self.send(Msg::Shutdown);
     }
 }
@@ -475,6 +567,7 @@ pub(crate) fn debug_input(entries: Vec<DebugEntry>, working: bool) -> Transcript
 struct HeightMemo {
     core: Arc<RowCore>,
     gap: Gap,
+    prose_segment: ProseCardSegment,
     width: f32,
     height: f32,
 }
@@ -486,30 +579,37 @@ pub(crate) struct Worker {
     heights: HashMap<u64, HeightMemo>,
     input: TranscriptInput,
     width: f32,
+    math: MathSettings,
+    assistant_markdown: AssistantMarkdownStyle,
+    /// Formulas zatex rejected (bounded; see `MathFailures`).
+    math_failures: MathFailures,
     revision: u64,
     shared: Arc<Shared>,
     listener: Option<Arc<dyn LayoutListener>>,
+    visuals: Option<Arc<crate::visual::VisualHub>>,
 }
 
 impl Worker {
-    fn new(text: &TextSystem, shared: Arc<Shared>, listener: Arc<dyn LayoutListener>) -> Self {
-        let styles = Arc::new(Mutex::new(HashMap::new()));
-        let fallback = text.measurer.clone().map(|platform| {
-            Arc::new(MeasurerBridge {
-                platform,
-                styles: styles.clone(),
-            }) as Arc<dyn zeron_text::FallbackMeasurer>
-        });
+    fn new(
+        text: &TextSystem,
+        shared: Arc<Shared>,
+        listener: Arc<dyn LayoutListener>,
+        visuals: Option<Arc<crate::visual::VisualHub>>,
+    ) -> Self {
         Self {
-            typo: Typography::new(&text.faces, fallback, styles),
+            typo: typography(text),
             cache: WidthCache::new(),
             builder: RowBuilder::default(),
             heights: HashMap::new(),
             input: TranscriptInput::default(),
             width: 0.0,
+            math: MathSettings::default(),
+            assistant_markdown: AssistantMarkdownStyle::default(),
+            math_failures: MathFailures::default(),
             revision: 0,
             shared,
             listener: Some(listener),
+            visuals,
         }
     }
 
@@ -527,21 +627,25 @@ impl Worker {
                     Msg::Viewport { width, scale } => {
                         if (scale - self.typo.scale).abs() > f32::EPSILON {
                             self.typo.scale = scale;
-                            // New sizes: every prepared paragraph is stale —
-                            // but what the user opened or folded stays so.
-                            let old = std::mem::take(&mut self.builder);
-                            self.builder.expanded = old.expanded;
-                            self.builder.collapsed = old.collapsed;
-                            self.builder.detail_open = old.detail_open;
-                            self.heights.clear();
+                            // New sizes: every prepared paragraph is stale.
+                            self.rebuild();
                             self.cache = WidthCache::new();
                         }
                         self.width = width;
                         dirty = true;
                     }
+                    Msg::Math(math) => dirty |= self.set_math(math),
+                    Msg::AssistantMarkdown(style) => dirty |= self.set_assistant_markdown_style(style),
                     Msg::ToggleDetail { row, detail, open } => {
                         self.builder.detail_open.insert(detail, !open);
                         self.builder.invalidate(row);
+                        dirty = true;
+                    }
+                    Msg::Visual(key) => {
+                        // Its row measures again from the visual's height.
+                        if let Some(key) = key {
+                            self.heights.remove(&key);
+                        }
                         dirty = true;
                     }
                     Msg::Toggle(key) => {
@@ -571,6 +675,39 @@ impl Worker {
         }
     }
 
+    /// Lay formulas out per `math` from now on; true if that changed.
+    fn set_math(&mut self, math: MathSettings) -> bool {
+        if math == self.math {
+            return false;
+        }
+        self.math = math;
+        // Formulas lay out anew (or as source); widths of the text around
+        // them still hold, so the width cache stays.
+        self.rebuild();
+        true
+    }
+
+    /// Prose-card framing for assistant markdown rows; true if that changed.
+    pub(crate) fn set_assistant_markdown_style(&mut self, style: AssistantMarkdownStyle) -> bool {
+        if self.assistant_markdown == style {
+            return false;
+        }
+        self.assistant_markdown = style;
+        self.heights.clear();
+        true
+    }
+
+    /// Drop every prepared row so the next pass rebuilds them all (with new
+    /// versions) — but what the user opened or folded stays so.
+    fn rebuild(&mut self) {
+        let old = std::mem::take(&mut self.builder);
+        self.builder.expanded = old.expanded;
+        self.builder.collapsed = old.collapsed;
+        self.builder.detail_open = old.detail_open;
+        self.builder.visual_slots = old.visual_slots;
+        self.heights.clear();
+    }
+
     fn is_open(&self, key: u64) -> bool {
         let frame = self.shared.frame.lock().unwrap().clone();
         frame
@@ -589,23 +726,43 @@ impl Worker {
             let mut ctx = Ctx {
                 typo: &mut self.typo,
                 cache: &mut self.cache,
+                math: self.math,
+                math_failures: &mut self.math_failures,
+                in_table: false,
+                math_area: 0.0,
             };
-            self.builder.build(&mut ctx, &self.input)
+            let mut placed = self.builder.build(&mut ctx, &self.input);
+            annotate_prose_card_segments(&mut placed, self.assistant_markdown);
+            placed
         };
         let px = Px(self.typo.scale);
         let mut rows = Vec::with_capacity(placed.len());
         let mut y = 0.0f32;
         let mut live = HashMap::with_capacity(placed.len());
         for p in placed {
+            let (epoch, visual) = match &p.core.content {
+                rows::Content::Visual(slot) => {
+                    if let Some(visuals) = &self.visuals {
+                        visuals.ensure(slot, p.core.key, rows::column_width(px, self.width), self.typo.scale);
+                    }
+                    slot.snapshot()
+                }
+                _ => (0, None),
+            };
             let height = match self.heights.remove(&p.core.key) {
-                Some(m) if Arc::ptr_eq(&m.core, &p.core) && m.gap == p.gap && m.width == self.width => m.height,
-                _ => place_row(&p.core, p.gap, px, self.width, None),
+                Some(m)
+                    if Arc::ptr_eq(&m.core, &p.core) && m.gap == p.gap && m.prose_segment == p.prose_segment && m.width == self.width && visual.is_none() =>
+                {
+                    m.height
+                }
+                _ => place_row(&p.core, p.gap, p.prose_segment, px, self.width, visual, self.assistant_markdown, None),
             };
             live.insert(
                 p.core.key,
                 HeightMemo {
                     core: p.core.clone(),
                     gap: p.gap,
+                    prose_segment: p.prose_segment,
                     width: self.width,
                     height,
                 },
@@ -613,8 +770,11 @@ impl Worker {
             rows.push(FrameRow {
                 core: p.core,
                 gap: p.gap,
+                prose_segment: p.prose_segment,
                 y,
                 height,
+                epoch,
+                visual,
             });
             y += height;
         }
@@ -626,6 +786,7 @@ impl Worker {
             revision: self.revision,
             width: self.width,
             scale: self.typo.scale,
+            assistant_markdown: self.assistant_markdown,
             rows,
             total,
             styles: Arc::new(self.typo.table().to_vec()),
@@ -641,4 +802,4 @@ impl Worker {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

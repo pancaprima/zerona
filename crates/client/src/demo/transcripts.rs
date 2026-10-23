@@ -408,6 +408,14 @@ fn tabs(host: &str, now: i64) -> Vec<SessionMessageEntry> {
             host,
             now - 950_000,
             vec![
+                // The chat moved from Claude Code to Codex before this turn.
+                MessagePart::Switch {
+                    id: "s0".into(),
+                    from: "Claude Code".into(),
+                    to: "Codex".into(),
+                    from_harness: Some("claude-code".into()),
+                    to_harness: Some("codex".into()),
+                },
                 tool(
                     "k1",
                     ToolCall::Search {
@@ -457,12 +465,38 @@ fn errored(host: &str, now: i64) -> Vec<SessionMessageEntry> {
             ),
             MessagePart::Error {
                 id: "e0".into(),
-                message: "Harness exited with status 1: rate limited — retry in 2m".into(),
+                message: "Harness exited with status 1: wrangler crashed before the first request".into(),
             },
         ],
     );
     failed.status = Some(MessageStatus::Aborted);
+    // The error states, oldest first: signed out, a usage limit, then a plain
+    // failure (the first two offer "Log in").
+    let mut signed_out = assistant(
+        "m2a",
+        host,
+        now - 2_500_000,
+        vec![MessagePart::Error {
+            id: "e0".into(),
+            message: "Not logged in · Please run /login".into(),
+        }],
+    );
+    signed_out.status = Some(MessageStatus::Aborted);
+    let mut limited = assistant(
+        "m2b",
+        host,
+        now - 2_250_000,
+        vec![MessagePart::Error {
+            id: "e0".into(),
+            message: "Claude usage limit reached — try again after the limit resets.".into(),
+        }],
+    );
+    limited.status = Some(MessageStatus::Aborted);
     vec![
+        user("m1a", now - 2_600_000, "Look into the flush timer wakes."),
+        signed_out,
+        user("m1b", now - 2_300_000, "Signed in — try again."),
+        limited,
         user(
             "m1",
             now - 2_100_000,
@@ -563,6 +597,49 @@ find ~/Downloads -maxdepth 1 -mtime +90 ! -name '_archive-*' \
     ]
 }
 
+fn visuals(host: &str, now: i64) -> Vec<SessionMessageEntry> {
+    let local = super::visuals::local();
+    if !local.is_empty() {
+        let mut parts = Vec::new();
+        for (i, visual) in local.iter().enumerate() {
+            parts.push(text(&format!("t{i}"), &format!("**{}**", visual.title)));
+            parts.push(MessagePart::Visual {
+                id: visual.id.clone(),
+                path: visual.path.clone(),
+                title: visual.title.clone(),
+            });
+        }
+        return vec![
+            user("m1", now - 300_000, "Show the desktop's visuals."),
+            assistant("m2", host, now - 290_000, parts),
+        ];
+    }
+    vec![
+        user("m1", now - 300_000, "Show me what visuals can do."),
+        assistant(
+            "m2",
+            host,
+            now - 290_000,
+            vec![
+                text("t0", "A canvas that follows your finger:"),
+                super::visuals::part(1),
+                text(
+                    "t1",
+                    "A scene you can orbit, with metal, glass and a light:",
+                ),
+                super::visuals::part(2),
+                text("t2", "A shader; drag to move the light."),
+                super::visuals::part(3),
+                text(
+                    "t3",
+                    "And a dashboard: switch the range, scrub the chart, and toggle the table.",
+                ),
+                super::visuals::part(0),
+            ],
+        ),
+    ]
+}
+
 fn cjk(host: &str, now: i64) -> Vec<SessionMessageEntry> {
     vec![
         user(
@@ -619,6 +696,7 @@ pub(crate) fn fixture(chat_id: &str, host: &str, last_activity: i64) -> Vec<Sess
         "chat-ios-scroll" => scroll(host, now),
         "chat-home" => home(host, now),
         "chat-cjk" => cjk(host, now),
+        "chat-visuals" => visuals(host, now),
         "chat-deploy" => short(
             host,
             now,

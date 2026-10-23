@@ -1,17 +1,16 @@
 //! WebKitGTK renders offscreen in an isolated helper process. GPUI composites
 //! its frames, so browser content uses the same clipping and blur as other UI.
 use super::model::{PageState, Presentation};
-use super::profile::BrowserProfileMode;
 use gpui::{Bounds, Pixels, RenderImage};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     io::{Read, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        atomic::{AtomicU32, Ordering},
         Arc, Mutex, Weak,
+        atomic::{AtomicU32, Ordering},
     },
 };
 use tokio::sync::mpsc::Sender;
@@ -25,22 +24,39 @@ pub enum NativeEvent {
     Menu(Value),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct BrowserData {
-    worker: Arc<Mutex<Weak<Worker>>>,
-    profile: BrowserProfileMode,
+    current: Arc<Mutex<Option<Arc<Worker>>>>,
+    profile: Option<super::profile::BrowserProfile>,
+    #[cfg(test)]
+    helper_override: Option<std::path::PathBuf>,
 }
 
 struct Worker {
     child: Mutex<Child>,
-    stdin: Mutex<ChildStdin>,
+    stdin: Mutex<Option<ChildStdin>>,
     routes: Arc<Mutex<HashMap<u32, Weak<Route>>>>,
     next_id: AtomicU32,
-    clear_waiter: Arc<Mutex<Option<tokio::sync::oneshot::Sender<Result<(), String>>>>>,
 }
 impl Drop for Worker {
     fn drop(&mut self) {
+        // EOF asks the helper to drain pending work. Closing the pipe cannot
+        // block on a hung helper, unlike writing another command to a full pipe.
+        if let Ok(stdin) = self.stdin.get_mut() {
+            stdin.take();
+        }
         if let Ok(child) = self.child.get_mut() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => return,
+                    Ok(None) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    _ => break,
+                }
+            }
+            tracing::warn!("browser helper did not shut down in time; terminating it");
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -56,18 +72,28 @@ struct Route {
 }
 
 fn helper_path() -> Result<std::path::PathBuf, String> {
-    use sha2::{Digest, Sha256};
-    const HELPER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/zeron-webkit"));
-    let hash = format!("{:x}", Sha256::digest(HELPER));
     let root = std::env::var_os("XDG_CACHE_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|p| std::path::PathBuf::from(p).join(".cache")))
         .ok_or("Could not locate the browser cache directory")?
         .join("zeron/browser");
-    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    extract_helper(&root)
+}
+
+fn extract_helper(root: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    use sha2::{Digest, Sha256};
+    const HELPER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/zeron-webkit"));
+    let hash = format!("{:x}", Sha256::digest(HELPER));
+    std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
     let path = root.join(format!("webkit-{hash}"));
     if std::fs::read(&path).ok().as_deref() != Some(HELPER) {
-        let temp = root.join(format!(".webkit-{}", std::process::id()));
+        // Different profiles can now initialize concurrently. Each extraction
+        // needs its own staging file, even within the same application process.
+        let temp = root.join(format!(
+            ".webkit-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
         let result = (|| -> std::io::Result<()> {
             let mut f = std::fs::OpenOptions::new()
                 .write(true)
@@ -87,32 +113,57 @@ fn helper_path() -> Result<std::path::PathBuf, String> {
         .map_err(|e| e.to_string())?;
     Ok(path)
 }
+
+fn read_startup(stdout: &mut impl Read) -> Result<(), String> {
+    let mut header = [0u8; 9];
+    stdout.read_exact(&mut header).map_err(|error| {
+        format!(
+            "Browser helper could not start: {error}. Check the WebKitGTK 4.1 runtime and display."
+        )
+    })?;
+    let length = u32::from_le_bytes(header[5..9].try_into().unwrap()) as usize;
+    if length > 16384 || header[1..5] != [0; 4] {
+        return Err("Invalid browser startup response".into());
+    }
+    let mut message = vec![0; length];
+    stdout
+        .read_exact(&mut message)
+        .map_err(|error| error.to_string())?;
+    match header[0] {
+        b'R' if message.is_empty() => Ok(()),
+        b'E' => Err(String::from_utf8_lossy(&message).into_owned()),
+        _ => Err("Invalid browser startup response".into()),
+    }
+}
+
 impl BrowserData {
-    pub fn new(profile: BrowserProfileMode) -> Self {
+    pub fn for_profile(profile: super::profile::BrowserProfile) -> Self {
+        // One live helper per profile, shared across all windows in this process.
+        type SharedWorker = Mutex<Option<Arc<Worker>>>;
+        static PROFILES: std::sync::OnceLock<
+            Mutex<HashMap<std::path::PathBuf, Weak<SharedWorker>>>,
+        > = std::sync::OnceLock::new();
+        let mut profiles = PROFILES.get_or_init(Default::default).lock().unwrap();
+        profiles.retain(|_, worker| worker.strong_count() > 0);
+        let current = profiles
+            .get(&profile.root)
+            .and_then(Weak::upgrade)
+            .unwrap_or_else(|| {
+                let current = Arc::new(Mutex::new(None));
+                profiles.insert(profile.root.clone(), Arc::downgrade(&current));
+                current
+            });
         Self {
-            worker: Arc::new(Mutex::new(Weak::new())),
-            profile,
+            profile: Some(profile),
+            current,
+            #[cfg(test)]
+            helper_override: None,
         }
     }
-
-    pub fn clear_website_data(&self, cx: &gpui::App) -> gpui::Task<Result<(), String>> {
-        let data = self.clone();
-        cx.spawn(async move |_cx| {
-            let worker = data.worker()?;
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            *worker.clear_waiter.lock().unwrap() = Some(tx);
-            worker.send_global(json!({"cmd": "clear-data"}))?;
-            match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
-                Ok(Ok(result)) => result,
-                Ok(Err(_)) => Err("Browser helper stopped during clear".into()),
-                Err(_) => Err("Browser data clear timed out".into()),
-            }
-        })
-    }
-
+    /// Blocking initialization, called only by the dedicated startup thread.
     fn worker(&self) -> Result<Arc<Worker>, String> {
-        let mut current = self.worker.lock().unwrap();
-        if let Some(worker) = current.upgrade() {
+        let mut current = self.current.lock().unwrap();
+        if let Some(worker) = current.as_ref() {
             if worker
                 .child
                 .lock()
@@ -121,32 +172,47 @@ impl BrowserData {
                 .map_err(|e| e.to_string())?
                 .is_none()
             {
-                return Ok(worker);
+                return Ok(worker.clone());
             }
         }
-        let mut command = Command::new(helper_path()?);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        if let BrowserProfileMode::Persistent(storage) = &self.profile {
-            storage
-                .ensure_directories()
-                .map_err(|error| error.to_string())?;
-            command.env("ZERON_BROWSER_DATA_DIR", storage.webkit_data_dir());
-            command.env("ZERON_BROWSER_CACHE_DIR", storage.webkit_cache_dir());
+        #[cfg(test)]
+        let executable = self
+            .helper_override
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(helper_path)?;
+        #[cfg(not(test))]
+        let executable = helper_path()?;
+        let mut command = Command::new(executable);
+        if let Some(profile) = &self.profile {
+            command.arg("--profile").arg(&profile.root);
         }
-        let mut child = command
-            .spawn()
+        let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn()
             .map_err(|e| format!("Could not start WebKitGTK: {e}. Install the WebKitGTK 4.1 runtime for your distribution."))?;
         let stdin = child.stdin.take().unwrap();
-        let mut stdout = child.stdout.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        // Report startup/storage failures on the page instead of silently opening
+        // an ephemeral session. Bound the wait if the display/runtime hangs.
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let mut stdout = stdout;
+            let result = read_startup(&mut stdout).map(|_| stdout);
+            let _ = ready_tx.send(result);
+        });
+        let mut stdout = match ready_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(Ok(stdout)) => stdout,
+            result => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(match result {
+                    Ok(Err(error)) => error,
+                    Err(error) => format!("Browser startup did not complete: {error}"),
+                    _ => unreachable!(),
+                });
+            }
+        };
         let routes: Arc<Mutex<HashMap<u32, Weak<Route>>>> = Arc::default();
         let reader_routes = routes.clone();
-        let clear_waiter = Arc::new(Mutex::new(
-            None::<tokio::sync::oneshot::Sender<Result<(), String>>>,
-        ));
-        let reader_clear = clear_waiter.clone();
         std::thread::Builder::new().name("browser-frames".into()).spawn(move || {
             let result = (|| -> std::io::Result<()> {
                 loop {
@@ -155,18 +221,6 @@ impl BrowserData {
                     let length = u32::from_le_bytes(header[5..9].try_into().unwrap()) as usize;
                     if length > 8192 * 8192 * 4 + 12 { return Err(std::io::Error::other("Browser packet is too large")); }
                     let mut data = vec![0; length]; stdout.read_exact(&mut data)?;
-                    if header[0] == b'D' {
-                        if let Some(tx) = reader_clear.lock().unwrap().take() {
-                            let message = String::from_utf8_lossy(&data);
-                            let result = if message.starts_with("err:") {
-                                Err(message.to_string())
-                            } else {
-                                Ok(())
-                            };
-                            let _ = tx.send(result);
-                        }
-                        continue;
-                    }
                     let route = reader_routes.lock().unwrap().get(&id).and_then(Weak::upgrade);
                     let Some(route) = route else { continue; };
                     let event = match header[0] {
@@ -209,9 +263,6 @@ impl BrowserData {
                 }
             })();
             if result.is_err() {
-                if let Some(tx) = reader_clear.lock().unwrap().take() {
-                    let _ = tx.send(Err("Browser helper stopped during clear".into()));
-                }
                 for route in reader_routes.lock().unwrap().values().filter_map(Weak::upgrade) {
                     let mut state = route.state.lock().unwrap();
                     state.loading = false;
@@ -222,12 +273,11 @@ impl BrowserData {
         }).map_err(|e| e.to_string())?;
         let worker = Arc::new(Worker {
             child: Mutex::new(child),
-            stdin: Mutex::new(stdin),
+            stdin: Mutex::new(Some(stdin)),
             routes,
             next_id: AtomicU32::new(1),
-            clear_waiter,
         });
-        *current = Arc::downgrade(&worker);
+        *current = Some(worker.clone());
         Ok(worker)
     }
 }
@@ -235,14 +285,11 @@ impl Worker {
     fn send(&self, id: u32, mut command: Value) -> Result<(), String> {
         command["id"] = id.into();
         let data = serde_json::to_vec(&command).map_err(|e| e.to_string())?;
-        let mut pipe = self.stdin.lock().unwrap();
+        let mut stdin = self.stdin.lock().unwrap();
+        let pipe = stdin.as_mut().ok_or("Browser helper is shutting down")?;
         pipe.write_all(&(data.len() as u32).to_le_bytes())
             .and_then(|_| pipe.write_all(&data))
             .map_err(|e| e.to_string())
-    }
-
-    fn send_global(&self, command: Value) -> Result<(), String> {
-        self.send(0, command)
     }
 }
 
@@ -262,11 +309,26 @@ pub struct NativePage {
     pub pressed: std::cell::Cell<Option<gpui::MouseButton>>,
 }
 impl NativePage {
-    pub fn new(
-        _: &gpui::Window,
-        data: &BrowserData,
+    /// Extract, spawn and handshake entirely off the UI thread. Concurrent
+    /// tabs wait for their shared profile's worker here, never in navigation.
+    pub fn start(
+        data: BrowserData,
         tx: Sender<NativeEvent>,
-    ) -> Result<Self, String> {
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<Self, String>>, String> {
+        let (ready, result) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("browser-startup".into())
+            .spawn(move || {
+                let page = Self::new(&data, tx);
+                // If the tab was closed, send returns the page and drops it on
+                // this thread. The UI never waits for an abandoned startup.
+                let _ = ready.send(page);
+            })
+            .map_err(|error| format!("Could not start browser initialization: {error}"))?;
+        Ok(result)
+    }
+
+    fn new(data: &BrowserData, tx: Sender<NativeEvent>) -> Result<Self, String> {
         let worker = data.worker()?;
         let id = worker.next_id.fetch_add(1, Ordering::Relaxed);
         let route = Arc::new(Route {
@@ -370,6 +432,44 @@ impl Drop for NativePage {
 }
 
 impl super::BrowserSurface {
+    pub(super) fn start_linux_page(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> Result<(), String> {
+        if self.native_startup.is_some() {
+            // navigate() has already updated page.url. Use that latest address
+            // when startup completes instead of starting a second helper.
+            return Ok(());
+        }
+        let ready = NativePage::start(self.context.data.clone(), self.native_tx.clone())?;
+        self.native_startup = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = ready
+                .await
+                .unwrap_or_else(|_| Err("Browser initialization stopped unexpectedly".into()));
+            let _ = this.update_in(cx, |this, _, cx| {
+                this.native_startup = None;
+                let result = result.and_then(|mut native| {
+                    native.present(this.presentation);
+                    let result = this
+                        .page
+                        .url
+                        .as_deref()
+                        .map_or(Ok(()), |url| native.load(url));
+                    this.native = Some(native);
+                    result
+                });
+                this.page.loading = result.is_ok();
+                if let Err(error) = result {
+                    this.page.error = Some(format!("Could not open this page: {error}"));
+                }
+                cx.emit(super::BrowserEvent::Changed);
+                cx.notify();
+            });
+        }));
+        Ok(())
+    }
+
     pub(super) fn on_native_event(
         &mut self,
         event: NativeEvent,
@@ -694,7 +794,7 @@ impl super::BrowserSurface {
         cx: &mut gpui::Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let theme = &theme.for_popup();
-        use gpui::{div, prelude::*, px, IntoElement};
+        use gpui::{IntoElement, div, prelude::*, px};
         let native = self.native.as_ref()?;
         let menu = native.menu.as_ref()?;
         let items = menu["items"].as_array()?;
@@ -738,3 +838,50 @@ impl super::BrowserSurface {
         ))
     }
 }
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+
+    #[test]
+    fn startup_surfaces_storage_errors_and_rejects_invalid_packets() {
+        assert!(read_startup(&mut &b"R\0\0\0\0\0\0\0\0"[..]).is_ok());
+        let mut packet = b"E\0\0\0\0".to_vec();
+        packet.extend_from_slice(&6u32.to_le_bytes());
+        packet.extend_from_slice(b"locked");
+        assert_eq!(read_startup(&mut packet.as_slice()), Err("locked".into()));
+        assert!(read_startup(&mut &b"R\0"[..]).is_err());
+        assert!(read_startup(&mut &b"R\0\0\0\0\xff\xff\xff\xff"[..]).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires a real WebKitGTK runtime and display (xvfb-run)"]
+    fn profile_contexts_share_a_live_helper_and_release_its_lock_on_shutdown() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = super::super::profile::BrowserProfile::for_workspace(
+            root.path(),
+            Some(zeron_proto::WorkspaceScope::Local),
+            None,
+            Some("device"),
+        )
+        .unwrap();
+        let first = BrowserData::for_profile(profile.clone());
+        let second = BrowserData::for_profile(profile.clone());
+        let pid = first.worker().unwrap().child.lock().unwrap().id();
+        // No page owns the worker. The profile keeps it alive between tabs.
+        assert_eq!(pid, first.worker().unwrap().child.lock().unwrap().id());
+        assert_eq!(pid, second.worker().unwrap().child.lock().unwrap().id());
+        drop(first);
+        assert_eq!(pid, second.worker().unwrap().child.lock().unwrap().id());
+        drop(second);
+        // Immediate reopening must acquire the released process lock.
+        let reopened = BrowserData::for_profile(profile);
+        let worker = reopened.worker().unwrap();
+        assert_ne!(pid, worker.child.lock().unwrap().id());
+        drop(worker);
+        drop(reopened);
+    }
+}
+
+#[cfg(test)]
+mod startup_tests;

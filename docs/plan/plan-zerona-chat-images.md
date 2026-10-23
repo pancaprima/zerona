@@ -1,5 +1,10 @@
 # Plan: images in chat (remote paths + URLs)
 
+## Integration status (2026-10-23)
+- Upstream sync **PR31** merged on fork `main` at `a5fc4a1bd5b6b1a6984bd0d31d8d552d5589fffe`.
+- **PR20** merge onto `feat/chat-images` (`origin/main` `--no-commit`): three manual conflicts resolved (`crates/engine/src/rpc.rs`, `crates/rpc/src/lib.rs`, `scripts/ci/test-core.sh`) as a **full union** with synced upstream (Cloud/Vault/GitHub, `RelayAgentLoginCallback`, `PublishVisual`, large RPC fragmentation). Parent still stages, commits, and runs CI.
+- `test-core.sh` registers `device_routing` (ReadChatImage relay) and `osc7501` (upstream) alongside existing `content_index` and the prior engine integration list.
+
 ## Goal
 In the chat transcript, show images from:
 1. File paths that live on the chat's owner device (e.g. a Linux VPS) while the user views the chat in the Mac app.
