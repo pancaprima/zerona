@@ -5,18 +5,53 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import sh.zeron.zerona.app.AppModel
+import sh.zeron.zerona.fcm.Notifications
 import sh.zeron.zerona.ui.ZeronaApp
 
 class MainActivity : ComponentActivity() {
     private lateinit var appModel: AppModel
 
+    private var postNotificationsPermissionRequested = false
+
+    private val postNotificationsPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        Notifications.ensureSessionsChannel(applicationContext)
         appModel =
             ViewModelProvider(this, AppModel.factory(applicationContext))[AppModel::class.java]
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                appModel.state
+                    .map { state ->
+                        state.signedIn to (state.signedIn && !state.isDemo)
+                    }
+                    .distinctUntilChanged()
+                    .collect { (signedIn, shouldRequest) ->
+                        if (!signedIn) {
+                            postNotificationsPermissionRequested = false
+                        }
+                        if (shouldRequest && !postNotificationsPermissionRequested) {
+                            postNotificationsPermissionRequested = true
+                            Notifications.requestPostNotificationsPermission(
+                                this@MainActivity,
+                                postNotificationsPermissionLauncher,
+                            )
+                        }
+                    }
+            }
+        }
         if (savedInstanceState == null) {
             deliverAuthIntent(intent)
         }

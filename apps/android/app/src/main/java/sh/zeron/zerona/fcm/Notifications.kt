@@ -10,7 +10,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.result.ActivityResultLauncher
-import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -78,14 +77,6 @@ object Notifications {
         launcher: ActivityResultLauncher<String>,
     ) {
         if (!shouldRequestPostNotificationsPermission(activity)) return
-        if (ActivityCompat.shouldShowRequestPermissionRationale(
-                activity,
-                Manifest.permission.POST_NOTIFICATIONS,
-            )
-        ) {
-            launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            return
-        }
         launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
