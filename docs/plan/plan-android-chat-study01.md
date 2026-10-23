@@ -87,12 +87,15 @@ One row = one top-level markdown block (`RowKind::Markdown`), not whole messages
 | `TranscriptColorTokensProseCardTest` (`proseCardFillContrastsWithBoardBackground`, `proseCardBorderIsScopedHairlineNotOutlineVariant`) | `scripts/android/test-design-helpers.py` + `:app:testDebugUnitTest` |
 | `python3 scripts/android/test-design-helpers.py` | Cheap JVM: design tokens, contrast (incl. prose card AA), composer presentation, `TranscriptColorTokensProseCardTest`; needs populated `--cache-dir` (kotlin-stdlib etc.) |
 
-**VPS verification (2026-10-23):** `GRADLE_USER_HOME=/root/.gradle python3 scripts/android/test-design-helpers.py --cache-dir /root/.hermes/profiles/girlfriend/cache/scratch/zerona-jvm` — **42** JUnit methods OK (`ZeronaColorTokensTest`, `ContrastTest`, `TranscriptColorTokensProseCardTest`, `ComposerPresentationTest`). `apps/android/scripts/selfcheck-native-transcript.sh` — OK (**122** `@Test` in **14** classes; `apps/android/README.md` + `plan-android-native-transcript.md` inventory aligned). Rust `cargo test -p zeron-mobile` and Gradle `:app:testDebugUnitTest` **not** run on VPS (parent gates).
+**VPS verification (2026-10-23):** `GRADLE_USER_HOME=/root/.gradle python3 scripts/android/test-design-helpers.py --cache-dir /root/.hermes/profiles/girlfriend/cache/scratch/zerona-jvm` — **42** JUnit methods OK (`ZeronaColorTokensTest`, `ContrastTest`, `TranscriptColorTokensProseCardTest`, `ComposerPresentationTest`). `apps/android/scripts/selfcheck-native-transcript.sh` — OK (**122** `@Test` in **14** classes; `apps/android/README.md` + `plan-android-native-transcript.md` inventory aligned). Gradle `:app:testDebugUnitTest` **not** run on VPS (parent gate).
+
+**CI `ios-core` (2026-10-23, merge `e7ea7688` into study01 base; log `zerona-chat-ioscore-second.log`):** `cargo test -p zeron-mobile` — **100 passed**, **0 failed**, **1 ignored** (`layout::tests::bench_layout_passes`). All study01 layout regressions in the table above ran green (prose card geometry, style/version/cache, streaming, table/tools/copy). Job failed only on committed Swift bindings drift (`diff -u` vs runner `uniffi-bindgen` output).
 
 ## iOS bindings gate
 
-- **Workflow:** `scripts/ios/build-core.sh` runs `uniffi-bindgen` and copies to `apps/ios/Zeron/Core/Generated/zeron_core.swift` (see script header).
-- **Current gap:** committed `zeron_core.swift` ends at `ColorRole.diffHunk` — **no** `proseCard` / `proseCardBorder` or `AssistantMarkdownStyle`. `Palette.swift` already switches those cases ⇒ **iOS compile fails until regen** (`scripts/ios/build-core.sh` after core build).
+- **Workflow:** `scripts/ios/build-core.sh` runs `uniffi-bindgen` and copies to `apps/ios/Zeron/Core/Generated/zeron_core.swift` (see script header). Linux `ios-core` compares committed Swift to fresh generator output.
+- **Bindings sync (worktree, from CI generator diff):** Applied the **164-line** patch captured from the failing `ios-core` step (7 hunks: `AssistantMarkdownStyle`, `TranscriptView::setAssistantMarkdownStyle`, `ColorRole::proseCard` / `proseCardBorder`, checksum **45724**). Source: `zerona-chat-generated-swift.patch` (not local `cargo`/`uniffi-bindgen`). `git diff --check` reports **generator trailing whitespace** on added lines — preserved byte-for-byte.
+- **Still pending:** macOS **iOS compile** / simulator workflow (Xcode link against `target/ios-core/*`); bindings file alone does not prove app build.
 - **Android:** Kotlin UniFFI stubs come from `scripts/android/build-core.sh` on CI/dev machines (not vendored in repo).
 
 ## Rollback
@@ -102,7 +105,8 @@ One row = one top-level markdown block (`RowKind::Markdown`), not whole messages
 
 ## Remaining parent gates
 
-- `cargo test -p zeron-mobile` (all new layout regressions).
+- `cargo test -p zeron-mobile` — **passed** on CI `ios-core` at `e7ea7688` (see above).
+- Commit refreshed `zeron_core.swift` so `ios-core` bindings `diff` is clean; then macOS iOS build/test jobs.
 - `scripts/android/build-core.sh` + `gradle -p apps/android :app:testDebugUnitTest`.
 - Device/emulator parity vs `chat-study01.png` (white cards on board, code stage, tools).
 - Live tail / `ModelKey` cache under style toggle on device.
