@@ -142,16 +142,20 @@ Poin penting hasil baca source:
 
 ## 5. Prasyarat & keputusan terbuka
 
-1. **[BLOKIR] Self-host edge.** Edge yang dipakai fork sekarang `edge.zeron.sh` (shared
-   upstream). Service account FCM harus di-deploy ke edge yang kita kontrol. Ada plan
-   `docs/plan/plan-edge-selfhost.md` (draft v2, belum dieksekusi). **Keputusan**: apakah
-   FCM ikut self-host edge (rekomendasi), atau ada akses edge lain?
-2. **[BLOKIR] Firebase project.** Butuh akun Google user untuk membuat project + Android
-   app (`sh.zeron.zerona`) + service account key. User yang setup (dia pegang akunnya).
-3. **[Keputusan desain] FFI contract** — Opsi A (method baru, rekomendasi) vs Opsi B
-   (generic-ize, breaking iOS).
-4. **[Keputusan kecil] `google-services.json`** di-commit ke repo (default Firebase untuk
-   Android, isinya non-secret) — confirm.
+1. **[SELESAI] Self-host edge.** Edge `zerona-edge.pancaprima8.workers.dev` udah live (Workers Paid + R2 + WorkOS production). Prasyarat FCM credential tinggal nunggu Firebase project.
+2. **[BLOKIR] Firebase project.** Butuh akun Google user untuk membuat project + Android app (`sh.zeron.zerona`) + service account key (buat FCM HTTP v1). User yang setup.
+3. **[Keputusan desain] FFI contract** — Opsi A (method baru, rekomendasi) vs Opsi B (generic-ize).
+4. **[SELESAI] `google-services.json`** di-commit ke repo — confirm.
+
+## 5b. Android connect ke edge baru (bake, bagian dari scope "gabung FCM")
+
+Self-host edge udah jalan di production, jadi Android harus nunjuk ke edge baru, bukan `edge.zeron.sh`. Mobile nggak baca env var (pakai hardcoded production default), jadi harus di-**bake** di fork:
+
+- `crates/client/src/auth.rs` — `PRODUCTION_EDGE_URL` → `https://zerona-edge.pancaprima8.workers.dev`, `WORKOS_CLIENT_ID` → `client_01M5MQRDER15D2DWMP40MCRXRH`. (WAJIB buat Android — dipakai mobile FFI `auth_production_edge_url()` + authorize URL.)
+- `apps/zeron/src/main.rs` — `DEFAULT_EDGE_URL` + `DEFAULT_WORKOS_CLIENT_ID` (desktop default; env var tetap menang).
+- `apps/ios/Zeron/Shell/SignInViewController.swift` — `edgeURL` + `workosClientId` (iOS native shell).
+
+`zeron://callback` udah ke-register di WorkOS production, jadi login Android jalan tanpa perubahan redirect.
 
 ---
 
