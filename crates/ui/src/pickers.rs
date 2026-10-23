@@ -3079,17 +3079,6 @@ impl Pickers {
                         cloud: false,
                     }
                 })
-                .chain(
-                    // Cloud, while it's on and reaches the project's repository.
-                    state.cloud_repo_for(space).map(|_| DeviceRow {
-                        device_id: zeron_proto::CLOUD_ACCOUNTS_DEVICE.to_string(),
-                        name: crate::cloud::CLOUD_LABEL.to_string(),
-                        space: None,
-                        detail: None,
-                        home: false,
-                        cloud: true,
-                    }),
-                )
                 .collect();
             let mut devices: Vec<&zeron_proto::Device> = state.devices.iter().collect();
             devices.sort_by_key(|d| {
@@ -3107,6 +3096,16 @@ impl Pickers {
                 home: true,
                 cloud: false,
             }));
+            if state.cloud_repo_for(space).is_some() {
+                rows.push(DeviceRow {
+                    device_id: zeron_proto::CLOUD_ACCOUNTS_DEVICE.to_string(),
+                    name: crate::cloud::CLOUD_LABEL.to_string(),
+                    space: None,
+                    detail: None,
+                    home: false,
+                    cloud: true,
+                });
+            }
             return rows;
         }
         // Cloud's per-session machines are not pickable.
@@ -8080,20 +8079,41 @@ mod tests {
         });
         handle
             .update(cx, |pickers, _, cx| {
-                let devices = |pickers: &Pickers, cx: &App| {
+                let device_rows = |pickers: &Pickers, cx: &App| {
                     pickers
                         .device_rows(cx)
                         .into_iter()
-                        .map(|row| (row.name, row.cloud))
+                        .map(|row| {
+                            (
+                                row.name,
+                                row.home,
+                                row.cloud,
+                                row.space.as_ref().map(|s| s.id.clone()),
+                            )
+                        })
                         .collect::<Vec<_>>()
                 };
+                let checkout_studio = (
+                    "Studio".to_string(),
+                    false,
+                    false,
+                    Some("app".into()),
+                );
+                let home_studio = ("Studio".to_string(), true, false, None);
+                let cloud_row_tuple = ("Cloud".to_string(), false, true, None);
                 // Off: no Cloud anywhere, even with its repositories known.
-                assert_eq!(devices(pickers, cx), [("Studio".to_string(), false)]);
+                assert_eq!(
+                    device_rows(pickers, cx),
+                    [checkout_studio.clone(), home_studio.clone()]
+                );
                 pickers
                     .state
                     .update(cx, |state, _| state.cloud_status = Some(cloud_on(120.0)));
                 // Signed out, even a (stale) Cloud-on status offers no Cloud.
-                assert_eq!(devices(pickers, cx), [("Studio".to_string(), false)]);
+                assert_eq!(
+                    device_rows(pickers, cx),
+                    [checkout_studio.clone(), home_studio.clone()]
+                );
                 pickers.state.update(cx, |state, _| {
                     state.auth = Some(zeron_proto::AuthState::SignedIn {
                         user: zeron_proto::UserProfile {
@@ -8105,10 +8125,14 @@ mod tests {
                     })
                 });
                 // On, and the origin names a repository Cloud reaches (any
-                // case): a device row, never a checkout kind.
+                // case): checkout, home, then Cloud last — never a checkout kind.
                 assert_eq!(
-                    devices(pickers, cx),
-                    [("Studio".to_string(), false), ("Cloud".to_string(), true)]
+                    device_rows(pickers, cx),
+                    [
+                        checkout_studio.clone(),
+                        home_studio.clone(),
+                        cloud_row_tuple.clone(),
+                    ]
                 );
                 assert!(
                     pickers
@@ -8116,11 +8140,22 @@ mod tests {
                         .iter()
                         .all(|(kind, ..)| *kind != CheckoutKind::Cloud)
                 );
+                let home_row = pickers.device_rows(cx)[1].clone();
+                pickers.pick_device_row(home_row, cx);
+                assert!(pickers.state.read(cx).no_project);
+                assert!(pickers.state.read(cx).selected_space.is_none());
+                assert_eq!(
+                    pickers.state.read(cx).effective_device_id().as_deref(),
+                    Some("mac")
+                );
+                pickers.state.update(cx, |state, cx| {
+                    state.select_space(Some("app".into()), cx);
+                });
                 let cloud_row = pickers.device_rows(cx).pop().unwrap();
                 pickers.pick_device_row(cloud_row, cx);
                 pickers.config.branch = Some("dev".into());
                 assert!(pickers.runs_on_cloud(cx));
-                assert_eq!(pickers.selected_device_index(cx), 1);
+                assert_eq!(pickers.selected_device_index(cx), 2);
                 assert_eq!(pickers.ref_label(), SharedString::from("From dev"));
                 assert_eq!(
                     pickers.session_checkout_plan(cx),
@@ -8140,7 +8175,18 @@ mod tests {
                 pickers.state.update(cx, |state, _| {
                     state.selected_space = Some("other".into());
                 });
-                assert_eq!(devices(pickers, cx).len(), 1);
+                assert_eq!(
+                    device_rows(pickers, cx),
+                    [
+                        (
+                            "Studio".to_string(),
+                            false,
+                            false,
+                            Some("other".into()),
+                        ),
+                        home_studio.clone(),
+                    ]
+                );
                 assert!(!pickers.runs_on_cloud(cx));
                 assert_eq!(
                     pickers.session_checkout_plan(cx),
