@@ -2101,3 +2101,51 @@ fn markdown_inline_image_row_cap_is_sixteen() {
     assert_eq!(image_widget_refs(&d).len(), 16);
     assert_eq!(d.copy_text, md);
 }
+
+#[test]
+fn errors_render_as_cards_with_a_log_in_button_when_signing_in_fixes_them() {
+    use zeron_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
+    let error = |id: &str, message: &str| {
+        Arc::new(SessionMessageEntry {
+            id: id.into(),
+            role: MessageRole::Assistant,
+            parts: vec![MessagePart::Error { id: "e".into(), message: message.into() }],
+            created_at: 0,
+            device_id: String::new(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+            duration_ms: None,
+        })
+    };
+    let mut w = worker(390.0);
+    let mut input = debug_input(Vec::new(), false);
+    input.entries = vec![
+        error("signed-out", "Claude Code isn't signed in on Cloud. Sign in with Claude, then send again."),
+        error("limited", "Claude usage limit reached — try again after the limit resets."),
+        error("other", "Claude is overloaded right now — try again shortly."),
+    ];
+    w.input = input;
+    let frame = w.pass();
+    for (i, wants_button) in [(0, true), (1, true), (2, false)] {
+        let d = frame.display(i).unwrap();
+        // The card: a red wash under lighter red text.
+        assert!(d.boxes.iter().any(|b| b.color == display::ColorRole::DangerWash), "row {i}");
+        assert!(d.runs.iter().all(|r| r.color == display::ColorRole::DangerSoft), "row {i}");
+        let actions: Vec<_> = d
+            .widgets
+            .iter()
+            .filter_map(|w| match &w.kind {
+                display::WidgetKind::Action { action, label } => Some((action.as_str(), label.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(actions.is_empty(), !wants_button, "row {i}: {actions:?}");
+        if wants_button {
+            assert_eq!(actions, [("sign-in", "Log in")]);
+            // The button trails the text, never under it.
+            let button = d.widgets.iter().find(|w| matches!(w.kind, display::WidgetKind::Action { .. })).unwrap();
+            let text_right = d.runs.iter().map(|r| r.x + r.width).fold(0.0, f32::max);
+            assert!(button.x > text_right, "row {i}: button at {} beside text ending {text_right}", button.x);
+        }
+    }
+}

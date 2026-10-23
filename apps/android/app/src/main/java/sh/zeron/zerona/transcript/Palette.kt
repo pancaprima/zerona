@@ -144,6 +144,8 @@ object Palette {
             ColorRole.DIFF_DEL_BAR -> dynamic(0xDC2626, 0xF87171, 0.55f)
             ColorRole.DIFF_HUNK ->
                 if (dark) Color.argb(20, 0xB8, 0xA0, 0xF0) else Color.argb(18, 0x7B, 0x5F, 0xD4)
+            ColorRole.DANGER_WASH -> dynamic(0xDC2626, 0xF87171, 0.08f)
+            ColorRole.DANGER_SOFT -> dynamic(0xB91C1C, 0xFCA5A5)
         }
     }
 
