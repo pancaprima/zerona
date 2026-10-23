@@ -45,6 +45,7 @@ PRODUCTION_SOURCES = [
     "apps/android/app/src/main/java/sh/zeron/zerona/ui/theme/TranscriptColorTokens.kt",
     "apps/android/app/src/main/java/sh/zeron/zerona/ui/theme/Contrast.kt",
     "apps/android/app/src/main/java/sh/zeron/zerona/ui/ComposerPresentation.kt",
+    "apps/android/app/src/main/java/sh/zeron/zerona/ui/ModelLabelPresentation.kt",
 ]
 
 TEST_SOURCES = [
@@ -52,6 +53,7 @@ TEST_SOURCES = [
     "apps/android/app/src/test/java/sh/zeron/zerona/ui/theme/ContrastTest.kt",
     "apps/android/app/src/test/java/sh/zeron/zerona/ui/theme/TranscriptColorTokensProseCardTest.kt",
     "apps/android/app/src/test/java/sh/zeron/zerona/ui/ComposerPresentationTest.kt",
+    "apps/android/app/src/test/java/sh/zeron/zerona/ui/ModelLabelPresentationTest.kt",
 ]
 
 TEST_CLASSES = [
@@ -59,6 +61,7 @@ TEST_CLASSES = [
     "sh.zeron.zerona.ui.theme.ContrastTest",
     "sh.zeron.zerona.ui.theme.TranscriptColorTokensProseCardTest",
     "sh.zeron.zerona.ui.ComposerPresentationTest",
+    "sh.zeron.zerona.ui.ModelLabelPresentationTest",
 ]
 
 

@@ -40,6 +40,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.background
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import sh.zeron.zerona.transcript.Palette
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.contentDescription
@@ -72,6 +73,11 @@ fun SessionScreen(
         viewModel.refreshHydration()
     }
 
+    val workspaceTick by appModel.workspaceTick.collectAsState()
+    LaunchedEffect(workspaceTick) {
+        viewModel.refreshModelLabel()
+    }
+
     val appState by appModel.state.collectAsState()
     val showLoadingShell = state.loading && state.frameTick == 0L && state.error == null
 
@@ -83,13 +89,32 @@ fun SessionScreen(
                         containerColor = MaterialTheme.colorScheme.surface,
                     ),
                 title = {
-                    Text(
-                        state.title.ifBlank { "Session" },
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                    )
+                    Column {
+                        Text(
+                            state.title.ifBlank { "Session" },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (!isLab) {
+                            val modelLabel = state.modelLabel
+                            if (modelLabel != null) {
+                                Text(
+                                    modelLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier =
+                                        Modifier.semantics {
+                                            contentDescription = "Model: $modelLabel"
+                                        },
+                                )
+                            }
+                        }
+                    }
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {

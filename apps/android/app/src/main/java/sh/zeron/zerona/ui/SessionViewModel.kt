@@ -61,6 +61,7 @@ data class ComposerStripState(
 
 data class SessionUiState(
     val title: String = "",
+    val modelLabel: String? = null,
     val loading: Boolean = true,
     val error: String? = null,
     val draftText: String = "",
@@ -87,6 +88,7 @@ class SessionViewModel(
     private val isLab = chatId == TranscriptLab.CHAT_ID
     private val labEntries = mutableListOf<DebugEntry>()
     private var labStreamJob: Job? = null
+    private var modelLabelRefreshJob: Job? = null
     @Volatile
     private var engineLive = false
 
@@ -246,6 +248,7 @@ class SessionViewModel(
                 engineLive = true
                 refreshComposer()
                 refreshHydration()
+                refreshModelLabel()
             }
             applyViewportIfReady()
             transcriptHost?.bind(tv, transcriptActions)
@@ -263,6 +266,32 @@ class SessionViewModel(
             handle = null
             _state.update { it.copy(loading = false, error = formatCoreError(e)) }
         }
+    }
+
+    fun refreshModelLabel() {
+        if (isLab) return
+        val core = appModel.client ?: return
+        modelLabelRefreshJob?.cancel()
+        modelLabelRefreshJob =
+            viewModelScope.launch {
+                try {
+                    val label =
+                        withContext(Dispatchers.Default) {
+                            val row = core.sessionRow(chatId)
+                            formatModelLabel(
+                                row?.modelLabel,
+                                row?.model,
+                                row?.harnessLabel,
+                                row?.reasoning,
+                            )
+                        }
+                    if (handle == null) return@launch
+                    _state.update { it.copy(modelLabel = label) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                }
+            }
     }
 
     private fun releaseTranscriptEngine(
@@ -552,6 +581,8 @@ class SessionViewModel(
 
     override fun onCleared() {
         engineLive = false
+        modelLabelRefreshJob?.cancel()
+        modelLabelRefreshJob = null
         messageActionsController?.close()
         messageActionsController = null
         sessionImageLoader.close()
