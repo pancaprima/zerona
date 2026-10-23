@@ -1095,7 +1095,7 @@ fn switch_row(ctx: &mut Ctx, entry_id: &str, part_id: &str, from: (&str, Option<
         content: Content::Chip(Chip {
             icon: "arrow.left.arrow.right",
             color: ColorRole::TextTertiary,
-            text: PText { p, lh, base: super::style::baseline(lh, style), paints, links: Vec::new(), chip: (0.0, 0.0), badges: Vec::new(), marks, math: Vec::new() },
+            text: PText { p, lh, base: super::style::baseline(lh, style), paints, links: Vec::new(), chip: (0.0, 0.0), badges: Vec::new(), marks, math: Vec::new(), images: Vec::new() },
         }),
         copy_text,
     }
