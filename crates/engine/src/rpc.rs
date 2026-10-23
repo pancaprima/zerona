@@ -1222,6 +1222,17 @@ impl EngineRpc {
 
     /// Accept only a checkout already named by a local chat or contained in a
     /// local space. Remote clients must not turn this RPC into an arbitrary path probe.
+    fn chat_media(&self) -> crate::chat_media::ChatMedia {
+        crate::chat_media::ChatMedia::new(
+            self.doc_host.device_id().to_string(),
+            self.workspace.clone(),
+            self.uploads.clone(),
+            self.repos.clone(),
+            self.doc_host.clone(),
+            self.sessions.clone(),
+        )
+    }
+
     async fn change_request_root(&self, cwd: &str) -> Result<std::path::PathBuf, RpcError> {
         let requested = std::path::PathBuf::from(cwd);
         let local_device = self.doc_host.device_id();
@@ -2031,6 +2042,8 @@ fn forwardable(method: &str) -> bool {
             | methods::UPLOAD_CHUNK
             | methods::UPLOAD_COMMIT
             | methods::READ_ATTACHMENT_CHUNK
+            | methods::READ_CHAT_IMAGE
+            | methods::FETCH_CHAT_URL_IMAGE
             // Updates report/apply on the device whose binary they concern.
             | methods::UPDATE_STATUS
             | methods::APPLY_UPDATE
@@ -4373,6 +4386,24 @@ impl RpcService for EngineRpc {
                 .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&chunk)
             }
+            methods::READ_CHAT_IMAGE => {
+                let request: zeron_proto::ReadChatImageRequest = parse_params(params)?;
+                let media = self.chat_media();
+                let chunk = tokio::task::spawn_blocking(move || media.read_image(&request))
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&chunk)
+            }
+            methods::FETCH_CHAT_URL_IMAGE => {
+                let request: zeron_proto::FetchChatUrlImageRequest = parse_params(params)?;
+                let media = self.chat_media();
+                let chunk = media
+                    .fetch_url_image(&request)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&chunk)
+            }
             methods::PUBLISH_VISUAL => {
                 let p: PublishVisualParams = parse_params(params)?;
                 let title: String = p
@@ -4979,6 +5010,8 @@ mod tests {
         assert!(forwardable(methods::SEARCH_WORKSPACE_CONTENT));
         assert!(forwardable(methods::READ_WORKSPACE_FILE));
         assert!(forwardable(methods::READ_WORKSPACE_IMAGE));
+        assert!(forwardable(methods::READ_CHAT_IMAGE));
+        assert!(forwardable(methods::FETCH_CHAT_URL_IMAGE));
         assert!(forwardable(methods::DELETE_WORKSPACE_ENTRY));
         assert!(forwardable(methods::MOVE_WORKSPACE_ENTRY));
         assert!(forwardable(methods::WRITE_WORKSPACE_FILE));

@@ -203,6 +203,7 @@ struct Entry {
 pub(crate) struct Loader {
     pub engine: Option<EngineHandle>,
     pub local_device: Option<String>,
+    pub chat_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -378,13 +379,15 @@ impl ToolImages {
         };
         let target = (loader.local_device.as_deref() != Some(key.device.as_str()))
             .then(|| key.device.clone());
+        let chat_id = loader.chat_id.clone();
         let task_key = key.clone();
         let task = cx.spawn(async move |view, cx| {
             let executor = cx.background_executor().clone();
-            let raw = crate::attachments::read_attachment_bytes(
+            let raw = crate::attachments::read_attachment_bytes_with_chat_fallback(
                 &engine,
                 &executor,
                 target.as_deref(),
+                chat_id.as_deref(),
                 &task_key.path,
                 None,
             )
@@ -746,6 +749,7 @@ mod tests {
         let loader = Loader {
             engine: None,
             local_device: None,
+            chat_id: None,
         };
         host.update(cx, |host, cx| {
             let mut pixels = image::RgbaImage::new(100, 50);
@@ -808,6 +812,7 @@ mod tests {
         let loader = Loader {
             engine: None,
             local_device: None,
+            chat_id: None,
         };
         host.update(cx, |host, cx| {
             host.images
@@ -842,6 +847,7 @@ mod tests {
         let loader = Loader {
             engine: None,
             local_device: None,
+            chat_id: None,
         };
         host.update(cx, |host, cx| {
             host.images

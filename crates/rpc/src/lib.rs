@@ -245,6 +245,8 @@ pub mod methods {
     pub const UPLOAD_CHUNK: &str = "UploadChunk";
     pub const UPLOAD_COMMIT: &str = "UploadCommit";
     pub const READ_ATTACHMENT_CHUNK: &str = "ReadAttachmentChunk";
+    pub const READ_CHAT_IMAGE: &str = "ReadChatImage";
+    pub const FETCH_CHAT_URL_IMAGE: &str = "FetchChatUrlImage";
     /// Store an agent's HTML page and show it inline in that chat's live
     /// turn (`show_visual`). Local only: the calling agent runs on this device.
     pub const PUBLISH_VISUAL: &str = "PublishVisual";

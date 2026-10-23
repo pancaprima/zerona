@@ -868,6 +868,38 @@ pub struct WorkspaceImageChunk {
     pub done: bool,
 }
 
+/// Chat markdown / tool image reads on the owning device.
+pub const MAX_CHAT_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadChatImageRequest {
+    pub chat_id: String,
+    pub path: String,
+    #[serde(default)]
+    pub offset: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchChatUrlImageRequest {
+    pub chat_id: String,
+    pub url: String,
+    #[serde(default)]
+    pub offset: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatImageChunk {
+    pub name: String,
+    pub mime_type: String,
+    pub data: String,
+    pub next_offset: u64,
+    pub size: u64,
+    pub done: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceFileText {
