@@ -66,6 +66,10 @@ pub enum ColorRole {
     ProseCard,
     /// Hairline around [`ProseCard`].
     ProseCardBorder,
+    /// An error card's fill: a soft red wash.
+    DangerWash,
+    /// An error card's text and icon: a lighter red that reads on the wash.
+    DangerSoft,
 }
 
 /// Text decorations, painted relative to the run's baseline.
@@ -283,6 +287,9 @@ pub enum WidgetKind {
     Shimmer,
     /// An agent visual; `TranscriptView::visual(id)` is its live session.
     Visual { id: String },
+    /// A button the app acts on: `action` names what (`sign-in`), `label`
+    /// is its title (an error card's "Log in").
+    Action { action: String, label: String },
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]

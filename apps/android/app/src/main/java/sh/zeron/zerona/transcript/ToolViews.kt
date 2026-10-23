@@ -65,6 +65,8 @@ internal fun buildWidgetView(
             }
         WidgetKind.Shimmer -> ShimmerOverlayView(context)
         is WidgetKind.Visual -> VisualPlaceholderView(context, kind.id)
+        is WidgetKind.Action ->
+            ActionUnavailableView(context, kind.action, kind.label, dark)
     }
 }
 
@@ -231,6 +233,23 @@ private class VisualPlaceholderView(
         text = "Agent visual"
         contentDescription = "Visual $id (not available on Android in this milestone)"
         gravity = Gravity.CENTER
+    }
+}
+
+private class ActionUnavailableView(
+    context: Context,
+    action: String,
+    label: String,
+    dark: Boolean,
+) : TextView(context) {
+    init {
+        text = "$label (unavailable)"
+        textSize = 12f
+        setTextColor(Palette.color(ColorRole.TEXT_SECONDARY, dark))
+        isClickable = false
+        isFocusable = false
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
+        contentDescription = "Transcript action $action unavailable on Android"
     }
 }
 
