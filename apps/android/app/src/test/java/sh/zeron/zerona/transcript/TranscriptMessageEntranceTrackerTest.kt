@@ -69,8 +69,9 @@ class TranscriptMessageEntranceTrackerTest {
 
     @Test
     fun isLiveArrivalRejectsRowsFullyAboveViewport() {
+        val tracker = TranscriptMessageEntranceTracker()
         assertFalse(
-            TranscriptMessageEntranceTracker.isLiveArrival(
+            tracker.isLiveArrival(
                 yDp = 0f,
                 rowBottomDp = 40f,
                 scrollTopDp = 100f,
