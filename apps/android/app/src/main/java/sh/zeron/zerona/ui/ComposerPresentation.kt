@@ -7,8 +7,6 @@ object ComposerPresentation {
     const val MAX_DRAFT_LINES = 6
     const val MAX_QUEUED_PREVIEW_LINES = 3
     const val SEND_TOUCH_TARGET_DP = 48
-    const val CONTENT_MOTION_DURATION_MS = 200
-    const val CONTENT_MOTION_DURATION_SHORT_MS = 160
 
     fun showDeliveryModeChips(
         turnRunning: Boolean,

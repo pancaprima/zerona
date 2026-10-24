@@ -1,12 +1,17 @@
 package sh.zeron.zerona.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -49,6 +54,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import sh.zeron.zerona.ui.theme.zeronaTactileCompression
 import uniffi.zeron_core.BusyPolicy
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -67,6 +73,7 @@ fun SessionComposerBar(
     val draftNonBlank = draftText.isNotBlank()
     val canSend = ComposerPresentation.canSend(draftNonBlank, composer.sendInFlight)
     val scheme = MaterialTheme.colorScheme
+    val motion = MaterialTheme.motionScheme
     val dockColor = GlassInspired.composerDockColor()
     val bodyMedium = MaterialTheme.typography.bodyMedium
     val fieldTextStyle =
@@ -75,16 +82,9 @@ fun SessionComposerBar(
             lineHeight = bodyMedium.lineHeight,
             color = scheme.onSurface,
         )
-    val revealSpec =
-        tween<IntSize>(durationMillis = ComposerPresentation.CONTENT_MOTION_DURATION_MS)
-    val sendEnabledColors =
-        IconButtonDefaults.filledIconButtonColors(
-            containerColor = scheme.primary,
-            contentColor = scheme.onPrimary,
-            disabledContainerColor = scheme.surfaceVariant,
-            disabledContentColor = scheme.onSurfaceVariant,
-        )
-    val sendShape = RoundedCornerShape(10.dp)
+    val contentSizeSpec: FiniteAnimationSpec<IntSize> = motion.defaultSpatialSpec()
+    val contextualEffects: FiniteAnimationSpec<Float> = motion.fastEffectsSpec()
+    val sendShape = MaterialTheme.shapes.small
     val demoFieldColors =
         OutlinedTextFieldDefaults.colors(
             disabledContainerColor = scheme.surfaceVariant,
@@ -96,92 +96,111 @@ fun SessionComposerBar(
         modifier =
             modifier
                 .fillMaxWidth()
-                .background(dockColor),
+                .background(dockColor)
+                .navigationBarsPadding()
+                .imePadding(),
     ) {
         Column(
             modifier =
                 Modifier
                     .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .imePadding()
-                    .animateContentSize(animationSpec = revealSpec),
+                    .animateContentSize(animationSpec = contentSizeSpec),
         ) {
             HorizontalDivider(color = GlassInspired.tonalDividerColor(), thickness = 1.dp)
 
-            composer.banner?.let { banner ->
-                Text(
-                    banner,
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .background(
-                                if (composer.bannerIsError) {
-                                    scheme.errorContainer
-                                } else {
-                                    scheme.surface
-                                },
-                            )
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color =
-                        if (composer.bannerIsError) {
-                            scheme.onErrorContainer
-                        } else {
-                            scheme.onSurfaceVariant
-                        },
-                )
-            }
-            composer.queueError?.let { err ->
-                Text(
-                    err,
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 6.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = scheme.error,
-                )
-            }
-            if (composer.queue.isNotEmpty()) {
-                HorizontalDivider(color = scheme.outlineVariant)
-                composer.queue.forEach { item ->
-                    Column(
+            // Single vertical size owner: parent animateContentSize; children use opacity only.
+            AnimatedVisibility(
+                visible = composer.banner != null,
+                enter = fadeIn(contextualEffects),
+                exit = fadeOut(contextualEffects),
+            ) {
+                composer.banner?.let { banner ->
+                    Text(
+                        banner,
                         modifier =
                             Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Text(
-                            item.text,
-                            modifier = Modifier.fillMaxWidth(),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = scheme.onSurface,
-                            maxLines = ComposerPresentation.MAX_QUEUED_PREVIEW_LINES,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        if (!item.actionPending) {
-                            FlowRow(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(0.dp),
-                            ) {
-                                TextButton(onClick = { onDeliverQueuedNow(item.id) }) {
-                                    Text("Send now")
-                                }
-                                TextButton(onClick = { onRemoveQueued(item.id) }) {
-                                    Text("Remove")
-                                }
-                            }
-                        } else {
+                                .background(
+                                    if (composer.bannerIsError) {
+                                        scheme.errorContainer
+                                    } else {
+                                        scheme.surface
+                                    },
+                                )
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color =
+                            if (composer.bannerIsError) {
+                                scheme.onErrorContainer
+                            } else {
+                                scheme.onSurfaceVariant
+                            },
+                    )
+                }
+            }
+            AnimatedVisibility(
+                visible = composer.queueError != null,
+                enter = fadeIn(contextualEffects),
+                exit = fadeOut(contextualEffects),
+            ) {
+                composer.queueError?.let { err ->
+                    Text(
+                        err,
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = scheme.error,
+                    )
+                }
+            }
+            AnimatedVisibility(
+                visible = composer.queue.isNotEmpty(),
+                enter = fadeIn(contextualEffects),
+                exit = fadeOut(contextualEffects),
+            ) {
+                Column {
+                    HorizontalDivider(color = scheme.outlineVariant)
+                    composer.queue.forEach { item ->
+                        Column(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
                             Text(
-                                "Updating…",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = scheme.onSurfaceVariant,
+                                item.text,
+                                modifier = Modifier.fillMaxWidth(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = scheme.onSurface,
+                                maxLines = ComposerPresentation.MAX_QUEUED_PREVIEW_LINES,
+                                overflow = TextOverflow.Ellipsis,
                             )
+                            if (!item.actionPending) {
+                                FlowRow(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(0.dp),
+                                ) {
+                                    TextButton(onClick = { onDeliverQueuedNow(item.id) }) {
+                                        Text("Send now")
+                                    }
+                                    TextButton(onClick = { onRemoveQueued(item.id) }) {
+                                        Text("Remove")
+                                    }
+                                }
+                            } else {
+                                Text(
+                                    "Updating…",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = scheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
+                    HorizontalDivider(color = scheme.outlineVariant)
                 }
-                HorizontalDivider(color = scheme.outlineVariant)
             }
 
             Column(
@@ -191,12 +210,16 @@ fun SessionComposerBar(
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                if (
+                val showChips =
                     ComposerPresentation.showDeliveryModeChips(
                         composer.turnRunning,
                         demoLocked,
                         draftNonBlank,
                     )
+                AnimatedVisibility(
+                    visible = showChips,
+                    enter = fadeIn(contextualEffects),
+                    exit = fadeOut(contextualEffects),
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -205,12 +228,14 @@ fun SessionComposerBar(
                         DeliveryModeChip(
                             label = "Queue",
                             selected = composer.deliveryMode == BusyPolicy.QUEUE,
+                            enabled = showChips,
                             onClick = { onDeliveryModeChange(BusyPolicy.QUEUE) },
                         )
                         if (ComposerPresentation.showSteerChip(composer.canSteer)) {
                             DeliveryModeChip(
                                 label = "Steer",
                                 selected = composer.deliveryMode == BusyPolicy.STEER,
+                                enabled = showChips,
                                 onClick = { onDeliveryModeChange(BusyPolicy.STEER) },
                             )
                         }
@@ -298,20 +323,52 @@ fun SessionComposerBar(
                                 }
                             },
                         )
+                        val sendInteraction = remember { MutableInteractionSource() }
+                        val sendPressed by sendInteraction.collectIsPressedAsState()
+                        val sendContainer by animateColorAsState(
+                            targetValue =
+                                when {
+                                    !canSend -> scheme.surfaceVariant
+                                    sendPressed -> scheme.primaryContainer
+                                    else -> scheme.primary
+                                },
+                            animationSpec = motion.fastEffectsSpec(),
+                            label = "sendContainer",
+                        )
+                        val sendContent by animateColorAsState(
+                            targetValue =
+                                when {
+                                    !canSend -> scheme.onSurfaceVariant
+                                    sendPressed -> scheme.onPrimaryContainer
+                                    else -> scheme.onPrimary
+                                },
+                            animationSpec = motion.fastEffectsSpec(),
+                            label = "sendContent",
+                        )
                         FilledIconButton(
                             onClick = onSend,
                             enabled = canSend,
+                            interactionSource = sendInteraction,
                             modifier =
                                 Modifier
                                     .size(ComposerPresentation.SEND_TOUCH_TARGET_DP.dp)
                                     .semantics { contentDescription = "Send" },
-                            colors = sendEnabledColors,
+                            colors =
+                                IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = sendContainer,
+                                    contentColor = sendContent,
+                                    disabledContainerColor = sendContainer,
+                                    disabledContentColor = sendContent,
+                                ),
                             shape = sendShape,
                         ) {
                             Icon(
                                 Icons.AutoMirrored.Filled.Send,
                                 contentDescription = null,
-                                modifier = Modifier.size(22.dp),
+                                modifier =
+                                    Modifier
+                                        .size(22.dp)
+                                        .zeronaTactileCompression(sendInteraction),
                             )
                         }
                     }
@@ -325,10 +382,32 @@ fun SessionComposerBar(
 private fun DeliveryModeChip(
     label: String,
     selected: Boolean,
+    enabled: Boolean,
     onClick: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
+    val motion = MaterialTheme.motionScheme
     val shape = RoundedCornerShape(10.dp)
+    val container by animateColorAsState(
+        targetValue =
+            if (selected) {
+                colors.primaryContainer
+            } else {
+                colors.surfaceVariant
+            },
+        animationSpec = motion.fastEffectsSpec(),
+        label = "chipContainer",
+    )
+    val contentColor by animateColorAsState(
+        targetValue =
+            if (selected) {
+                colors.onPrimaryContainer
+            } else {
+                colors.onSurfaceVariant
+            },
+        animationSpec = motion.fastEffectsSpec(),
+        label = "chipContent",
+    )
     androidx.compose.material3.Surface(
         modifier =
             Modifier
@@ -338,14 +417,9 @@ private fun DeliveryModeChip(
                     role = Role.Button
                     this.selected = selected
                 }
-                .clickable(onClick = onClick),
+                .clickable(enabled = enabled, onClick = onClick),
         shape = shape,
-        color =
-            if (selected) {
-                colors.primaryContainer
-            } else {
-                colors.surfaceVariant
-            },
+        color = container,
         tonalElevation = 0.dp,
     ) {
         Text(
@@ -353,12 +427,7 @@ private fun DeliveryModeChip(
             modifier =
                 Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
             style = MaterialTheme.typography.labelSmall,
-            color =
-                if (selected) {
-                    colors.onPrimaryContainer
-                } else {
-                    colors.onSurfaceVariant
-                },
+            color = contentColor,
         )
     }
 }

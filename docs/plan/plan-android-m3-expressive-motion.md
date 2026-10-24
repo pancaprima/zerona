@@ -1,6 +1,6 @@
 # Zerona Android: Material 3 Expressive motion & feel
 
-Status: IMPLEMENTATION AUTHORISED. User selected option 1 on 24 October 2026: full official Expressive plus scoped Android toolchain/CI migration. Composer implements; Asa reviews and executes verification. **M0 dependency/toolchain pilot implemented in source (24 Oct 2026); not yet compile/device-verified until parent CI at exact SHA.** Proceed to UI motion only after exact-SHA dependency CI passes. No merge/release/deploy authorised.
+Status: IMPLEMENTATION AUTHORISED. User selected option 1 on 24 October 2026: full official Expressive plus scoped Android toolchain/CI migration. Composer implements; Asa reviews and executes verification. **M0 dependency/toolchain: parent CI GREEN at `4b7c8343` (run 40047155745, artifact 12542475502).** **M1–M3 shell motion implemented in worktree (24 Oct 2026); parent re-verify `assembleDebug` / device acceptance pending.** No merge/release/deploy authorised.
 
 ### M0 actual artifact gate
 
@@ -247,8 +247,23 @@ Completed for this deliverable:
 - [x] Read-only recon pinned to fresh fork main, major claims spot-checked.
 - [x] Prioritised interaction catalogue, ownership boundaries, dependency options, test gates and rollback documented.
 - [x] Plan file created locally.
-- [x] M0 toolchain/dependency pilot (Gradle scripts + CI evidence step); **compiled/device-observed: pending parent CI**.
-- [ ] Native motion prototype / implementation (M1+).
-- [ ] Dependency resolution/build/tests for a candidate (**parent CI**).
-- [ ] Physical-device accessibility/performance/feel acceptance.
+- [x] M0 toolchain/dependency pilot (Gradle scripts + CI evidence step); **GREEN at `4b7c8343`**.
+- [x] M1 theme + policy + tactile controls (Compose shell; `ZeronaMotionPolicy` + `ZeronaMotion.kt`).
+- [x] M2 navigation + composer + Latest (theme specs; IME isolated from `animateContentSize`).
+- [x] M3 loading + hierarchy polish (`ExpressiveLoading.kt`, sign-in initial wait; shape `small` accent).
+- [ ] M4 native transcript controls (chevron/shimmer/reveal) — **not started**.
+- [ ] Parent CI re-run at motion SHA + physical-device accessibility/performance/feel acceptance.
 - [ ] Commit, PR, merge or release.
+
+### M1–M3 source evidence (24 Oct 2026)
+
+| Slice | Primary files | API sources checked |
+| --- | --- | --- |
+| Theme | `ui/theme/Theme.kt` | `MaterialExpressiveTheme`, `MotionScheme.expressive()` in `material3-android-1.5.0-beta02-sources.jar` |
+| Policy | `ui/theme/ZeronaMotionPolicy.kt`, `ZeronaMotion.kt` | `Settings.Global.ANIMATOR_DURATION_SCALE` + `ContentObserver`; `MotionDurationScale` coroutine context left to framework (ui-android 1.12 has no `LocalMotionDurationScale`) |
+| Nav | `ui/ZeronaApp.kt` | `AnimatedContentTransitionScope.slideIntoContainer` / `slideOutOfContainer` (¼ offset, Start forward / End pop); `motionScheme` captured in composable scope |
+| Composer | `ui/ComposerBar.kt` | Single `animateContentSize` owner; child `AnimatedVisibility` fade-only; typed theme specs |
+| Loading | `ui/ExpressiveLoading.kt`, `SessionScreen.kt`, `SignInScreen.kt` | `LoadingIndicator` (`@ExperimentalMaterial3ExpressiveApi`); scale-0 static ring (not `CircularProgressIndicator`) |
+| Tests | `ZeronaMotionPolicyTest` (6), `test-design-helpers.py` registration | **72/72** JVM helper tests GREEN on VPS (`zerona-m3-jvm` cache); **0** Compose instrumentation motion tests |
+
+**Honest gaps:** no VPS Gradle compile of motion UI; no device recordings; native `RowView`/`ToolViews` animator paths unchanged; composer banner/queue rely on size collapse without full content exit crossfade; theme observer not JVM-tested.

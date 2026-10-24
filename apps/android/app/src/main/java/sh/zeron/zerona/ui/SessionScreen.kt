@@ -1,7 +1,5 @@
 package sh.zeron.zerona.ui
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -16,7 +14,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -197,14 +194,14 @@ fun SessionScreen(
                     },
                 )
                 val showLatest = state.showScrollToLatest && state.error == null && !showLoadingShell
-                val latestMotionMs = ComposerPresentation.CONTENT_MOTION_DURATION_MS
+                val motion = MaterialTheme.motionScheme
                 androidx.compose.animation.AnimatedVisibility(
                     visible = showLatest,
                     modifier = Modifier.align(Alignment.BottomCenter),
                     enter =
-                        fadeIn(tween(latestMotionMs)) +
-                            slideInVertically(tween(latestMotionMs)) { it / 3 },
-                    exit = fadeOut(tween(ComposerPresentation.CONTENT_MOTION_DURATION_SHORT_MS)),
+                        fadeIn(motion.fastEffectsSpec()) +
+                            slideInVertically(motion.fastSpatialSpec()) { it / 3 },
+                    exit = fadeOut(motion.fastEffectsSpec()),
                 ) {
                     val scrollToLatestLabel = "Scroll to latest"
                     Surface(
@@ -241,13 +238,14 @@ fun SessionScreen(
                     }
                 }
                 if (state.error == null && showLoadingShell) {
-                    Column(
+                    Box(
                         modifier = Modifier.fillMaxSize(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
+                        contentAlignment = Alignment.Center,
                     ) {
-                        CircularProgressIndicator(modifier = Modifier.padding(24.dp))
-                        Text("Loading transcript…")
+                        ZeronaInitialLoading(
+                            label = "Loading transcript…",
+                            modifier = Modifier.padding(24.dp),
+                        )
                     }
                 } else if (state.error == null && state.loading) {
                     Text(

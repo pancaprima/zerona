@@ -59,6 +59,7 @@ import sh.zeron.zerona.app.AppUiState
 import sh.zeron.zerona.app.SessionRowUi
 import sh.zeron.zerona.app.SessionStatusKind
 import sh.zeron.zerona.transcript.TranscriptLab
+import sh.zeron.zerona.ui.theme.zeronaTactileCompression
 
 private val sessionListHorizontalInset = 24.dp
 private val sessionGroupCorner = 20.dp
@@ -210,6 +211,7 @@ private fun SessionsListHeader(
                 )
             }
             Box {
+                val accountInteraction = remember { MutableInteractionSource() }
                 Box(
                     modifier =
                         Modifier
@@ -217,17 +219,29 @@ private fun SessionsListHeader(
                                 minWidth = accountButtonTouchSize,
                                 minHeight = accountButtonTouchSize,
                             )
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(scheme.primaryContainer)
-                            .clickable { onMenuOpenChange(true) },
+                            .clickable(
+                                interactionSource = accountInteraction,
+                                indication = ripple(),
+                                onClick = { onMenuOpenChange(true) },
+                            ),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        Icons.Default.Person,
-                        contentDescription = "Account menu",
-                        modifier = Modifier.size(accountButtonVisualSize * 0.5f),
-                        tint = scheme.onPrimaryContainer,
-                    )
+                    Box(
+                        modifier =
+                            Modifier
+                                .matchParentSize()
+                                .zeronaTactileCompression(accountInteraction)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(scheme.primaryContainer),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Default.Person,
+                            contentDescription = "Account menu",
+                            modifier = Modifier.size(accountButtonVisualSize * 0.5f),
+                            tint = scheme.onPrimaryContainer,
+                        )
+                    }
                 }
                 DropdownMenu(
                     expanded = menuOpen,
@@ -394,14 +408,20 @@ private fun TranscriptLabEntryRow(
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
                 .clip(labRowShape)
-                .background(rowColor)
                 .clickable(
                     interactionSource = interactionSource,
                     indication = ripple(),
                     onClick = onClick,
-                )
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                ),
     ) {
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .zeronaTactileCompression(interactionSource)
+                    .background(rowColor)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+        ) {
         Text(
             "Transcript lab (fixture markdown)",
             style = MaterialTheme.typography.bodyMedium,
@@ -418,6 +438,7 @@ private fun TranscriptLabEntryRow(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+        }
     }
 }
 
@@ -487,18 +508,26 @@ private fun SessionRowItem(
                 Modifier
                     .fillMaxWidth()
                     .heightIn(min = 48.dp)
-                    .clip(sessionRowPressShape)
-                    .background(pressColor)
                     .semantics { contentDescription = rowDescription }
                     .clickable(
                         interactionSource = interactionSource,
                         indication = ripple(),
                         onClick = onClick,
-                    )
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    ),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Row(
+                modifier =
+                    Modifier
+                        .weight(1f)
+                        .clip(sessionRowPressShape)
+                        .zeronaTactileCompression(interactionSource)
+                        .background(pressColor)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
             Box(
                 modifier =
                     Modifier
@@ -559,6 +588,7 @@ private fun SessionRowItem(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
             }
         }
     }
