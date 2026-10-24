@@ -40,6 +40,116 @@ jobs:
       GRADLE_ABIS: ${{ github.event_name == 'workflow_dispatch' && inputs.abis || 'arm64-v8a' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: JDK 17
+        run: |
+          echo "JAVA_HOME=${JAVA_HOME_17_X64}" >> "$GITHUB_ENV"
+          echo "PATH=${JAVA_HOME_17_X64}/bin:$PATH" >> "$GITHUB_ENV"
+          export JAVA_HOME="${JAVA_HOME_17_X64}"
+          export PATH="${JAVA_HOME_17_X64}/bin:$PATH"
+          java -version
+      - name: Android SDK command-line tools bootstrap
+        run: |
+          set -euo pipefail
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [[ -z "$sdk_root" && -n "${ANDROID_NDK_HOME:-}" ]]; then
+            sdk_root="$(dirname "$(dirname "$ANDROID_NDK_HOME")")"
+          fi
+          if [[ -z "$sdk_root" ]]; then
+            sdk_root="/usr/local/lib/android/sdk"
+          fi
+          if [[ ! -d "$sdk_root" ]]; then
+            echo "Android SDK root is not a directory: $sdk_root" >&2
+            exit 1
+          fi
+          sdkmanager_bin=
+          if [[ -x "$sdk_root/cmdline-tools/latest/bin/sdkmanager" ]]; then
+            sdkmanager_bin="$sdk_root/cmdline-tools/latest/bin/sdkmanager"
+          else
+            while IFS= read -r -d '' candidate; do
+              if [[ -x "$candidate" ]]; then
+                sdkmanager_bin="$candidate"
+                break
+              fi
+            done < <(find "$sdk_root/cmdline-tools" -mindepth 3 -maxdepth 3 -path '*/bin/sdkmanager' -print0 2>/dev/null | sort -z)
+          fi
+          if [[ -z "$sdkmanager_bin" ]]; then
+            echo "sdkmanager not found under ${sdk_root}/cmdline-tools (expected latest/bin or */bin)" >&2
+            exit 1
+          fi
+          sdkmanager_bin="$(readlink -f "$sdkmanager_bin")"
+          sdk_tools_bin="$(dirname "$sdkmanager_bin")"
+          export ANDROID_HOME="$sdk_root"
+          export ANDROID_SDK_ROOT="$sdk_root"
+          export SDKMANAGER="$sdkmanager_bin"
+          export PATH="${sdk_tools_bin}:$PATH"
+          echo "ANDROID_HOME=$sdk_root" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
+          echo "SDKMANAGER=$sdkmanager_bin" >> "$GITHUB_ENV"
+          echo "$sdk_tools_bin" >> "$GITHUB_PATH"
+          echo "Android SDK root: $sdk_root"
+          echo "sdkmanager: $sdkmanager_bin"
+          "$SDKMANAGER" --version
+      - name: Android SDK licenses
+        run: |
+          set -euo pipefail
+          set +e
+          yes | "$SDKMANAGER" --licenses
+          pipe_ec=("${PIPESTATUS[@]}")
+          yes_ec=${pipe_ec[0]}
+          sdk_ec=${pipe_ec[1]}
+          set -euo pipefail
+          echo "Android SDK licenses: yes=${yes_ec} sdkmanager=${sdk_ec}"
+          if (( sdk_ec != 0 )); then
+            echo "sdkmanager --licenses failed (exit ${sdk_ec})" >&2
+            exit "$sdk_ec"
+          fi
+          case "$yes_ec" in
+            0|1|141) ;;
+            *)
+              echo "yes pipe producer failed unexpectedly (exit ${yes_ec})" >&2
+              exit "$yes_ec"
+              ;;
+          esac
+      - name: Android SDK platform 37 (compileSdk)
+        run: |
+          set -euo pipefail
+          "$SDKMANAGER" --install "platforms;android-37.0" "build-tools;36.0.0"
+          "$SDKMANAGER" --list_installed | grep -F 'platforms;android-37.0'
+          api37_dir=
+          for prop in "${ANDROID_HOME}/platforms"/*/source.properties; do
+            [[ -f "$prop" ]] || continue
+            api_line="$(grep -E '^[[:space:]]*AndroidVersion\.ApiLevel[[:space:]]*=[[:space:]]*37(\.0)?[[:space:]]*$' "$prop" | head -n1 || true)"
+            if [[ -n "$api_line" ]]; then
+              api37_dir="$(dirname "$prop")"
+              echo "AndroidVersion.ApiLevel (source.properties): $api_line"
+              break
+            fi
+          done
+          if [[ -z "$api37_dir" || ! -f "$api37_dir/android.jar" ]]; then
+            echo "API 37 platform not found under ${ANDROID_HOME}/platforms (no android.jar)" >&2
+            exit 1
+          fi
+          echo "compileSdk platform: $api37_dir"
+          ls -la "$api37_dir/android.jar"
+      - name: Android NDK 27.2.12479018
+        run: |
+          set -euo pipefail
+          ndk_rev="27.2.12479018"
+          ndk_home="${ANDROID_HOME}/ndk/${ndk_rev}"
+          if [[ -d "$ndk_home" && -f "$ndk_home/source.properties" ]]; then
+            echo "NDK ${ndk_rev} already present at $ndk_home"
+          else
+            echo "Installing NDK ${ndk_rev} via sdkmanager" >&2
+            "$SDKMANAGER" --install "ndk;${ndk_rev}"
+          fi
+          if [[ ! -d "$ndk_home" ]]; then
+            echo "NDK ${ndk_rev} missing after install: $ndk_home" >&2
+            exit 1
+          fi
+          export ANDROID_NDK_HOME="$ndk_home"
+          echo "ANDROID_NDK_HOME=$ndk_home" >> "$GITHUB_ENV"
+          echo "$ANDROID_NDK_HOME"
+          ls -la "$ANDROID_NDK_HOME"
       - name: Rust toolchain
         run: |
           rustup show active-toolchain || rustup toolchain install
@@ -48,19 +158,6 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - name: Android NDK
-        run: |
-          if [[ -z "${ANDROID_NDK_HOME:-}" ]]; then
-            echo "ANDROID_NDK_HOME is unset; installing NDK via sdkmanager" >&2
-            sdkmanager --install "ndk;27.2.12479018"
-            echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
-          fi
-          echo "$ANDROID_NDK_HOME"
-          if [[ ! -d "${ANDROID_NDK_HOME:-}" ]]; then
-            echo "ANDROID_NDK_HOME is unset or not a directory: ${ANDROID_NDK_HOME:-}" >&2
-            exit 1
-          fi
-          ls -la "$ANDROID_NDK_HOME"
       - name: Install cargo-ndk
         run: |
           if command -v cargo-ndk >/dev/null; then
@@ -80,21 +177,62 @@ jobs:
           path: target/android-core/kotlin
           if-no-files-found: ignore
           retention-days: 7
-      - name: JDK 17
+      - name: Gradle 9.3.1
         run: |
-          echo "JAVA_HOME=${JAVA_HOME_17_X64}" >> "$GITHUB_ENV"
-          echo "PATH=${JAVA_HOME_17_X64}/bin:$PATH" >> "$GITHUB_ENV"
-          java -version
-      - name: Gradle 8.11.1
-        run: |
-          curl -fsSL -o /tmp/gradle-8.11.1-bin.zip \
-            https://services.gradle.org/distributions/gradle-8.11.1-bin.zip
-          unzip -q /tmp/gradle-8.11.1-bin.zip -d /tmp
-          echo "GRADLE_HOME=/tmp/gradle-8.11.1" >> "$GITHUB_ENV"
-          echo "PATH=/tmp/gradle-8.11.1/bin:$PATH" >> "$GITHUB_ENV"
+          curl -fsSL -o /tmp/gradle-9.3.1-bin.zip \
+            https://services.gradle.org/distributions/gradle-9.3.1-bin.zip
+          unzip -q /tmp/gradle-9.3.1-bin.zip -d /tmp
+          echo "GRADLE_HOME=/tmp/gradle-9.3.1" >> "$GITHUB_ENV"
+          echo "PATH=/tmp/gradle-9.3.1/bin:$PATH" >> "$GITHUB_ENV"
           gradle --version
-      - name: Android SDK licenses
-        run: yes | sdkmanager --licenses || true
+      - name: Material3 / Compose dependency evidence
+        run: |
+          set -euo pipefail
+          CORE="$GITHUB_WORKSPACE/target/android-core"
+          GRADLE=(gradle -p apps/android --no-daemon -PzeronCoreDir="$CORE")
+          insight_must_resolve() {
+            local coord="$1"
+            local configuration="$2"
+            local version_marker="$3"
+            echo "=== dependencyInsight: $coord ($configuration) ==="
+            local out ec
+            set +e
+            out="$("${GRADLE[@]}" :app:dependencyInsight --dependency "$coord" --configuration "$configuration" --single-path 2>&1)"
+            ec=$?
+            set -e
+            printf '%s\n' "$out"
+            if (( ec != 0 )); then
+              echo "dependencyInsight failed for $coord on $configuration (exit $ec)" >&2
+              exit 1
+            fi
+            if grep -qi 'No dependencies matching given input' <<<"$out"; then
+              echo "dependencyInsight found no match for $coord on $configuration" >&2
+              exit 1
+            fi
+            if ! grep -qF -- "$version_marker" <<<"$out"; then
+              echo "dependencyInsight for $coord did not show expected version marker: $version_marker" >&2
+              exit 1
+            fi
+          }
+          echo "=== buildEnvironment (KGP pin) ==="
+          be_out="$("${GRADLE[@]}" buildEnvironment 2>&1)"
+          printf '%s\n' "$be_out"
+          if ! grep -qF 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.20' <<<"$be_out"; then
+            echo "buildEnvironment did not show kotlin-gradle-plugin:2.2.20" >&2
+            exit 1
+          fi
+          insight_must_resolve "androidx.compose.material3:material3-android" debugCompileClasspath "1.5.0-beta02"
+          insight_must_resolve "androidx.compose.runtime:runtime-android" debugCompileClasspath "1.12.0"
+          insight_must_resolve "androidx.compose.ui:ui-android" debugCompileClasspath "1.12.0"
+          insight_must_resolve "androidx.compose.foundation:foundation-android" debugCompileClasspath "1.12.0"
+          insight_must_resolve "org.jetbrains.kotlin:kotlin-stdlib" debugRuntimeClasspath "2.2.20"
+          echo "=== AAR metadata (Google Maven) ==="
+          curl -fsSL -o /tmp/material3-android-1.5.0-beta02.aar \
+            https://dl.google.com/dl/android/maven2/androidx/compose/material3/material3-android/1.5.0-beta02/material3-android-1.5.0-beta02.aar
+          unzip -p /tmp/material3-android-1.5.0-beta02.aar \
+            META-INF/com/android/build/gradle/aar-metadata.properties | tee /tmp/aar-metadata.properties
+          grep -q 'minCompileSdk=37' /tmp/aar-metadata.properties
+          grep -q 'minAndroidGradlePluginVersion=9.1.0' /tmp/aar-metadata.properties
       - name: Assemble debug APK
         run: |
           gradle -p apps/android :app:assembleDebug \

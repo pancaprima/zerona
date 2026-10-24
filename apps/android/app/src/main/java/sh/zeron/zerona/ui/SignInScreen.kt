@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -66,9 +65,7 @@ fun SignInScreen(appModel: AppModel) {
         Spacer(modifier = Modifier.height(32.dp))
 
         if (state.authInProgress) {
-            CircularProgressIndicator()
-            Spacer(modifier = Modifier.height(16.dp))
-            Text("Signing in…", style = MaterialTheme.typography.bodyMedium)
+            ZeronaInitialLoading(label = "Signing in…")
         } else {
             Button(
                 onClick = {

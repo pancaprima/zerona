@@ -2,7 +2,8 @@ package sh.zeron.zerona.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MaterialExpressiveTheme
+import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -77,7 +78,7 @@ private val DarkColors =
 private val ZeronaShapes =
     Shapes(
         extraSmall = RoundedCornerShape(8.dp),
-        small = RoundedCornerShape(10.dp),
+        small = RoundedCornerShape(12.dp),
         medium = RoundedCornerShape(14.dp),
         large = RoundedCornerShape(16.dp),
         extraLarge = RoundedCornerShape(20.dp),
@@ -119,10 +120,12 @@ private val ZeronaTypography =
 @Composable
 fun ZeronaTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
-    MaterialTheme(
+    MaterialExpressiveTheme(
         colorScheme = if (dark) DarkColors else LightColors,
+        motionScheme = MotionScheme.expressive(),
         typography = ZeronaTypography,
         shapes = ZeronaShapes,
-        content = content,
-    )
+    ) {
+        ZeronaOrnamentalMotionProvider(content = content)
+    }
 }
