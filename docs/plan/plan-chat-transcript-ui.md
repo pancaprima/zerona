@@ -1,40 +1,37 @@
-# Chat transcript UI polish
+# Chat transcript UI polish (Android)
 
 ## Goal
 
-Improve the desktop chat transcript experience: quieter send feedback on the user bubble, motion for new messages, an indeterminate replay loading bar under the titlebar, and an icon-only jump-to-latest control—without changing transcript data flow or commit semantics.
+Ship the chat-transcript motion and status polish in the **Android app** (Compose shell + native `TranscriptListView` rows). Desktop GPUI work in `crates/ui` is a separate surface and is **out of scope** for this patch.
 
-## Scope
+## Requirements
 
-| Requirement | Implementation |
-|-------------|----------------|
-| Sending status beside user bubble | `Transcript::render_pending_send_icon` + `pending_send_bridge_active`; suppress working-trailer copy during pure send bridge |
-| Assistant entrance | `motion::assistant_message_entrance_paint` via `apply_message_row_entrance` on markdown rows |
-| User entrance | `motion::user_message_entrance_paint`; honors `reduce_motion` |
-| Replay loading bar | `loaders::transcript_loading_bar` in `shell.rs` when `Transcript::replay_loading` |
-| Jump to latest | Icon-only `jump_pill` in `shell.rs` (stacked `ALT_ARROW_DOWN`), `aria-label` + tooltip |
-
-Out of scope: composer status strip, mobile clients, new icon assets, transcript engine/RPC changes.
+| Item | Android target |
+|------|----------------|
+| Send status | Small indeterminate spinner beside the user bubble (not composer “Sending…” copy); TalkBack “Sending” on the row |
+| Assistant entrance | `RowKind.MARKDOWN` rows slide in from the left once per stable row key |
+| User entrance | `RowKind.USER` from lower-right with slight scale-up and subtle bounce; once per key; no replay on stream/version rebind; cancel on pool recycle; honor animator / reduce-motion |
+| Transcript loading | Slim indeterminate bar under the top app bar (`TranscriptLoadingBar`) whenever transcript loading is active (initial load and pagination), not only the first empty frame; no fake percentage; keep error / pagination copy / empty behavior |
+| Jump to latest | Icon-only `KeyboardDoubleArrowDown`; keep “Scroll to latest” content description |
 
 ## Insertion points
 
-- `crates/ui/src/motion.rs` — entrance paint helpers and unit tests
-- `crates/ui/src/loaders.rs` — `transcript_loading_bar`
-- `crates/ui/src/transcript.rs` — `row_entrances` bookkeeping, row paint, send icon, `replay_loading`
-- `crates/ui/src/shell.rs` — loading bar overlay, jump pill
-- `crates/ui/src/rail.rs` — unchanged (rail only)
+- `apps/android/.../ui/SessionScreen.kt` — loading bar, jump control
+- `apps/android/.../ui/SessionViewModel.kt` — pending-send row keys, hydration gate for entrances, suppress sending banner
+- `apps/android/.../ui/TranscriptLoadingBar.kt` — bar motion + colors
+- `apps/android/.../transcript/TranscriptListView.kt` — entrance tracker, pending-send overlay wiring
+- `apps/android/.../transcript/RowView.kt` — entrance transforms, send spinner layout
+- `apps/android/.../transcript/TranscriptMessageMotion.kt` — paint math (ported from desktop `motion.rs`)
+- `apps/android/.../transcript/TranscriptRowKey.kt` — FNV-1a keys for pending sends
 
-## Verification
+## Verification (CI)
 
 ```bash
-cargo test -p zeron-ui --lib message_entrances_start_offset_and_settle_at_rest
-cargo test -p zeron-ui --lib message_row_entrance_snaps_when_reduced
-cargo test -p zeron-ui --lib transcript_load_bar_never_fills_the_track
-git diff --check
+./apps/android/gradlew :app:testDebugUnitTest
 ```
 
-Manual (desktop): send a message, receive a reply, switch chats during replay, toggle reduced motion, and scroll up to verify the icon-only jump control. Device feel remains unverified until exercised in the app.
+Manual: send while host is slow, receive assistant reply, open chat while transcript is loading (first paint and “Loading earlier messages…”), toggle system reduce motion, scroll up for jump pill.
 
 ## Rollback
 
-Restore the four changed Rust source files with `git restore crates/ui/src/loaders.rs crates/ui/src/motion.rs crates/ui/src/transcript.rs crates/ui/src/shell.rs`, and remove this plan file if desired. No migrations or config flags.
+Revert the Kotlin files above and this plan. No migrations or feature flags.

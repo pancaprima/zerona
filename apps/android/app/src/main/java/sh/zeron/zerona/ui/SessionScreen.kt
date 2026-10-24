@@ -6,17 +6,14 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -28,7 +25,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardDoubleArrowDown
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -153,6 +150,9 @@ fun SessionScreen(
         },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            if (state.error == null && state.loading) {
+                TranscriptLoadingBar(dark = dark)
+            }
             if (state.error != null) {
                 Text(
                     state.error!!,
@@ -218,38 +218,19 @@ fun SessionScreen(
                         shadowElevation = 4.dp,
                         tonalElevation = 1.dp,
                     ) {
-                        Row(
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardDoubleArrowDown,
+                            contentDescription = null,
                             modifier =
                                 Modifier
                                     .heightIn(min = 48.dp)
-                                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.KeyboardArrowDown,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp),
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                            Text(
-                                "Latest",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
+                                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                                    .size(24.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
                     }
                 }
-                if (state.error == null && showLoadingShell) {
-                    Column(
-                        modifier = Modifier.fillMaxSize(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.padding(24.dp))
-                        Text("Loading transcript…")
-                    }
-                } else if (state.error == null && state.loading) {
+                if (state.error == null && state.loading && !showLoadingShell) {
                     Text(
                         "Loading earlier messages…",
                         modifier =

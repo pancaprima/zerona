@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.os.SystemClock
 import android.util.AttributeSet
+import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
@@ -11,6 +12,7 @@ import androidx.core.widget.NestedScrollView
 import kotlin.math.ceil
 import uniffi.zeron_core.AssistantMarkdownStyle
 import uniffi.zeron_core.LayoutFrame
+import uniffi.zeron_core.RowKind
 import uniffi.zeron_core.RowPlacement
 import uniffi.zeron_core.TranscriptView
 
@@ -65,6 +67,34 @@ class TranscriptListView
         private var jumpSettleDeadlineMs = 0L
         private var jumpSettleArmedAtMs = 0L
         var onScrollToLatestVisibilityChanged: ((Boolean) -> Unit)? = null
+
+        private val messageEntrances = TranscriptMessageEntranceTracker()
+        private var pendingSendStatusKeys: Set<ULong> = emptySet()
+        private var transcriptHydrated = false
+        private var entranceBaselineSealed = false
+        private var entranceFramePosted = false
+        private val entranceFrameCallback =
+            object : Choreographer.FrameCallback {
+                override fun doFrame(frameTimeNanos: Long) {
+                    entranceFramePosted = false
+                    if (destroyed) return
+                    tickMessageEntrances(SystemClock.uptimeMillis())
+                }
+            }
+
+        /** When false, row entrances stay disabled until hydration completes. */
+        var transcriptReplayHydrated: Boolean
+            get() = transcriptHydrated
+            set(value) {
+                if (transcriptHydrated == value) return
+                transcriptHydrated = value
+            }
+
+        fun setPendingSendStatusRowKeys(keys: Set<ULong>) {
+            if (pendingSendStatusKeys == keys) return
+            pendingSendStatusKeys = keys
+            applyPendingSendStatusToVisibleRows()
+        }
 
         private val scrollToLatestEvalRunnable =
             Runnable {
@@ -163,6 +193,10 @@ class TranscriptListView
             cache.clear()
             cacheOrder.clear()
             lastRevision = null
+            messageEntrances.reset()
+            transcriptHydrated = false
+            entranceBaselineSealed = false
+            stopEntranceFrames()
         }
 
         fun shutdown() {
@@ -281,6 +315,23 @@ class TranscriptListView
             layoutRows()
             scheduleScrollToLatestEvaluation()
             maybeResettleJumpBottom()
+            sealMessageEntranceBaselineIfNeeded()
+        }
+
+        private fun sealMessageEntranceBaselineIfNeeded() {
+            if (!transcriptHydrated || entranceBaselineSealed) return
+            val frame = current ?: return
+            entranceBaselineSealed = true
+            if (frame.rowCount() == 0u) {
+                messageEntrances.sealReplayEmpty()
+                return
+            }
+            val keys = mutableListOf<ULong>()
+            for (i in 0u until frame.rowCount()) {
+                val p = frame.placement(i) ?: continue
+                keys.add(p.key)
+            }
+            messageEntrances.sealReplayBaseline(keys)
         }
 
         private fun lastRowBottomPx(frame: LayoutFrame): Int {
@@ -642,6 +693,22 @@ class TranscriptListView
             val seen = mutableSetOf<ULong>()
             val widthDp = frame.width()
             val epoch = renderEpoch
+            val scrollTopDp = scrollY / density
+            val viewportHeightDp = height / density
+            val nowUptime = SystemClock.uptimeMillis()
+            val reduceMotion = TranscriptMessageMotion.reduceMotion(context)
+            for (p in placements) {
+                messageEntrances.noteRow(
+                    key = p.key,
+                    yDp = p.y,
+                    rowBottomDp = p.y + p.height,
+                    kind = p.kind,
+                    scrollTopDp = scrollTopDp,
+                    viewportHeightDp = viewportHeightDp,
+                    nowUptimeMs = nowUptime,
+                    reduceMotion = reduceMotion,
+                )
+            }
             for (p in placements) {
                 seen.add(p.key)
                 val row =
@@ -684,12 +751,71 @@ class TranscriptListView
                             height = ceil(p.height * density).toInt().coerceAtLeast(1)
                         }
                 }
+                row.setSendStatusActive(
+                    active = p.kind == RowKind.USER && pendingSendStatusKeys.contains(p.key),
+                    statusDescription = "Sending…",
+                )
             }
             val toRemove = visible.keys.filter { !seen.contains(it) }
             for (key in toRemove) {
                 val view = visible.remove(key) ?: continue
                 recycleRowView(view)
             }
+            tickMessageEntrances(nowUptime)
+        }
+
+        private fun applyPendingSendStatusToVisibleRows() {
+            for ((key, row) in visible) {
+                row.setSendStatusActive(
+                    active = row.kind == RowKind.USER && pendingSendStatusKeys.contains(key),
+                    statusDescription = "Sending…",
+                )
+            }
+        }
+
+        private fun tickMessageEntrances(nowUptimeMs: Long) {
+            val starts = messageEntrances.activeStarts()
+            if (starts.isEmpty()) {
+                stopEntranceFrames()
+                for (row in visible.values) {
+                    row.clearMessageEntrance()
+                }
+                return
+            }
+            val reduceMotion = TranscriptMessageMotion.reduceMotion(context)
+            var anyActive = false
+            for ((key, startMs) in starts) {
+                val row = visible[key] ?: continue
+                val user = row.kind == RowKind.USER
+                val elapsed = nowUptimeMs - startMs
+                val progress =
+                    TranscriptMessageMotion.entranceProgress(elapsed, user, reduceMotion)
+                val paint = TranscriptMessageMotion.entrancePaint(progress, user)
+                row.applyMessageEntrance(paint, density, userBubble = user)
+                if (progress >= 1f) {
+                    messageEntrances.markCompleted(key)
+                    row.clearMessageEntrance()
+                } else {
+                    anyActive = true
+                }
+            }
+            if (anyActive) {
+                scheduleEntranceFrame()
+            } else {
+                stopEntranceFrames()
+            }
+        }
+
+        private fun scheduleEntranceFrame() {
+            if (entranceFramePosted || destroyed) return
+            entranceFramePosted = true
+            Choreographer.getInstance().postFrameCallback(entranceFrameCallback)
+        }
+
+        private fun stopEntranceFrames() {
+            if (!entranceFramePosted) return
+            Choreographer.getInstance().removeFrameCallback(entranceFrameCallback)
+            entranceFramePosted = false
         }
 
         private fun recycleRowView(view: RowView) {

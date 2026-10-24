@@ -12,7 +12,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
+import android.widget.ProgressBar
 import kotlin.math.ceil
+import kotlin.math.roundToInt
 import uniffi.zeron_core.LinkHit
 import uniffi.zeron_core.RowDisplay
 import uniffi.zeron_core.RowKind
@@ -36,6 +38,13 @@ class RowView(
     private var longPressActive = false
     private var streamAnimator: ValueAnimator? = null
     private var streamAnimGeneration = 0
+    private val sendStatusSpinner =
+        ProgressBar(context, null, android.R.attr.progressBarStyleSmall).apply {
+            isIndeterminate = true
+            visibility = GONE
+            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
+        }
+    private var sendStatusActive = false
 
     var model: RowDrawModel? = null
     var rowKey: ULong = 0u
@@ -61,6 +70,7 @@ class RowView(
     init {
         addView(canvas)
         addView(freshCanvas)
+        addView(sendStatusSpinner)
         freshCanvas.visibility = GONE
         clipChildren = true
         clipToPadding = true
@@ -173,7 +183,79 @@ class RowView(
         layoutScrollers(drawModel, density, streamingBody = grew && veilFrom > 0)
         layoutWidgets(d, density)
         layoutLinkOverlays(d, density)
-        contentDescription = rowAccessibilityLabel(d, rowKind)
+        layoutSendStatus(drawModel.display, density)
+        contentDescription = rowAccessibilityLabel(d, rowKind, sendStatusActive)
+    }
+
+    fun setSendStatusActive(
+        active: Boolean,
+        statusDescription: String,
+    ) {
+        sendStatusActive = active
+        sendStatusSpinner.visibility = if (active) VISIBLE else GONE
+        if (active) {
+            sendStatusSpinner.contentDescription = statusDescription
+            model?.let { layoutSendStatus(it.display, layoutDensity.coerceAtLeast(1f)) }
+        }
+        model?.let {
+            contentDescription = rowAccessibilityLabel(it.display, kind, sendStatusActive)
+        }
+    }
+
+    fun applyMessageEntrance(
+        paint: TranscriptMessageMotion.EntrancePaint,
+        density: Float,
+        userBubble: Boolean,
+    ) {
+        val d = density.coerceAtLeast(1f)
+        alpha = paint.opacity
+        translationX = paint.translationXDp * d
+        translationY = paint.translationYDp * d
+        scaleX = paint.scale
+        scaleY = paint.scale
+        if (userBubble) {
+            pivotX = width.toFloat()
+            pivotY = height.toFloat()
+        } else {
+            pivotX = 0f
+            pivotY = 0f
+        }
+    }
+
+    fun clearMessageEntrance() {
+        alpha = 1f
+        translationX = 0f
+        translationY = 0f
+        scaleX = 1f
+        scaleY = 1f
+        pivotX = 0f
+        pivotY = 0f
+    }
+
+    private fun layoutSendStatus(
+        d: RowDisplay,
+        density: Float,
+    ) {
+        if (!sendStatusActive) {
+            sendStatusSpinner.visibility = GONE
+            return
+        }
+        val bubble = TranscriptUserBubbleLayout.primaryBubble(d) ?: run {
+            sendStatusSpinner.visibility = GONE
+            return
+        }
+        val sizeDp = 22f
+        val gapDp = 6f
+        val sizePx = (sizeDp * density).roundToInt().coerceAtLeast(1)
+        val leftPx = ((bubble.leftDp - gapDp - sizeDp) * density).roundToInt()
+        val topPx =
+            ((bubble.topDp + bubble.heightDp / 2f - sizeDp / 2f) * density).roundToInt()
+        sendStatusSpinner.layoutParams =
+            LayoutParams(sizePx, sizePx).apply {
+                leftMargin = leftPx.coerceAtLeast(0)
+                topMargin = topPx.coerceAtLeast(0)
+            }
+        sendStatusSpinner.visibility = VISIBLE
     }
 
     private fun finishStreamReveal() {
@@ -201,12 +283,16 @@ class RowView(
     private fun rowAccessibilityLabel(
         d: RowDisplay,
         rowKind: RowKind,
+        sending: Boolean,
     ): String {
         val body = d.copyText.ifEmpty { d.text }
-        return when (rowKind) {
-            RowKind.USER -> "You: $body"
-            else -> body
-        }
+        val prefix =
+            when {
+                rowKind == RowKind.USER && sending -> "Sending… You: "
+                rowKind == RowKind.USER -> "You: "
+                else -> ""
+            }
+        return prefix + body
     }
 
     private fun layoutScrollers(
@@ -422,6 +508,9 @@ class RowView(
     fun resetForPool() {
         longPressActive = false
         cancelStreamAnimation()
+        sendStatusActive = false
+        sendStatusSpinner.visibility = GONE
+        clearMessageEntrance()
         for (v in widgetViews) {
             if (v is TranscriptImageWidget) {
                 actions?.imageLoader()?.cancelLoad(v)
