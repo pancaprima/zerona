@@ -4621,7 +4621,7 @@ impl Transcript {
 
     /// The send→turn bridge with no working timer yet — status belongs on the
     /// pending user bubble, not the in-flow working trailer.
-    fn pending_send_bridge_active(&self, cx: &App) -> bool {
+    fn pending_send_bridge_active(&self, cx: &Context<Self>) -> bool {
         if self.doc_override.is_some() {
             return false;
         }
@@ -4672,7 +4672,7 @@ impl Transcript {
         &self,
         row: &Row,
         element: AnyElement,
-        cx: &Context<Self>,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         if !matches!(
             row.kind,

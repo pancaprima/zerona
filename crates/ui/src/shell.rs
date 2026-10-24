@@ -11672,18 +11672,19 @@ impl Shell {
             .flex_col()
             .when(self.transcript.read(cx).replay_loading(), |column| {
                 let theme = Theme::of(cx);
+                let bar = loaders::transcript_loading_bar(
+                    "transcript-replay-bar",
+                    theme.accent.opacity(0.14),
+                    theme.accent.opacity(0.88),
+                    theme.accent,
+                );
                 column.child(
                     div()
                         .absolute()
                         .left_0()
                         .right_0()
                         .top(px(Theme::TITLEBAR_HEIGHT))
-                        .child(loaders::transcript_loading_bar(
-                            "transcript-replay-bar",
-                            &theme,
-                            cx.entity_id(),
-                            cx,
-                        )),
+                        .child(bar),
                 )
             })
             // The hero is deliberately outside the transcript EdgeFade below:

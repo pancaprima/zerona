@@ -12,7 +12,8 @@
 
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, EntityId, IntoElement, ParentElement,
-    PathBuilder, Render, RenderOnce, SharedString, Styled, Window, canvas, div, point, px,
+    PathBuilder, Render, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled, Window,
+    canvas, div, point, px,
 };
 
 use crate::motion::{self, GRADIENT_SPIN, PULSE_STAGGER, SPLASH_OUT, ZERON_PULSE};
@@ -562,16 +563,17 @@ pub fn transcript_load_bar_offset(raw: f32) -> f32 {
 /// hydrates. Uses [`Role::ProgressIndicator`] with an indeterminate label.
 pub fn transcript_loading_bar(
     key: impl Into<SharedString>,
-    theme: &Theme,
-    _view: EntityId,
-    cx: &mut App,
-) -> impl IntoElement {
+    track: gpui::Hsla,
+    fill: gpui::Hsla,
+    marker: gpui::Hsla,
+) -> AnyElement {
     TranscriptLoadBar {
         key: key.into(),
-        track: theme.accent.opacity(0.14),
-        fill: theme.accent.opacity(0.88),
-        marker: theme.accent,
+        track,
+        fill,
+        marker,
     }
+    .into_any_element()
 }
 
 #[derive(IntoElement)]
