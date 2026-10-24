@@ -318,14 +318,19 @@ jobs:
             echo "apksigner not found: $apksigner_bin" >&2
             exit 1
           fi
+          set +e
           cert_out="$("$apksigner_bin" verify --print-certs "$apk" 2>&1)"
-          if ! printf '%s\n' "$cert_out" | grep -q 'Verified using'; then
-            echo "apksigner verify failed for $apk" >&2
-            exit 1
+          verify_ec=$?
+          set -e
+          if (( verify_ec != 0 )); then
+            echo "apksigner verify exited ${verify_ec} for ${apk}" >&2
+            printf '%s\n' "$cert_out"
+            exit "$verify_ec"
           fi
-          digest_line="$(printf '%s\n' "$cert_out" | grep -E 'SHA-256 digest:' | head -n1 || true)"
+          digest_line="$(grep -m1 -E 'SHA-256 digest:' <<<"$cert_out" || true)"
           if [[ -z "$digest_line" ]]; then
-            echo "apksigner did not report an SHA-256 digest" >&2
+            echo "apksigner did not report an SHA-256 digest in --print-certs output" >&2
+            printf '%s\n' "$cert_out"
             exit 1
           fi
           actual="${digest_line#*: }"
