@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +31,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import sh.zeron.zerona.ui.theme.ZeronaMotionPolicy
 import sh.zeron.zerona.ui.theme.rememberOrnamentalMotionEnabled
+
+/** Duration of one ornamental loading breathe half-cycle. */
+private const val LoadingOrnamentalBreatheMillis = 1_800
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -65,7 +69,10 @@ fun ZeronaInitialLoading(
                     targetValue = ZeronaMotionPolicy.LOADING_ORNAMENTAL_MAX_SCALE,
                     animationSpec =
                         infiniteRepeatable(
-                            animation = motion.defaultSpatialSpec(),
+                            animation =
+                                tween(
+                                    durationMillis = LoadingOrnamentalBreatheMillis,
+                                ),
                             repeatMode = RepeatMode.Reverse,
                         ),
                     label = "loadingBreatheScale",
