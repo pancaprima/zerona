@@ -42,7 +42,7 @@ gradle -p apps/android :app:testDebugUnitTest \
   -PzeronCoreDir=../../target/android-core
 ```
 
-Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link hit-test, anchor/follow, cache keys, streaming prefixes, viewport scale, image reference/decode planning, message action/copy/link menu models, design tokens/contrast/composer presentation, read-only model label formatting) live under `app/src/test` (163 JVM `@Test` method annotations in 19 classes — static inventory counted by `selfcheck-native-transcript.sh`, not executed native/device tests). `assembleDebug` also runs `testDebugUnitTest` (see `app/build.gradle.kts`). Static wiring checks: `apps/android/scripts/selfcheck-native-transcript.sh` (no Gradle).
+Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link hit-test, anchor/follow, cache keys, streaming prefixes, viewport scale, image reference/decode planning, message action/copy/link menu models, design tokens/contrast/composer presentation, read-only model label formatting) live under `app/src/test` (173 JVM `@Test` method annotations in 20 classes — static inventory counted by `selfcheck-native-transcript.sh`, not executed native/device tests). `assembleDebug` also runs `testDebugUnitTest` (see `app/build.gradle.kts`). Static wiring checks: `apps/android/scripts/selfcheck-native-transcript.sh` (no Gradle).
 
 ### Design refresh helpers (no Gradle)
 
@@ -54,7 +54,7 @@ python3 scripts/android/test-design-helpers.py
 
 Optional: `--cache-dir` (or `ZERONA_JVM_CACHE`, default `~/.cache/zerona-jvm`), `GRADLE_USER_HOME` (default `~/.gradle`) for the Kotlin compiler glob, `--compiler-classpath`, `--trove-classpath`, `--stdlib`, `--annotations`, `--junit-classpath`. `PaletteBackgroundTest` and full Compose UI still require `:app:testDebugUnitTest` on CI.
 
-**M1–M3 Expressive motion (shell):** `MaterialExpressiveTheme` + `MotionScheme.expressive()` in `ui/theme/Theme.kt`; ornamental gating via `Settings.Global.ANIMATOR_DURATION_SCALE` (`ZeronaOrnamentalMotionProvider` in `ui/theme/ZeronaMotion.kt`, shared `CompositionLocal`); initial loading via `ui/ExpressiveLoading.kt` (`LoadingIndicator` when animator scale &gt; 0, else static decorative ring — not an indeterminate spinner). Navigation, composer, sessions tactility, and Latest appearance consume theme spatial/effects specs (no app-owned spatial tween durations). Native transcript / `ValueAnimator` paths unchanged (M4). JVM helper runner: **72** tests including `ZeronaMotionPolicyTest` (6 methods); does not validate on-device motion, Compose compile, or animation frames.
+**M1–M3 Expressive motion (shell):** `MaterialExpressiveTheme` + `MotionScheme.expressive()` in `ui/theme/Theme.kt`; ornamental gating via `Settings.Global.ANIMATOR_DURATION_SCALE` (`ZeronaOrnamentalMotionProvider` in `ui/theme/ZeronaMotion.kt`, shared `CompositionLocal`); initial loading via `ui/ExpressiveLoading.kt` (`LoadingIndicator` when animator scale &gt; 0, else static decorative ring — not an indeterminate spinner). Navigation, composer, sessions tactility, and Latest appearance consume theme spatial/effects specs (no app-owned spatial tween durations). Native transcript / `ValueAnimator` paths unchanged (M4). JVM helper runner: **93** tests including `ZeronaMotionPolicyTest` (8 methods) and `RowStreamMotionPolicyTest` (10 methods); does not validate on-device motion, Compose compile, or animation frames.
 
 ## Manual transcript checks (device)
 

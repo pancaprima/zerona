@@ -36,6 +36,7 @@ class RowView(
     private var longPressActive = false
     private var streamAnimator: ValueAnimator? = null
     private var streamAnimGeneration = 0
+    private var streamRevealPhase = RowStreamMotionPolicy.StreamRevealPhase.None
 
     var model: RowDrawModel? = null
     var rowKey: ULong = 0u
@@ -114,7 +115,25 @@ class RowView(
                 d.text.length > previousText.length
         val veilFrom = if (grew) previousText!!.length else 0
 
-        cancelStreamAnimation()
+        val motion =
+            RowStreamMotionPolicy.onConfigure(
+                RowStreamMotionPolicy.Input(
+                    priorKey = priorKey,
+                    newKey = d.key,
+                    grew = grew,
+                    veilFrom = veilFrom,
+                    allowEntrance = allowEntrance,
+                    streamRevealPhase = streamRevealPhase,
+                    streamAnimatorRunning = streamAnimator?.isRunning == true,
+                ),
+            )
+        if (motion.shouldCancelStreamAnimator) {
+            cancelStreamAnimation()
+        }
+        streamRevealPhase = motion.streamRevealPhase
+        if (motion.shouldClearRowEntrance) {
+            ZeronaNativeMotion.clearRowEntrance(this)
+        }
 
         model = drawModel
         rowKey = d.key
@@ -131,7 +150,7 @@ class RowView(
         canvas.layoutDensity = density
         freshCanvas.layoutDensity = density
 
-        if (grew && veilFrom > 0) {
+        if (motion.useStreamVeil) {
             canvas.pass = RowDrawModel.Pass.SETTLED
             canvas.veilFrom = veilFrom
             freshCanvas.pass = RowDrawModel.Pass.FRESH
@@ -139,57 +158,59 @@ class RowView(
             freshCanvas.model = drawModel
             freshCanvas.dark = dark
             freshCanvas.visibility = VISIBLE
-            freshCanvas.alpha = 0f
-            val generation = ++streamAnimGeneration
-            val revealMs = ZeronaNativeMotion.streamRevealDurationMs(context)
-            streamAnimator =
-                ValueAnimator.ofFloat(0f, 1f).apply {
-                    duration = revealMs
-                    addUpdateListener { anim ->
-                        if (generation != streamAnimGeneration) return@addUpdateListener
-                        freshCanvas.alpha = anim.animatedValue as Float
-                    }
-                    addListener(
-                        object : AnimatorListenerAdapter() {
-                            override fun onAnimationEnd(animation: Animator) {
-                                if (generation != streamAnimGeneration) return
-                                finishStreamReveal()
-                            }
+            if (motion.shouldStartStreamReveal) {
+                freshCanvas.alpha = 0f
+                val generation = ++streamAnimGeneration
+                val revealMs = ZeronaNativeMotion.streamRevealDurationMs(context)
+                streamAnimator =
+                    ValueAnimator.ofFloat(0f, 1f).apply {
+                        duration = revealMs
+                        addUpdateListener { anim ->
+                            if (generation != streamAnimGeneration) return@addUpdateListener
+                            freshCanvas.alpha = anim.animatedValue as Float
+                        }
+                        addListener(
+                            object : AnimatorListenerAdapter() {
+                                override fun onAnimationEnd(animation: Animator) {
+                                    if (generation != streamAnimGeneration) return
+                                    finishStreamReveal()
+                                }
 
-                            override fun onAnimationCancel(animation: Animator) {
-                                if (generation != streamAnimGeneration) return
-                            }
-                        },
-                    )
-                    if (revealMs == 0L) {
-                        freshCanvas.alpha = 1f
-                        finishStreamReveal()
-                    } else {
-                        start()
+                                override fun onAnimationCancel(animation: Animator) {
+                                    if (generation != streamAnimGeneration) return
+                                }
+                            },
+                        )
+                        if (revealMs == 0L) {
+                            freshCanvas.alpha = 1f
+                            finishStreamReveal()
+                        } else {
+                            start()
+                        }
                     }
-                }
+            }
         } else {
             canvas.pass = RowDrawModel.Pass.ALL
+            canvas.veilFrom = 0
             freshCanvas.visibility = GONE
         }
-        if (allowEntrance && !grew && veilFrom == 0) {
+        if (motion.shouldPlayRowEntrance) {
             ZeronaNativeMotion.playRowEntrance(this, rowKind)
-        } else {
-            ZeronaNativeMotion.clearRowEntrance(this)
         }
         canvas.model = drawModel
         canvas.dark = dark
         canvas.layerIndex = 0
         canvas.invalidate()
 
-        layoutScrollers(drawModel, density, streamingBody = grew && veilFrom > 0)
+        layoutScrollers(drawModel, density, streamingBody = motion.useStreamVeil)
         layoutWidgets(d, density)
         layoutLinkOverlays(d, density)
         contentDescription = rowAccessibilityLabel(d, rowKind)
-        return allowEntrance && !grew && veilFrom == 0
+        return motion.shouldPlayRowEntrance
     }
 
     private fun finishStreamReveal() {
+        streamRevealPhase = RowStreamMotionPolicy.onStreamRevealFinished(streamRevealPhase)
         canvas.pass = RowDrawModel.Pass.ALL
         canvas.veilFrom = 0
         canvas.invalidate()
@@ -435,6 +456,7 @@ class RowView(
     fun resetForPool() {
         longPressActive = false
         ZeronaNativeMotion.clearRowEntrance(this)
+        streamRevealPhase = RowStreamMotionPolicy.StreamRevealPhase.None
         cancelStreamAnimation()
         for (v in widgetViews) {
             if (v is TranscriptImageWidget) {
