@@ -15,6 +15,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -22,6 +23,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import sh.zeron.zerona.fcm.FcmTokenStore
 import sh.zeron.zerona.core.AndroidPlatformMeasurer
 import sh.zeron.zerona.core.FontLoader
 import sh.zeron.zerona.core.GeistTypefaces
@@ -40,6 +42,9 @@ import uniffi.zeron_core.DemoFixture
 import uniffi.zeron_core.DemoOptions
 import uniffi.zeron_core.FrontPage
 import uniffi.zeron_core.ProjectView
+import uniffi.zeron_core.PushPrefs
+import uniffi.zeron_core.ChatIndicator
+import uniffi.zeron_core.SendState
 import uniffi.zeron_core.SessionRow
 import uniffi.zeron_core.StreamSpeed
 import uniffi.zeron_core.TextSystem
@@ -58,6 +63,7 @@ data class SessionRowUi(
     val id: String,
     val title: String,
     val timeLabel: String,
+    val status: SessionStatusKind = SessionStatusKind.NONE,
 )
 
 data class SessionSectionUi(
@@ -100,6 +106,9 @@ class AppModel(
     private val _state = MutableStateFlow(AppUiState())
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
+    private val _pendingChatId = MutableStateFlow<String?>(null)
+    val pendingChatId: StateFlow<String?> = _pendingChatId.asStateFlow()
+
     private val refreshCounter = MutableStateFlow(0L)
     val refreshTick: StateFlow<Long> = refreshCounter.asStateFlow()
 
@@ -115,11 +124,23 @@ class AppModel(
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var processLifecycleRegistered = false
 
+    private val sessionPushPrefs =
+        PushPrefs(done = true, input = true, failed = true)
+
     fun textSystemOrNull(): TextSystem? = textSystem
 
     fun applicationContext(): Context = appContext
 
+    fun openChatFromNotification(chatId: String) {
+        _pendingChatId.value = chatId
+    }
+
+    fun clearPendingChatFromNotification() {
+        _pendingChatId.value = null
+    }
+
     init {
+        FcmTokenStore.onTokenSaved = { token -> registerFcmIfReady(token) }
         viewModelScope.launch {
             val err = ZeronCoreLoader.ensureLoaded()
             if (err != null) {
@@ -219,6 +240,7 @@ class AppModel(
         val wasDemo = _state.value.isDemo
         stopClient(keepLiveDataDir = !wasDemo)
         credentialsStore.clear()
+        clearPendingChatFromNotification()
         if (!wasDemo) {
             liveCoreDir().deleteRecursively()
         }
@@ -371,6 +393,7 @@ class AppModel(
                     orgChoices = null,
                 )
             }
+            tryRegisterStoredFcmToken()
         } catch (e: Exception) {
             if (e is CoreException.Auth) {
                 credentialsStore.clear()
@@ -451,8 +474,10 @@ class AppModel(
     }
 
     private fun handleAuthExpired() {
+        unregisterFcmPushTargetIfNeeded()
         shutdownClient()
         credentialsStore.clear()
+        clearPendingChatFromNotification()
         _state.update {
             AppUiState(
                 coreVersion = it.coreVersion.ifEmpty { coreVersion() },
@@ -469,6 +494,7 @@ class AppModel(
     }
 
     private fun stopClient(keepLiveDataDir: Boolean) {
+        unregisterFcmPushTargetIfNeeded()
         shutdownClient()
         if (!keepLiveDataDir) {
             liveCoreDir().deleteRecursively()
@@ -556,6 +582,12 @@ class AppModel(
                 }
             },
         )
+    }
+
+    fun refreshSessionsList() {
+        val core = client ?: return
+        if (_state.value.isDemo || !_state.value.signedIn) return
+        refreshWorkspace(core)
     }
 
     private fun refreshWorkspace(core: CoreClient) {
@@ -653,7 +685,29 @@ class AppModel(
             id = id,
             title = title,
             timeLabel = timeLabel,
+            status =
+                sessionStatusKind(
+                    indicator.toSessionIndicator(),
+                    unseen,
+                    sendState?.toSessionSendState(),
+                ),
         )
+
+    private fun ChatIndicator.toSessionIndicator(): SessionIndicator =
+        when (this) {
+            ChatIndicator.WORKING -> SessionIndicator.WORKING
+            ChatIndicator.AWAITING_INPUT -> SessionIndicator.AWAITING_INPUT
+            ChatIndicator.ERRORED -> SessionIndicator.ERRORED
+            ChatIndicator.COMPLETED -> SessionIndicator.COMPLETED
+            ChatIndicator.IDLE -> SessionIndicator.IDLE
+        }
+
+    private fun SendState.toSessionSendState(): SessionSendState =
+        when (this) {
+            SendState.SENDING -> SessionSendState.SENDING
+            SendState.QUEUED -> SessionSendState.QUEUED
+            SendState.FAILED -> SessionSendState.FAILED
+        }
 
     private fun stableDeviceId(): String {
         val prefs = appContext.getSharedPreferences("zerona", Context.MODE_PRIVATE)
@@ -667,6 +721,41 @@ class AppModel(
     private fun deviceName(): String {
         val name = Settings.Global.getString(appContext.contentResolver, Settings.Global.DEVICE_NAME)
         return name?.takeIf { it.isNotBlank() } ?: "Android device"
+    }
+
+    private fun tryRegisterStoredFcmToken() {
+        val token = FcmTokenStore.getToken(appContext) ?: return
+        registerFcmIfReady(token)
+    }
+
+    private fun registerFcmIfReady(token: String) {
+        val core = client ?: return
+        if (_state.value.isDemo || !_state.value.signedIn) return
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.Default) {
+                    core.registerFcmPushTarget(token, sessionPushPrefs)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun unregisterFcmPushTargetIfNeeded() {
+        val core = client ?: return
+        if (_state.value.isDemo) return
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.Default) {
+                    core.unregisterPushTarget()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            }
+        }
     }
 
     private fun formatCoreError(e: Exception): String =

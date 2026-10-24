@@ -25,11 +25,20 @@
  */
 import { applyOp, validateOp, type Op, type Row } from "./registry-core";
 import { chatHost, parentOf, runnerCanSee, runnerOpRefusal, type RunnerScope } from "./registry-runner";
-import { AUTH_USER_HEADER, RUNNER_ACCOUNT_HEADER, RUNNER_DEVICE_HEADER, apnsConfig, type Env } from "./env";
-import { isDeadToken, sendApns, type ApnsEnvironment } from "./apns";
+import {
+  AUTH_USER_HEADER,
+  RUNNER_ACCOUNT_HEADER,
+  RUNNER_DEVICE_HEADER,
+  apnsConfig,
+  fcmConfig,
+  type Env
+} from "./env";
+import { isDeadToken as isDeadApnsToken, sendApns, type ApnsEnvironment } from "./apns";
+import { isDeadToken as isDeadFcmToken, sendFcm } from "./fcm";
 import {
   apnsPayload,
   chatForNotification,
+  fcmPayload,
   notificationFor,
   parsePrefs,
   type Category,
@@ -73,10 +82,11 @@ interface PushOutcome {
   lastOkAt: number;
 }
 
-/** A phone that asked for notifications (APNs token + its choices). */
+/** A phone that asked for notifications (push token + its choices). */
 interface PushTarget {
   device: string;
   token: string;
+  kind: "apns" | "fcm";
   environment: ApnsEnvironment;
   prefs: PushPrefs;
 }
@@ -98,6 +108,7 @@ interface PushLogEntry {
 }
 
 const TOKEN_RE = /^[0-9a-fA-F]{32,512}$/;
+const FCM_TOKEN_RE = /^[^\s]{20,4096}$/;
 const PUSH_LOG_MAX = 30;
 
 export class RegistryRoom implements DurableObject {
@@ -121,6 +132,10 @@ export class RegistryRoom implements DurableObject {
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS push_targets (device TEXT PRIMARY KEY, token TEXT NOT NULL, environment TEXT NOT NULL, prefs TEXT NOT NULL, updated_at INTEGER NOT NULL)"
     );
+    const pushColumns = [...ctx.storage.sql.exec("PRAGMA table_info(push_targets)")];
+    if (!pushColumns.some((c) => c.name === "kind")) {
+      ctx.storage.sql.exec("ALTER TABLE push_targets ADD COLUMN kind TEXT NOT NULL DEFAULT 'apns'");
+    }
     // Same protocol-level keepalive as SessionRoom — and the same caveat: a
     // pong is runtime-answered and proves nothing about this DO's health.
     // Clients judge liveness by probe frames (crates/sync/src/registry.rs).
@@ -306,7 +321,7 @@ export class RegistryRoom implements DurableObject {
         lastBackupSeq: Number(this.getMeta("backupSeq") ?? "0"),
         lastGcAt: Number(this.getMeta("lastGcAt") ?? "0"),
         pushTargets: this.pushTargets().map((t) => ({ device: t.device, environment: t.environment, prefs: t.prefs })),
-        pushConfigured: apnsConfig(this.env) !== undefined,
+        pushConfigured: apnsConfig(this.env) !== undefined || fcmConfig(this.env) !== undefined,
         pushLog: JSON.parse(this.getMeta("pushLog") ?? "[]") as PushLogEntry[]
       });
     }
@@ -327,18 +342,30 @@ export class RegistryRoom implements DurableObject {
         } catch {
           return json({ error: "bad_request", message: "malformed body" }, 400);
         }
+        const kind = body.kind === "fcm" ? "fcm" : "apns";
         const token = typeof body.token === "string" ? body.token : "";
-        const environment = body.environment === "sandbox" ? "sandbox" : body.environment === "production" ? "production" : undefined;
-        if (!TOKEN_RE.test(token) || environment === undefined) {
-          return json({ error: "bad_request", message: "token and environment required" }, 400);
+        let environment: ApnsEnvironment | "";
+        if (kind === "fcm") {
+          if (!FCM_TOKEN_RE.test(token)) {
+            return json({ error: "bad_request", message: "token required" }, 400);
+          }
+          environment = "";
+        } else {
+          const env =
+            body.environment === "sandbox" ? "sandbox" : body.environment === "production" ? "production" : undefined;
+          if (!TOKEN_RE.test(token) || env === undefined) {
+            return json({ error: "bad_request", message: "token and environment required" }, 400);
+          }
+          environment = env;
         }
         this.ctx.storage.sql.exec(
-          "INSERT INTO push_targets (device, token, environment, prefs, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(device) DO UPDATE SET token = excluded.token, environment = excluded.environment, prefs = excluded.prefs, updated_at = excluded.updated_at",
+          "INSERT INTO push_targets (device, token, environment, prefs, updated_at, kind) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(device) DO UPDATE SET token = excluded.token, environment = excluded.environment, prefs = excluded.prefs, updated_at = excluded.updated_at, kind = excluded.kind",
           device,
           token,
           environment,
           JSON.stringify(parsePrefs(body.prefs)),
-          Date.now()
+          Date.now(),
+          kind
         );
         return json({ ok: true });
       }
@@ -630,12 +657,15 @@ export class RegistryRoom implements DurableObject {
   // ── push notifications ───────────────────────────────────────────────────
 
   private pushTargets(): PushTarget[] {
-    return [...this.ctx.storage.sql.exec("SELECT device, token, environment, prefs FROM push_targets")].map((raw) => ({
-      device: raw.device as string,
-      token: raw.token as string,
-      environment: (raw.environment as string) === "sandbox" ? "sandbox" : "production",
-      prefs: parsePrefs(JSON.parse(raw.prefs as string))
-    }));
+    return [...this.ctx.storage.sql.exec("SELECT device, token, environment, prefs, kind FROM push_targets")].map(
+      (raw) => ({
+        device: raw.device as string,
+        token: raw.token as string,
+        kind: (raw.kind as string) === "fcm" ? "fcm" : "apns",
+        environment: (raw.environment as string) === "sandbox" ? "sandbox" : "production",
+        prefs: parsePrefs(JSON.parse(raw.prefs as string))
+      })
+    );
   }
 
   /** Session rows that changed in a batch → the desktop's notifications
@@ -656,7 +686,8 @@ export class RegistryRoom implements DurableObject {
     }
     if (notes.length === 0) return;
     const targets = this.pushTargets();
-    const config = apnsConfig(this.env);
+    const apnsCfg = apnsConfig(this.env);
+    const fcmCfg = fcmConfig(this.env);
     const log: PushLogEntry[] = [];
     const sends: Array<() => Promise<void>> = [];
     for (const note of notes) {
@@ -664,21 +695,50 @@ export class RegistryRoom implements DurableObject {
         if (!target.prefs[note.category]) continue;
         const entry: PushLogEntry = { at: now, chatId: note.chatId, category: note.category, device: target.device, result: "pending" };
         log.push(entry);
-        if (config === undefined) {
-          entry.result = "not configured";
-          continue;
-        }
-        sends.push(async () => {
-          try {
-            const r = await sendApns(config, target.environment, target.token, apnsPayload(note.chatId, note.title, note.category), note.chatId);
-            entry.result = r.reason ? `${r.status} ${r.reason}` : String(r.status);
-            if (isDeadToken(r)) {
-              this.ctx.storage.sql.exec("DELETE FROM push_targets WHERE device = ? AND token = ?", target.device, target.token);
-            }
-          } catch (err) {
-            entry.result = `error ${(err as Error).message}`;
+        if (target.kind === "fcm") {
+          if (fcmCfg === undefined) {
+            entry.result = "not configured";
+            continue;
           }
-        });
+          sends.push(async () => {
+            try {
+              const r = await sendFcm(
+                fcmCfg,
+                target.token,
+                fcmPayload(note.chatId, note.title, note.category),
+                note.chatId
+              );
+              entry.result = r.reason ? `${r.status} ${r.reason}` : String(r.status);
+              if (isDeadFcmToken(r)) {
+                this.ctx.storage.sql.exec("DELETE FROM push_targets WHERE device = ? AND token = ?", target.device, target.token);
+              }
+            } catch (err) {
+              entry.result = `error ${(err as Error).message}`;
+            }
+          });
+        } else {
+          if (apnsCfg === undefined) {
+            entry.result = "not configured";
+            continue;
+          }
+          sends.push(async () => {
+            try {
+              const r = await sendApns(
+                apnsCfg,
+                target.environment,
+                target.token,
+                apnsPayload(note.chatId, note.title, note.category),
+                note.chatId
+              );
+              entry.result = r.reason ? `${r.status} ${r.reason}` : String(r.status);
+              if (isDeadApnsToken(r)) {
+                this.ctx.storage.sql.exec("DELETE FROM push_targets WHERE device = ? AND token = ?", target.device, target.token);
+              }
+            } catch (err) {
+              entry.result = `error ${(err as Error).message}`;
+            }
+          });
+        }
       }
     }
     if (targets.length === 0) {

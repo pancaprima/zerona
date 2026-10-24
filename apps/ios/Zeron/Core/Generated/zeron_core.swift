@@ -1182,6 +1182,11 @@ public protocol CoreClientProtocol: AnyObject, Sendable {
     func readAttachment(deviceId: String, path: String) async throws  -> Data
     
     /**
+     * Ask for session notifications on this device (FCM token and which kinds).
+     */
+    func registerFcmPushTarget(token: String, prefs: PushPrefs) async throws 
+    
+    /**
      * Ask for session notifications on this device (APNs token as hex,
      * "production" | "sandbox", and which kinds).
      */
@@ -1951,6 +1956,25 @@ open func readAttachment(deviceId: String, path: String)async throws  -> Data  {
             completeFunc: ffi_zeron_mobile_rust_future_complete_rust_buffer,
             freeFunc: ffi_zeron_mobile_rust_future_free_rust_buffer,
             liftFunc: FfiConverterData.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+    /**
+     * Ask for session notifications on this device (FCM token and which kinds).
+     */
+open func registerFcmPushTarget(token: String, prefs: PushPrefs)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_zeron_mobile_fn_method_coreclient_register_fcm_push_target(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(token),FfiConverterTypePushPrefs_lower(prefs)
+                )
+            },
+            pollFunc: ffi_zeron_mobile_rust_future_poll_void,
+            completeFunc: ffi_zeron_mobile_rust_future_complete_void,
+            freeFunc: ffi_zeron_mobile_rust_future_free_void,
+            liftFunc: { $0 },
             errorHandler: FfiConverterTypeCoreError_lift
         )
 }
@@ -19959,6 +19983,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_zeron_mobile_checksum_method_coreclient_read_attachment() != 50982) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_zeron_mobile_checksum_method_coreclient_register_fcm_push_target() != 54243) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_zeron_mobile_checksum_method_coreclient_register_push_target() != 33942) {

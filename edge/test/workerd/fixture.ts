@@ -128,7 +128,7 @@ export default {
     const id = /^[A-Za-z0-9_-]{1,128}$/;
     if (parts[0] === "device" && parts[1] && id.test(parts[1])) {
       const deviceId = parts[1];
-      const room = `d2/${deviceId}`;
+      const room = `d3/${deviceId}`;
       if (parts[2] === "ws" || parts[2] === "nudge") {
         const refusedDevice = await runnerDeviceGate(env, auth, deviceId);
         if (refusedDevice) return refusedDevice;

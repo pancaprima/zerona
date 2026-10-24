@@ -606,7 +606,7 @@ export class ChatRoom implements DurableObject {
     let accepted = false;
     let rejected = false;
     try {
-      const room = this.env.DEVICE_ROOMS.get(this.env.DEVICE_ROOMS.idFromName(`d2/${wake.host_device}`));
+      const room = this.env.DEVICE_ROOMS.get(this.env.DEVICE_ROOMS.idFromName(`d3/${wake.host_device}`));
       const response = await room.fetch("https://device/nudge", {
         method: "POST", headers: { [AUTH_USER_HEADER]: wake.user_id },
         body: JSON.stringify({ chatId: wake.chat_id }), signal: AbortSignal.timeout(5000)

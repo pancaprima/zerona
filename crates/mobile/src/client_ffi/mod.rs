@@ -420,6 +420,24 @@ impl CoreClient {
         .await
     }
 
+    /// Ask for session notifications on this device (FCM token and which kinds).
+    pub async fn register_fcm_push_target(
+        &self,
+        token: String,
+        prefs: PushPrefs,
+    ) -> CoreResult<()> {
+        let client = self.client.clone();
+        on_runtime(async move {
+            client
+                .register_fcm_push_target(
+                    &token,
+                    zc::PushPrefs { done: prefs.done, input: prefs.input, failed: prefs.failed },
+                )
+                .await
+        })
+        .await
+    }
+
     /// Stop session notifications to this device.
     pub async fn unregister_push_target(&self) -> CoreResult<()> {
         let client = self.client.clone();
