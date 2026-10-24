@@ -1,3 +1,4 @@
+import java.io.File
 import java.util.Base64
 
 plugins {
@@ -26,7 +27,7 @@ fun requiredReleaseEnv(name: String): String {
     return value
 }
 
-fun resolveReleaseKeystoreFile(): java.io.File {
+fun resolveReleaseKeystoreFile(): File {
     val base64 = requiredReleaseEnv("ANDROID_RELEASE_KEYSTORE_BASE64")
     val decoded =
         try {
@@ -38,14 +39,14 @@ fun resolveReleaseKeystoreFile(): java.io.File {
         throw GradleException("ANDROID_RELEASE_KEYSTORE_BASE64 decoded to an empty keystore.")
     }
     val parent =
-        System.getenv("RUNNER_TEMP")?.let { java.io.File(it) }
-            ?: java.io.File(System.getProperty("java.io.tmpdir"))
+        System.getenv("RUNNER_TEMP")?.let { File(it) }
+            ?: File(System.getProperty("java.io.tmpdir"))
     if (!parent.isDirectory) {
         throw GradleException(
             "Cannot write release keystore: temporary directory missing (${parent.absolutePath}).",
         )
     }
-    val keystore = java.io.File.createTempFile("zerona-android-release-", ".keystore", parent)
+    val keystore = File.createTempFile("zerona-android-release-", ".keystore", parent)
     keystore.writeBytes(decoded)
     keystore.deleteOnExit()
     return keystore
