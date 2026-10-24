@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#0F0635</color>
+    <color name="ic_launcher_background">#09052B</color>
     <color name="zerona_background">#EBE8F0</color>
     <color name="zerona_surface">#F7F5FA</color>
     <color name="zerona_on_surface">#1C1B22</color>
