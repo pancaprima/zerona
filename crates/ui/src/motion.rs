@@ -438,6 +438,10 @@ impl MotionSpec {
 
 /// Entrances: 0.5s expo-out fade + 4px rise.
 pub const FADE_IN: MotionSpec = MotionSpec::new(500, EASE_OUT_EXPO);
+/// Assistant transcript block: ease in from the left.
+pub const ASSISTANT_MESSAGE_ENTRANCE: MotionSpec = MotionSpec::new(420, EASE_OUT_EXPO);
+/// User bubble: ease in from the lower-right with a restrained vertical bounce.
+pub const USER_MESSAGE_ENTRANCE: MotionSpec = MotionSpec::new(480, EASE_OUT_QUINT);
 /// Quick fade: 0.15s.
 pub const FADE_QUICK: MotionSpec = MotionSpec::new(150, EASE);
 /// Wallpaper replacement: immediate attack with a short, soft landing.
@@ -579,6 +583,46 @@ pub fn resize_bounce_offset(edge: ResizeEdge, raw: f32) -> f32 {
 // ---------------------------------------------------------------------------
 // Element helpers (paint-layer entrances/exits)
 // ---------------------------------------------------------------------------
+
+/// Paint offsets for a message-row entrance (`progress` is eased 0..1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MessageEntrancePaint {
+    pub opacity: f32,
+    pub left: f32,
+    pub top: f32,
+}
+
+/// Incoming assistant content slides in from the left.
+pub fn assistant_message_entrance_paint(progress: f32) -> MessageEntrancePaint {
+    let t = progress.clamp(0.0, 1.0);
+    let eased = ASSISTANT_MESSAGE_ENTRANCE.curve.eval(t);
+    MessageEntrancePaint {
+        opacity: eased,
+        left: -14.0 * (1.0 - eased),
+        top: 0.0,
+    }
+}
+
+/// Outgoing user bubble arrives from the lower-right; vertical motion carries a
+/// small bounce in the last quarter of the timeline.
+pub fn user_message_entrance_paint(progress: f32) -> MessageEntrancePaint {
+    let t = progress.clamp(0.0, 1.0);
+    let eased = USER_MESSAGE_ENTRANCE.curve.eval(t);
+    let bounce = user_message_entrance_bounce(t);
+    MessageEntrancePaint {
+        opacity: eased.min(1.0),
+        left: 12.0 * (1.0 - eased),
+        top: 8.0 * (1.0 - eased) + bounce,
+    }
+}
+
+fn user_message_entrance_bounce(t: f32) -> f32 {
+    if t <= 0.75 || t >= 1.0 {
+        return 0.0;
+    }
+    let tail = (t - 0.75) / 0.25;
+    -1.75 * (std::f32::consts::PI * tail).sin() * (1.0 - tail)
+}
 
 /// Standard entrance: opacity 0→1 + translateY 4→0 over [`FADE_IN`].
 pub fn fade_in<E>(id: impl Into<ElementId>, element: E) -> AnimationElement<E>
@@ -1905,6 +1949,32 @@ mod tests {
         assert!(mid_fall > 0.1 && mid_fall < 1.0, "eases down");
         let mid_rise = gspin_opacity(0.96, 0.1);
         assert!(mid_rise > 0.1 && mid_rise < 1.0, "eases up");
+    }
+
+    #[test]
+    fn message_entrances_start_offset_and_settle_at_rest() {
+        let assistant_start = assistant_message_entrance_paint(0.0);
+        assert_eq!(assistant_start.opacity, 0.0);
+        assert!(assistant_start.left < 0.0);
+        assert_eq!(assistant_start.top, 0.0);
+        let assistant_end = assistant_message_entrance_paint(1.0);
+        assert_eq!(assistant_end.opacity, 1.0);
+        assert_eq!(assistant_end.left, 0.0);
+        assert_eq!(assistant_end.top, 0.0);
+
+        let user_start = user_message_entrance_paint(0.0);
+        assert_eq!(user_start.opacity, 0.0);
+        assert!(user_start.left > 0.0 && user_start.top > 0.0);
+        let user_end = user_message_entrance_paint(1.0);
+        assert_eq!(user_end.opacity, 1.0);
+        assert_eq!(user_end.left, 0.0);
+        assert_eq!(user_end.top, 0.0);
+        let mid = user_message_entrance_paint(0.88);
+        assert!(
+            mid.top < 0.0,
+            "restrained bounce should briefly overshoot upward: {}",
+            mid.top
+        );
     }
 
     #[test]

@@ -543,7 +543,125 @@ fn progress_arc(
     .inset_0()
 }
 
-/// Full-window boot splash: the app's dot loader (the same [`gradient_spinner`]
+/// Indeterminate transcript replay bar: a pale track with a sliding blue fill
+/// and a bright cap at its leading edge. No percentage — the motion is purely
+/// cyclic (reference chat loading strip).
+const TRANSCRIPT_LOAD_PERIOD: std::time::Duration = std::time::Duration::from_millis(1_400);
+/// Fill segment width as a share of the track (never 100% — not a fake percent).
+const TRANSCRIPT_LOAD_FILL_FRAC: f32 = 0.38;
+
+/// Horizontal position `[0, 1 - FILL_FRAC]` of the fill's left edge for raw
+/// phase `raw ∈ [0, 1)` of [`TRANSCRIPT_LOAD_PERIOD`].
+pub fn transcript_load_bar_offset(raw: f32) -> f32 {
+    let raw = raw.fract();
+    let travel = 1.0 - TRANSCRIPT_LOAD_FILL_FRAC;
+    raw * travel
+}
+
+/// The replay loading strip mounted under the titlebar while a chat's history
+/// hydrates. Uses [`Role::ProgressIndicator`] with an indeterminate label.
+pub fn transcript_loading_bar(
+    key: impl Into<SharedString>,
+    theme: &Theme,
+    _view: EntityId,
+    cx: &mut App,
+) -> impl IntoElement {
+    TranscriptLoadBar {
+        key: key.into(),
+        track: theme.accent.opacity(0.14),
+        fill: theme.accent.opacity(0.88),
+        marker: theme.accent,
+    }
+}
+
+#[derive(IntoElement)]
+struct TranscriptLoadBar {
+    key: SharedString,
+    track: gpui::Hsla,
+    fill: gpui::Hsla,
+    marker: gpui::Hsla,
+}
+
+impl RenderOnce for TranscriptLoadBar {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let (track, fill, marker) = (self.track, self.fill, self.marker);
+        let view_entity = window.with_global_id(self.key.into(), |id, window| {
+            window.with_element_state(id, |previous: Option<Entity<TranscriptLoadBarView>>, _| {
+                let view = previous.unwrap_or_else(|| {
+                    cx.new(|_| TranscriptLoadBarView {
+                        track,
+                        fill,
+                        marker,
+                    })
+                });
+                view.update(cx, |view, cx| {
+                    if view.track != track || view.fill != fill || view.marker != marker {
+                        view.track = track;
+                        view.fill = fill;
+                        view.marker = marker;
+                        cx.notify();
+                    }
+                });
+                (view.clone(), view)
+            })
+        });
+        view_entity.cached(gpui::StyleRefinement::default().h(px(3.0)).w_full())
+    }
+}
+
+struct TranscriptLoadBarView {
+    track: gpui::Hsla,
+    fill: gpui::Hsla,
+    marker: gpui::Hsla,
+}
+
+impl Render for TranscriptLoadBarView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let phase = motion::spin_phase(cx.entity_id(), TRANSCRIPT_LOAD_PERIOD, cx).unwrap_or(0.0);
+        let offset = transcript_load_bar_offset(phase);
+        let (track, fill, marker) = (self.track, self.fill, self.marker);
+        div()
+            .role(gpui::Role::ProgressIndicator)
+            .aria_label("Loading conversation")
+            .w_full()
+            .h(px(3.0))
+            .child(
+                canvas(
+                    move |_, _, _| (),
+                    move |bounds, _, window, _| {
+                        let width = f32::from(bounds.size.width);
+                        let height = f32::from(bounds.size.height);
+                        if width <= 0.0 || height <= 0.0 {
+                            return;
+                        }
+                        let radius = px(height / 2.0);
+                        window.paint_quad(gpui::fill(bounds, track).corner_radii(radius));
+                        let fill_w = width * TRANSCRIPT_LOAD_FILL_FRAC;
+                        let left = f32::from(bounds.left()) + offset * (width - fill_w);
+                        let fill_bounds = gpui::Bounds {
+                            origin: gpui::point(px(left), bounds.origin.y),
+                            size: gpui::size(px(fill_w), bounds.size.height),
+                        };
+                        window.paint_quad(gpui::fill(fill_bounds, fill).corner_radii(radius));
+                        let marker_size = height + 2.0;
+                        let marker_bounds = gpui::Bounds::centered_at(
+                            gpui::point(
+                                bounds.right() - px(marker_size / 2.0),
+                                bounds.center().y,
+                            ),
+                            gpui::size(px(marker_size), px(marker_size)),
+                        );
+                        window.paint_quad(
+                            gpui::fill(marker_bounds, marker).corner_radii(px(marker_size / 2.0)),
+                        );
+                    },
+                )
+                .size_full(),
+            )
+    }
+}
+
+/// Full-window boot splash: the app's dot loader (the same [`gradient_spinner`])
 /// the session list and the reconnecting line pulse — user request, replacing
 /// the hero ascii) over the app background with a quiet status line. While
 /// `fading` it plays `splash-out` (150ms hold, then 0.5s fade + 6px lift); the
@@ -594,6 +712,22 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn TRANSCRIPT_LOAD_BAR_never_fills_the_track() {
+        for step in 0..20 {
+            let raw = step as f32 / 20.0;
+            let offset = transcript_load_bar_offset(raw);
+            assert!(
+                (0.0..=(1.0 - TRANSCRIPT_LOAD_FILL_FRAC + 1e-4)).contains(&offset),
+                "offset {offset} at raw {raw}"
+            );
+            assert!(
+                offset + TRANSCRIPT_LOAD_FILL_FRAC <= 1.0 + 1e-4,
+                "fill must not read as 100%"
+            );
+        }
+    }
 
     #[test]
     fn mark_stagger_follows_flight_axis() {

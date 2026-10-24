@@ -11670,6 +11670,22 @@ impl Shell {
             .h_full()
             .flex()
             .flex_col()
+            .when(self.transcript.read(cx).replay_loading(), |column| {
+                let theme = Theme::of(cx);
+                column.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px(Theme::TITLEBAR_HEIGHT))
+                        .child(loaders::transcript_loading_bar(
+                            "transcript-replay-bar",
+                            &theme,
+                            cx.entity_id(),
+                            cx,
+                        )),
+                )
+            })
             // The hero is deliberately outside the transcript EdgeFade below:
             // it must paint under the overlaid titlebar instead of becoming
             // fully transparent across the titlebar's inset band.
@@ -11823,11 +11839,10 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The "↓ Scroll to bottom" pill (round-9 §3): a LABELED rounded-full
-    /// chip — down-arrow glyph + 13px label on a near-opaque raised surface
-    /// with a hairline — horizontally centered over the transcript column and
-    /// floating six pixels above the composer. It shares the composer's
-    /// measured dock transform and paints after it, outside the transcript fade.
+    /// Icon-only jump-to-latest pill (stacked double chevron), centered over
+    /// the transcript column and floating above the composer. It shares the
+    /// composer's measured dock transform and paints after it, outside the
+    /// transcript fade.
     fn render_jump_to_bottom(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.transcript.read(cx).jump_button_shown() {
             return None;
@@ -11876,12 +11891,16 @@ impl Shell {
         let pill = div()
             .id(anim_key)
             .h(px(30.0))
+            .w(px(30.0))
             .rounded_full()
             .border_1()
             .border_color(theme.border)
             .when(!glass, |el| el.shadow_md())
             .cursor_pointer()
             .bg(base)
+            .role(gpui::Role::Button)
+            .aria_label("Jump to latest")
+            .tooltip(crate::settings::widgets::text_tooltip("Jump to latest"))
             .on_hover(motion::hover_listener(hover_key))
             .on_click(cx.listener(move |_, _, _, cx| {
                 transcript.update(cx, |transcript, cx| transcript.jump_to_bottom(cx));
@@ -11890,25 +11909,30 @@ impl Shell {
                 // The hover wash rides an inner full-height layer so it
                 // composites over the tint (a div has one bg).
                 div()
-                    .h_full()
+                    .size_full()
                     .rounded_full()
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
-                    .pl(px(11.0))
-                    .pr(px(13.0))
+                    .justify_center()
                     .bg(wash)
                     .child(
                         div()
-                            .text_size(crate::typography::ui_rems(13.0))
-                            .text_color(theme.text_muted)
-                            .child(SharedString::from("↓")),
-                    )
-                    .child(
-                        div()
-                            .text_size(crate::typography::ui_rems(13.0))
-                            .text_color(theme.text)
-                            .child(SharedString::from("Scroll to bottom")),
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                icon(icons::ALT_ARROW_DOWN)
+                                    .size(px(10.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(
+                                icon(icons::ALT_ARROW_DOWN)
+                                    .size(px(10.0))
+                                    .text_color(theme.text)
+                                    .relative()
+                                    .top(px(-5.0)),
+                            ),
                     ),
             );
         // Frost OUTSIDE the entry animation (the composer pill's exact

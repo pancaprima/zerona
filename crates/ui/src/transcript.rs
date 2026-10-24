@@ -2749,6 +2749,25 @@ fn tool_row_reveal_progress(start: Option<Instant>, now: Instant, reduce_motion:
     TOOL_ROW_REVEAL.curve.eval(raw)
 }
 
+fn message_row_entrance_progress(
+    start: Option<&Instant>,
+    now: Instant,
+    user: bool,
+    reduce_motion: bool,
+) -> f32 {
+    let Some(start) = start.filter(|_| !reduce_motion) else {
+        return 1.0;
+    };
+    let spec = if user {
+        motion::USER_MESSAGE_ENTRANCE
+    } else {
+        motion::ASSISTANT_MESSAGE_ENTRANCE
+    };
+    let elapsed = now.checked_duration_since(*start).unwrap_or_default();
+    let raw = (elapsed.as_secs_f32() / spec.total().as_secs_f32()).clamp(0.0, 1.0);
+    raw.clamp(0.0, 1.0)
+}
+
 fn tool_connector_reveal_progress(
     start: Option<Instant>,
     now: Instant,
@@ -3247,6 +3266,8 @@ pub struct Transcript {
     /// Entrance state follows stable groups through completion so fast calls
     /// finish revealing. Replay rows have no entrance timestamps.
     tool_group_reveals: HashMap<SharedString, ToolGroupReveal>,
+    /// Per-row message entrance clocks (`None` start ⇒ already settled).
+    row_entrances: HashMap<SharedString, Instant>,
     last_replay_baseline: Option<Arc<zeron_doc::TranscriptBaseline>>,
     /// Parsed historical prefixes, used to seed text before a coalesced live
     /// suffix is painted. The wire watermark contains lengths, not text.
@@ -3668,6 +3689,7 @@ impl Transcript {
             tree_cache: HashMap::new(),
             folds: HashMap::new(),
             tool_group_reveals: HashMap::new(),
+            row_entrances: HashMap::new(),
             last_replay_baseline: None,
             historical_markdown: HashMap::new(),
             tool_details: HashMap::new(),
@@ -4588,6 +4610,101 @@ impl Transcript {
         self.show_jump_button
     }
 
+    /// True while the selected chat's authoritative replay has not landed yet.
+    pub fn replay_loading(&self) -> bool {
+        self.doc_override.is_none()
+            && self
+                .last_source
+                .as_ref()
+                .is_some_and(|(_, replay, _)| *replay == TranscriptReplayState::Pending)
+    }
+
+    /// The send→turn bridge with no working timer yet — status belongs on the
+    /// pending user bubble, not the in-flow working trailer.
+    fn pending_send_bridge_active(&self, cx: &App) -> bool {
+        if self.doc_override.is_some() {
+            return false;
+        }
+        let Some(chat_id) = self.chat_id.as_deref() else {
+            return false;
+        };
+        let state = self.state.read(cx);
+        let now = chrono::Utc::now();
+        if state.send_undelivered(chat_id, now) {
+            return false;
+        }
+        if state.indicator_for(chat_id, now) != crate::state::Indicator::Working {
+            return false;
+        }
+        if state.cloud_setup_turn_started().is_some() {
+            return false;
+        }
+        let turn_started = state.session_for(chat_id).and_then(|s| s.started_at);
+        let send_started = state.pending_send_started(chat_id, now);
+        let sending = sending_bridge(send_started, turn_started);
+        sending && !state.chat_delivery_degraded(chat_id)
+    }
+
+    fn render_pending_send_icon(
+        &self,
+        row_id: &SharedString,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let theme = Theme::of(cx);
+        div()
+            .id(SharedString::from(format!("{row_id}-send-status")))
+            .flex_none()
+            .size(px(22.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .aria_label("Sending…")
+            .tooltip(crate::settings::widgets::text_tooltip("Sending…"))
+            .child(crate::loaders::ring_spinner(
+                format!("{row_id}-send-spinner"),
+                14.0,
+                theme.text_muted,
+            ))
+            .into_any_element()
+    }
+
+    fn apply_message_row_entrance(
+        &self,
+        row: &Row,
+        element: AnyElement,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        if !matches!(
+            row.kind,
+            RowKind::User { .. } | RowKind::Markdown { .. } | RowKind::LiveMarkdown { .. }
+        ) {
+            return element;
+        }
+        let reduce_motion = motion::reduced_motion(cx);
+        let progress = message_row_entrance_progress(
+            self.row_entrances.get(&row.id),
+            Instant::now(),
+            matches!(row.kind, RowKind::User { .. }),
+            reduce_motion,
+        );
+        if progress >= 1.0 {
+            return element;
+        }
+        motion::pulse_lease(cx.entity_id(), cx);
+        let paint = if matches!(row.kind, RowKind::User { .. }) {
+            motion::user_message_entrance_paint(progress)
+        } else {
+            motion::assistant_message_entrance_paint(progress)
+        };
+        div()
+            .relative()
+            .opacity(paint.opacity)
+            .left(px(paint.left))
+            .top(px(paint.top))
+            .child(element)
+            .into_any_element()
+    }
+
     /// The scroll-to-bottom pill's click: glide back to the end and re-pin.
     pub fn jump_to_bottom(&mut self, cx: &mut Context<Self>) {
         self.user_collapse_scroll = None;
@@ -4823,6 +4940,7 @@ impl Transcript {
             self.tree_cache.clear();
             self.folds.clear();
             self.tool_group_reveals.clear();
+            self.row_entrances.clear();
             self.last_replay_baseline = None;
             self.historical_markdown.clear();
             self.user_folds.clear();
@@ -5113,6 +5231,31 @@ impl Transcript {
         }
         self.tool_group_reveals
             .retain(|row_id, _| live_tool_groups.contains(row_id));
+
+        let previous_row_ids: HashSet<SharedString> =
+            self.rows.iter().map(|row| row.id.clone()).collect();
+        let replay_settling = replay == TranscriptReplayState::Pending;
+        for row in &new_rows {
+            let animates = matches!(
+                row.kind,
+                RowKind::User { .. } | RowKind::Markdown { .. } | RowKind::LiveMarkdown { .. }
+            );
+            if !animates {
+                continue;
+            }
+            let historical = fully_historical.contains(&row.entry_id)
+                || (replay_baseline && baseline.is_none())
+                || replay_settling;
+            if historical {
+                self.row_entrances.remove(&row.id);
+                continue;
+            }
+            if !previous_row_ids.contains(&row.id) {
+                self.row_entrances.entry(row.id.clone()).or_insert(now);
+            }
+        }
+        let live_row_ids: HashSet<SharedString> = new_rows.iter().map(|row| row.id.clone()).collect();
+        self.row_entrances.retain(|id, _| live_row_ids.contains(id));
 
         // Runtime scroll handles follow the stable code rows exactly. A live
         // block keeps its handle through completion; deleted/reindexed tail
@@ -7475,6 +7618,9 @@ impl Transcript {
                     booting,
                 )
             };
+        if sending && !queued && booting.is_none() {
+            return None;
+        }
         if self.compact_mode && !sending && !queued && elapsed_secs > 0 {
             let entry_id = if let Some(doc_id) = &self.doc_override {
                 self.state
@@ -7653,6 +7799,7 @@ impl Transcript {
                             })),
                     );
                 }
+                let show_send_icon = pending && self.pending_send_bridge_active(cx);
                 if !text.is_empty() {
                     // `min_w_0` is load-bearing: gpui text answers min/max-content
                     // probes with its UNWRAPPED width, so without it the bubble's
@@ -7661,22 +7808,40 @@ impl Transcript {
                     // left edge, and long prompts render as one clipped line
                     // instead of wrapping inside the 80% column cap.
                     column = column.child(
-                        div().w_full().flex().justify_end().child(
-                            div()
-                                .min_w_0()
-                                .max_w(px(self.content_width * 0.8))
-                                .bg(crate::theme::user_bubble_bg())
-                                .rounded(px(Theme::BUBBLE_RADIUS))
-                                .px(px(16.0))
-                                .py(px(10.0))
-                                .text_size(crate::typography::ui_rems(14.0))
-                                .line_height(crate::typography::ui_rems(USER_LINE_HEIGHT))
-                                .text_color(theme.text)
-                                .when(pending, |el| el.opacity(0.65))
-                                .child(self.render_user_body(
-                                    &row.id, ix, text, mentions, &theme, window, cx,
-                                )),
-                        ),
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .items_end()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .max_w(px(self.content_width * 0.8))
+                                    .bg(crate::theme::user_bubble_bg())
+                                    .rounded(px(Theme::BUBBLE_RADIUS))
+                                    .px(px(16.0))
+                                    .py(px(10.0))
+                                    .text_size(crate::typography::ui_rems(14.0))
+                                    .line_height(crate::typography::ui_rems(USER_LINE_HEIGHT))
+                                    .text_color(theme.text)
+                                    .when(pending, |el| el.opacity(0.65))
+                                    .child(self.render_user_body(
+                                        &row.id, ix, text, mentions, &theme, window, cx,
+                                    )),
+                            )
+                            .when(show_send_icon, |element| {
+                                element.child(self.render_pending_send_icon(&row.id, cx))
+                            }),
+                    );
+                } else if show_send_icon {
+                    column = column.child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .justify_end()
+                            .child(self.render_pending_send_icon(&row.id, cx)),
                     );
                 }
                 column.into_any_element()
@@ -7879,6 +8044,7 @@ impl Transcript {
                 to_harness,
             } => switch_marker(from.clone(), to.clone(), *from_harness, *to_harness, &theme),
         };
+        let inner = self.apply_message_row_entrance(&row, inner, cx);
         // Diagram fences this row just requested start rendering after layout.
         self.ensure_diagram_worker(cx);
 
@@ -10859,6 +11025,20 @@ impl Render for Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_row_entrance_snaps_when_reduced() {
+        let start = Instant::now();
+        assert_eq!(
+            message_row_entrance_progress(Some(&start), start, true, true),
+            1.0
+        );
+        assert_eq!(message_row_entrance_progress(None, start, false, false), 1.0);
+        assert_eq!(
+            message_row_entrance_progress(Some(&start), start, false, false),
+            0.0
+        );
+    }
 
     #[test]
     fn jump_button_stays_available_when_scrolling_down_until_near_bottom() {
