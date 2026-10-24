@@ -30,7 +30,8 @@ Verified from `material3-android-1.5.0-beta02.pom` / `material3-1.5.0-beta02.pom
 | Kotlin (built-in) | **AGP 9 built-in** | [Migrate to built-in Kotlin](https://developer.android.com/build/migrate-to-built-in-kotlin): no `org.jetbrains.kotlin.android`; UniFFI via `android.sourceSets` `kotlin.directories`. |
 | Kotlin compiler (KGP) | **2.2.20** | AGP **9.1.1** POM runtime-depends **kotlin-gradle-plugin 2.2.10**; explicit root `buildscript` classpath per [AGP KGP override](https://developer.android.com/build/releases/agp-9-0-0-release-notes#runtime-dependency-on-kotlin-gradle-plugin). Material3 POM **stdlib 2.2.20** does not bump KGP. |
 | Compose compiler plugin | **2.2.20** | Same version as pinned KGP; `org.jetbrains.kotlin.plugin.compose` retained. |
-| NDK (CI) | **27.2.12479018** | Pinned in `app/build.gradle.kts` to match existing workflow NDK install (AGP 9.1 default is 28.2.x). |
+| NDK (CI) | **27.2.12479018** | Pinned in `app/build.gradle.kts`; `android-app.yml` installs/sets `ANDROID_NDK_HOME` to this revision (not the runner default 27.3.x). |
+| SDK tools (CI) | **Host `sdkmanager`** | `android-app.yml` resolves `/usr/local/lib/android/sdk`, exports absolute `SDKMANAGER` from `cmdline-tools`, and runs platform/NDK installs before Rust core. |
 
 **Uncertainty / parent CI gates:** first green `:app:assembleDebug` + `testDebugUnitTest` on CI; possible `navigation-compose` / `activity-compose` interaction with Compose 1.12; UniFFI Kotlin on `kotlin.directories` under built-in Kotlin; no VPS Gradle run by Composer.
 
