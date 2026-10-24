@@ -197,7 +197,7 @@ jobs:
             echo "=== dependencyInsight: $coord ($configuration) ==="
             local out ec
             set +e
-            out="$("${GRADLE[@]}" :app:dependencyInsight --dependency "$coord" --configuration "$configuration" 2>&1)"
+            out="$("${GRADLE[@]}" :app:dependencyInsight --dependency "$coord" --configuration "$configuration" --single-path 2>&1)"
             ec=$?
             set -e
             printf '%s\n' "$out"
@@ -205,11 +205,11 @@ jobs:
               echo "dependencyInsight failed for $coord on $configuration (exit $ec)" >&2
               exit 1
             fi
-            if printf '%s\n' "$out" | grep -qi 'No dependencies matching given input'; then
+            if grep -qi 'No dependencies matching given input' <<<"$out"; then
               echo "dependencyInsight found no match for $coord on $configuration" >&2
               exit 1
             fi
-            if ! printf '%s\n' "$out" | grep -qF "$version_marker"; then
+            if ! grep -qF -- "$version_marker" <<<"$out"; then
               echo "dependencyInsight for $coord did not show expected version marker: $version_marker" >&2
               exit 1
             fi
@@ -217,7 +217,7 @@ jobs:
           echo "=== buildEnvironment (KGP pin) ==="
           be_out="$("${GRADLE[@]}" buildEnvironment 2>&1)"
           printf '%s\n' "$be_out"
-          if ! printf '%s\n' "$be_out" | grep -qF 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.20'; then
+          if ! grep -qF 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.20' <<<"$be_out"; then
             echo "buildEnvironment did not show kotlin-gradle-plugin:2.2.20" >&2
             exit 1
           fi
