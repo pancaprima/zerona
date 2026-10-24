@@ -105,7 +105,8 @@ object Notifications {
 
         val notification =
             NotificationCompat.Builder(context, SESSIONS_CHANNEL_ID)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(R.drawable.ic_stat_zerona)
+                .setColor(ContextCompat.getColor(context, R.color.zerona_primary))
                 .setContentTitle(title)
                 .setContentText(body)
                 .setAutoCancel(true)

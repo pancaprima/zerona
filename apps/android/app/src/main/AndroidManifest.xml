@@ -31,6 +31,13 @@
             </intent-filter>
         </activity>
 
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_zerona" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/zerona_primary" />
+
         <service
             android:name=".fcm.ZeronaFcmService"
             android:exported="false">
