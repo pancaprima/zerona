@@ -93,7 +93,7 @@ object TranscriptMessageMotion {
         if (x <= 0f) return 0f
         if (x >= 1f) return 1f
         var t = x
-        repeat(8) {
+        for (i in 0 until 8) {
             val xAtT = bezierComponent(t, 0f, x1, x2, 1f)
             val slope = bezierDerivative(t, 0f, x1, x2, 1f)
             if (slope == 0f) break
