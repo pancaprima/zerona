@@ -92,13 +92,24 @@ jobs:
       - name: Android SDK licenses
         run: |
           set -euo pipefail
-          yes | "$SDKMANAGER" --licenses || {
-            ec=$?
-            if [[ "$ec" -eq 141 ]]; then
-              exit 0
-            fi
-            exit "$ec"
-          }
+          set +e
+          yes | "$SDKMANAGER" --licenses
+          pipe_ec=("${PIPESTATUS[@]}")
+          yes_ec=${pipe_ec[0]}
+          sdk_ec=${pipe_ec[1]}
+          set -euo pipefail
+          echo "Android SDK licenses: yes=${yes_ec} sdkmanager=${sdk_ec}"
+          if (( sdk_ec != 0 )); then
+            echo "sdkmanager --licenses failed (exit ${sdk_ec})" >&2
+            exit "$sdk_ec"
+          fi
+          case "$yes_ec" in
+            0|1|141) ;;
+            *)
+              echo "yes pipe producer failed unexpectedly (exit ${yes_ec})" >&2
+              exit "$yes_ec"
+              ;;
+          esac
       - name: Android SDK platform 37 (compileSdk)
         run: |
           set -euo pipefail
