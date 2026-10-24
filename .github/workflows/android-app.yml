@@ -118,8 +118,10 @@ jobs:
           api37_dir=
           for prop in "${ANDROID_HOME}/platforms"/*/source.properties; do
             [[ -f "$prop" ]] || continue
-            if grep -qE '^AndroidVersion\.ApiLevel=37$' "$prop"; then
+            api_line="$(grep -E '^[[:space:]]*AndroidVersion\.ApiLevel[[:space:]]*=[[:space:]]*37(\.0)?[[:space:]]*$' "$prop" | head -n1 || true)"
+            if [[ -n "$api_line" ]]; then
               api37_dir="$(dirname "$prop")"
+              echo "AndroidVersion.ApiLevel (source.properties): $api_line"
               break
             fi
           done
