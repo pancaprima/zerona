@@ -34,3 +34,7 @@ Ikon launcher, edge/payload FCM, iOS, varian per kategori, perubahan layout atau
 
 ## Delegasi
 - Implementasi lewat `cursor-me` (composer-2.5), allowlist file di atas, larang gradle/cargo dan commit; diff direview manual sebelum commit/push.
+
+## Catatan eksperimen gradasi
+
+Di branch `exp/android-launcher-gradient`, small icon notifikasi diganti dari VectorDrawable Z menjadi PNG siluet putih per-density (24/36/48/72/96 px) yang diturunkan dari garis neon portrait pada app icon gradasi; warna aksen tetap `zerona_primary`. Build dan perangkat belum diuji.
