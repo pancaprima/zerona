@@ -11,9 +11,9 @@
 //! and background pause keep them still.
 
 use gpui::{
-    AnyElement, App, AppContext, Context, Entity, EntityId, IntoElement, ParentElement,
-    PathBuilder, Render, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled, Window,
-    canvas, div, point, px,
+    AnyElement, App, AppContext, Context, Entity, EntityId, InteractiveElement as _, IntoElement,
+    ParentElement, PathBuilder, Render, RenderOnce, SharedString, StatefulInteractiveElement as _,
+    Styled, Window, canvas, div, point, px,
 };
 
 use crate::motion::{self, GRADIENT_SPIN, PULSE_STAGGER, SPLASH_OUT, ZERON_PULSE};
