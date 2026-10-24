@@ -837,7 +837,7 @@ class TranscriptListView
         }
 
         private fun recycleRowView(view: RowView) {
-            if (view.rowKey != 0u) {
+            if (view.rowKey != 0uL) {
                 messageEntrances.dropKey(view.rowKey)
             }
             view.resetForPool()
