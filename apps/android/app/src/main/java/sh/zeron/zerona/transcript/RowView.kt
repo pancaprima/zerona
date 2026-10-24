@@ -12,7 +12,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
+import android.widget.ProgressBar
 import kotlin.math.ceil
+import kotlin.math.roundToInt
 import uniffi.zeron_core.LinkHit
 import uniffi.zeron_core.RowDisplay
 import uniffi.zeron_core.RowKind
@@ -36,6 +38,14 @@ class RowView(
     private var longPressActive = false
     private var streamAnimator: ValueAnimator? = null
     private var streamAnimGeneration = 0
+    private var streamRevealPhase = RowStreamMotionPolicy.StreamRevealPhase.None
+    private val sendStatusSpinner =
+        ProgressBar(context, null, android.R.attr.progressBarStyleSmall).apply {
+            isIndeterminate = true
+            visibility = GONE
+            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
+        }
+    private var sendStatusActive = false
 
     var model: RowDrawModel? = null
     var rowKey: ULong = 0u
@@ -61,6 +71,7 @@ class RowView(
     init {
         addView(canvas)
         addView(freshCanvas)
+        addView(sendStatusSpinner)
         freshCanvas.visibility = GONE
         clipChildren = true
         clipToPadding = true
@@ -113,7 +124,25 @@ class RowView(
                 d.text.length > previousText.length
         val veilFrom = if (grew) previousText!!.length else 0
 
-        cancelStreamAnimation()
+        val motion =
+            RowStreamMotionPolicy.onConfigure(
+                RowStreamMotionPolicy.Input(
+                    priorKey = priorKey,
+                    newKey = d.key,
+                    grew = grew,
+                    veilFrom = veilFrom,
+                    allowEntrance = false,
+                    streamRevealPhase = streamRevealPhase,
+                    streamAnimatorRunning = streamAnimator?.isRunning == true,
+                ),
+            )
+        if (motion.shouldCancelStreamAnimator) {
+            cancelStreamAnimation()
+        }
+        streamRevealPhase = motion.streamRevealPhase
+        if (motion.shouldClearRowEntrance) {
+            clearMessageEntrance()
+        }
 
         model = drawModel
         rowKey = d.key
@@ -130,7 +159,7 @@ class RowView(
         canvas.layoutDensity = density
         freshCanvas.layoutDensity = density
 
-        if (grew && veilFrom > 0) {
+        if (motion.useStreamVeil) {
             canvas.pass = RowDrawModel.Pass.SETTLED
             canvas.veilFrom = veilFrom
             freshCanvas.pass = RowDrawModel.Pass.FRESH
@@ -138,31 +167,40 @@ class RowView(
             freshCanvas.model = drawModel
             freshCanvas.dark = dark
             freshCanvas.visibility = VISIBLE
-            freshCanvas.alpha = 0f
-            val generation = ++streamAnimGeneration
-            streamAnimator =
-                ValueAnimator.ofFloat(0f, 1f).apply {
-                    duration = 220
-                    addUpdateListener { anim ->
-                        if (generation != streamAnimGeneration) return@addUpdateListener
-                        freshCanvas.alpha = anim.animatedValue as Float
-                    }
-                    addListener(
-                        object : AnimatorListenerAdapter() {
-                            override fun onAnimationEnd(animation: Animator) {
-                                if (generation != streamAnimGeneration) return
-                                finishStreamReveal()
-                            }
+            if (motion.shouldStartStreamReveal) {
+                freshCanvas.alpha = 0f
+                val generation = ++streamAnimGeneration
+                val revealMs = ZeronaNativeMotion.streamRevealDurationMs(context)
+                streamAnimator =
+                    ValueAnimator.ofFloat(0f, 1f).apply {
+                        duration = revealMs
+                        addUpdateListener { anim ->
+                            if (generation != streamAnimGeneration) return@addUpdateListener
+                            freshCanvas.alpha = anim.animatedValue as Float
+                        }
+                        addListener(
+                            object : AnimatorListenerAdapter() {
+                                override fun onAnimationEnd(animation: Animator) {
+                                    if (generation != streamAnimGeneration) return
+                                    finishStreamReveal()
+                                }
 
-                            override fun onAnimationCancel(animation: Animator) {
-                                if (generation != streamAnimGeneration) return
-                            }
-                        },
-                    )
-                    start()
-                }
+                                override fun onAnimationCancel(animation: Animator) {
+                                    if (generation != streamAnimGeneration) return
+                                }
+                            },
+                        )
+                        if (revealMs == 0L) {
+                            freshCanvas.alpha = 1f
+                            finishStreamReveal()
+                        } else {
+                            start()
+                        }
+                    }
+            }
         } else {
             canvas.pass = RowDrawModel.Pass.ALL
+            canvas.veilFrom = 0
             freshCanvas.visibility = GONE
         }
         canvas.model = drawModel
@@ -170,13 +208,86 @@ class RowView(
         canvas.layerIndex = 0
         canvas.invalidate()
 
-        layoutScrollers(drawModel, density, streamingBody = grew && veilFrom > 0)
+        layoutScrollers(drawModel, density, streamingBody = motion.useStreamVeil)
         layoutWidgets(d, density)
         layoutLinkOverlays(d, density)
-        contentDescription = rowAccessibilityLabel(d, rowKind)
+        layoutSendStatus(drawModel.display, density)
+        contentDescription = rowAccessibilityLabel(d, rowKind, sendStatusActive)
+    }
+
+    fun setSendStatusActive(
+        active: Boolean,
+        statusDescription: String,
+    ) {
+        sendStatusActive = active
+        sendStatusSpinner.visibility = if (active) VISIBLE else GONE
+        if (active) {
+            sendStatusSpinner.contentDescription = statusDescription
+            model?.let { layoutSendStatus(it.display, layoutDensity.coerceAtLeast(1f)) }
+        }
+        model?.let {
+            contentDescription = rowAccessibilityLabel(it.display, kind, sendStatusActive)
+        }
+    }
+
+    fun applyMessageEntrance(
+        paint: TranscriptMessageMotion.EntrancePaint,
+        density: Float,
+        userBubble: Boolean,
+    ) {
+        val d = density.coerceAtLeast(1f)
+        alpha = paint.opacity
+        translationX = paint.translationXDp * d
+        translationY = paint.translationYDp * d
+        scaleX = paint.scale
+        scaleY = paint.scale
+        if (userBubble) {
+            pivotX = width.toFloat()
+            pivotY = height.toFloat()
+        } else {
+            pivotX = 0f
+            pivotY = 0f
+        }
+    }
+
+    fun clearMessageEntrance() {
+        alpha = 1f
+        translationX = 0f
+        translationY = 0f
+        scaleX = 1f
+        scaleY = 1f
+        pivotX = 0f
+        pivotY = 0f
+    }
+
+    private fun layoutSendStatus(
+        d: RowDisplay,
+        density: Float,
+    ) {
+        if (!sendStatusActive) {
+            sendStatusSpinner.visibility = GONE
+            return
+        }
+        val bubble = TranscriptUserBubbleLayout.primaryBubble(d) ?: run {
+            sendStatusSpinner.visibility = GONE
+            return
+        }
+        val sizeDp = 22f
+        val gapDp = 6f
+        val sizePx = (sizeDp * density).roundToInt().coerceAtLeast(1)
+        val leftPx = ((bubble.leftDp - gapDp - sizeDp) * density).roundToInt()
+        val topPx =
+            ((bubble.topDp + bubble.heightDp / 2f - sizeDp / 2f) * density).roundToInt()
+        sendStatusSpinner.layoutParams =
+            LayoutParams(sizePx, sizePx).apply {
+                leftMargin = leftPx.coerceAtLeast(0)
+                topMargin = topPx.coerceAtLeast(0)
+            }
+        sendStatusSpinner.visibility = VISIBLE
     }
 
     private fun finishStreamReveal() {
+        streamRevealPhase = RowStreamMotionPolicy.onStreamRevealFinished(streamRevealPhase)
         canvas.pass = RowDrawModel.Pass.ALL
         canvas.veilFrom = 0
         canvas.invalidate()
@@ -201,12 +312,16 @@ class RowView(
     private fun rowAccessibilityLabel(
         d: RowDisplay,
         rowKind: RowKind,
+        sending: Boolean,
     ): String {
         val body = d.copyText.ifEmpty { d.text }
-        return when (rowKind) {
-            RowKind.USER -> "You: $body"
-            else -> body
-        }
+        val prefix =
+            when {
+                rowKind == RowKind.USER && sending -> "Sending… You: "
+                rowKind == RowKind.USER -> "You: "
+                else -> ""
+            }
+        return prefix + body
     }
 
     private fun layoutScrollers(
@@ -421,7 +536,11 @@ class RowView(
 
     fun resetForPool() {
         longPressActive = false
+        clearMessageEntrance()
+        streamRevealPhase = RowStreamMotionPolicy.StreamRevealPhase.None
         cancelStreamAnimation()
+        sendStatusActive = false
+        sendStatusSpinner.visibility = GONE
         for (v in widgetViews) {
             if (v is TranscriptImageWidget) {
                 actions?.imageLoader()?.cancelLoad(v)

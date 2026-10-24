@@ -82,6 +82,8 @@ data class AppUiState(
     val orgChoices: List<AuthOrg>? = null,
     val isOffline: Boolean = false,
     val sections: List<SessionSectionUi> = emptyList(),
+    /** First [refreshWorkspace] completed for the current signed-in client. */
+    val workspaceReady: Boolean = false,
 )
 
 class AppModel(
@@ -504,6 +506,7 @@ class AppModel(
                 signedIn = false,
                 isDemo = false,
                 sections = emptyList(),
+                workspaceReady = false,
                 isOffline = false,
                 orgChoices = null,
                 authInProgress = false,
@@ -593,7 +596,7 @@ class AppModel(
     private fun refreshWorkspace(core: CoreClient) {
         val ws = core.workspace()
         val sections = buildSections(ws)
-        _state.update { it.copy(sections = sections) }
+        _state.update { it.copy(sections = sections, workspaceReady = true) }
     }
 
     private fun buildSections(ws: WorkspaceSnapshot): List<SessionSectionUi> {

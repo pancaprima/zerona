@@ -10,6 +10,17 @@ The **Android app** workflow builds `libzeron_mobile.so`, UniFFI Kotlin bindings
 Geist fonts from `crates/ui/assets/fonts`, and runs Gradle `assembleDebug`. Download the
 `zerona-android-debug` artifact from Actions.
 
+**M0 toolchain (Material3 Expressive pilot):** AGP **9.1.1**, Gradle **9.3.1**, JDK **17**,
+`compileSdk` **37** (`platforms;android-37.0` on CI), `targetSdk` **35**, `minSdk` **26**.
+Compose BOM **2026.08.00** (Compose **1.12.0**) with explicit `material3:1.5.0-beta02`.
+Built-in Kotlin (AGP 9); `org.jetbrains.kotlin.android` is not applied. AGP **9.1.1**
+ships **kotlin-gradle-plugin 2.2.10** by default; the root `buildscript` classpath pins
+**KGP / Compose compiler plugin 2.2.20** (Material3’s transitive **kotlin-stdlib 2.2.20**
+does not upgrade the compiler). CI runs `buildEnvironment` plus `dependencyInsight` on
+`material3-android`, `runtime-android`, `ui-android`, `foundation-android`, and
+`kotlin-stdlib`, and checks the published `material3-android` AAR metadata before
+`assembleDebug`.
+
 ## Sideload
 
 ```sh
@@ -31,17 +42,19 @@ gradle -p apps/android :app:testDebugUnitTest \
   -PzeronCoreDir=../../target/android-core
 ```
 
-Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link hit-test, anchor/follow, cache keys, streaming prefixes, viewport scale, image reference/decode planning, message action/copy/link menu models, design tokens/contrast/composer presentation, read-only model label formatting) live under `app/src/test` (130 JVM `@Test` method annotations in 15 classes — static inventory counted by `selfcheck-native-transcript.sh`, not executed native/device tests). `assembleDebug` also runs `testDebugUnitTest` (see `app/build.gradle.kts`). Static wiring checks: `apps/android/scripts/selfcheck-native-transcript.sh` (no Gradle).
+Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link hit-test, anchor/follow, cache keys, streaming prefixes, viewport scale, image reference/decode planning, message action/copy/link menu models, design tokens/contrast/composer presentation, read-only model label formatting) live under `app/src/test` (182 JVM `@Test` method annotations in 23 classes — static inventory counted by `selfcheck-native-transcript.sh`, not executed native/device tests). `assembleDebug` also runs `testDebugUnitTest` (see `app/build.gradle.kts`). Static wiring checks: `apps/android/scripts/selfcheck-native-transcript.sh` (no Gradle).
 
 ### Design refresh helpers (no Gradle)
 
-Calm v1 tokens (`ui/theme/ZeronaColorTokens.kt`, `Contrast.kt`), composer policy (`ui/ComposerPresentation.kt`), and matching unit tests compile on the VPS without the Android SDK:
+Calm v1 tokens (`ui/theme/ZeronaColorTokens.kt`, `Contrast.kt`), composer policy (`ui/ComposerPresentation.kt`), motion accessibility policy (`ui/theme/ZeronaMotionPolicy.kt`), and matching unit tests compile on the VPS without the Android SDK:
 
 ```sh
 python3 scripts/android/test-design-helpers.py
 ```
 
 Optional: `--cache-dir` (or `ZERONA_JVM_CACHE`, default `~/.cache/zerona-jvm`), `GRADLE_USER_HOME` (default `~/.gradle`) for the Kotlin compiler glob, `--compiler-classpath`, `--trove-classpath`, `--stdlib`, `--annotations`, `--junit-classpath`. `PaletteBackgroundTest` and full Compose UI still require `:app:testDebugUnitTest` on CI.
+
+**M1–M3 Expressive motion (shell):** `MaterialExpressiveTheme` + `MotionScheme.expressive()` in `ui/theme/Theme.kt`; ornamental gating via `Settings.Global.ANIMATOR_DURATION_SCALE` (`ZeronaOrnamentalMotionProvider` in `ui/theme/ZeronaMotion.kt`, shared `CompositionLocal`); initial loading via `ui/ExpressiveLoading.kt` (`LoadingIndicator` when animator scale &gt; 0, else static decorative ring — not an indeterminate spinner). Navigation, composer, sessions tactility, and Latest appearance consume theme spatial/effects specs (no app-owned spatial tween durations). Native transcript / `ValueAnimator` paths unchanged (M4). JVM helper runner: **93** tests including `ZeronaMotionPolicyTest` (8 methods) and `RowStreamMotionPolicyTest` (10 methods); does not validate on-device motion, Compose compile, or animation frames.
 
 ## Manual transcript checks (device)
 

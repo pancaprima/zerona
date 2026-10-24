@@ -1,7 +1,11 @@
 package sh.zeron.zerona.ui
 
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,14 +50,47 @@ fun ZeronaApp(appModel: AppModel = viewModel()) {
                 }
                 appModel.clearPendingChatFromNotification()
             }
+            val motion: MotionScheme = MaterialTheme.motionScheme
             NavHost(navController = nav, startDestination = "sessions") {
-                composable("sessions") {
+                composable(
+                    route = "sessions",
+                    exitTransition = {
+                        slideOutOfContainer(
+                            towards = AnimatedContentTransitionScope.SlideDirection.Start,
+                            animationSpec = motion.defaultSpatialSpec(),
+                            targetOffset = { fullWidth -> fullWidth / 4 },
+                        ) + fadeOut(animationSpec = motion.defaultEffectsSpec())
+                    },
+                    popEnterTransition = {
+                        slideIntoContainer(
+                            towards = AnimatedContentTransitionScope.SlideDirection.End,
+                            animationSpec = motion.defaultSpatialSpec(),
+                            initialOffset = { fullWidth -> fullWidth / 4 },
+                        ) + fadeIn(animationSpec = motion.defaultEffectsSpec())
+                    },
+                ) {
                     SessionsScreen(
                         appModel = appModel,
                         onSessionClick = { id -> nav.navigate("session/$id") },
                     )
                 }
-                composable("session/{chatId}") { entry ->
+                composable(
+                    route = "session/{chatId}",
+                    enterTransition = {
+                        slideIntoContainer(
+                            towards = AnimatedContentTransitionScope.SlideDirection.Start,
+                            animationSpec = motion.defaultSpatialSpec(),
+                            initialOffset = { fullWidth -> fullWidth / 4 },
+                        ) + fadeIn(animationSpec = motion.defaultEffectsSpec())
+                    },
+                    popExitTransition = {
+                        slideOutOfContainer(
+                            towards = AnimatedContentTransitionScope.SlideDirection.End,
+                            animationSpec = motion.defaultSpatialSpec(),
+                            targetOffset = { fullWidth -> fullWidth / 4 },
+                        ) + fadeOut(animationSpec = motion.defaultEffectsSpec())
+                    },
+                ) { entry ->
                     val chatId = entry.arguments?.getString("chatId") ?: return@composable
                     SessionScreen(
                         appModel = appModel,

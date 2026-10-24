@@ -45,6 +45,50 @@ class ComposerPresentationTest {
     }
 
     @Test
+    fun sendVisualInFlightOverridesPressedAndDraft() {
+        assertEquals(
+            ComposerPresentation.SendButtonVisual.InFlight,
+            ComposerPresentation.sendButtonVisual(
+                draftNonBlank = true,
+                sendInFlight = true,
+                pressed = true,
+            ),
+        )
+    }
+
+    @Test
+    fun sendVisualDisabledWhenDraftBlank() {
+        assertEquals(
+            ComposerPresentation.SendButtonVisual.Disabled,
+            ComposerPresentation.sendButtonVisual(
+                draftNonBlank = false,
+                sendInFlight = false,
+                pressed = false,
+            ),
+        )
+    }
+
+    @Test
+    fun sendVisualReadyAndPressed() {
+        assertEquals(
+            ComposerPresentation.SendButtonVisual.Ready,
+            ComposerPresentation.sendButtonVisual(
+                draftNonBlank = true,
+                sendInFlight = false,
+                pressed = false,
+            ),
+        )
+        assertEquals(
+            ComposerPresentation.SendButtonVisual.Pressed,
+            ComposerPresentation.sendButtonVisual(
+                draftNonBlank = true,
+                sendInFlight = false,
+                pressed = true,
+            ),
+        )
+    }
+
+    @Test
     fun sendDisabledWhenDraftEmpty() {
         assertFalse(ComposerPresentation.canSend(draftNonBlank = false, sendInFlight = false))
     }
@@ -63,5 +107,18 @@ class ComposerPresentationTest {
     fun steerChipGatedByCapability() {
         assertFalse(ComposerPresentation.showSteerChip(canSteer = false))
         assertTrue(ComposerPresentation.showSteerChip(canSteer = true))
+    }
+
+    @Test
+    fun sendStatusBannerKeyEncodesSeverityAndText() {
+        assertEquals(
+            "info|Sending…",
+            ComposerPresentation.sendStatusBannerKey("Sending…", bannerIsError = false),
+        )
+        assertEquals(
+            "error|Not delivered",
+            ComposerPresentation.sendStatusBannerKey("Not delivered", bannerIsError = true),
+        )
+        assertEquals(null, ComposerPresentation.sendStatusBannerKey(null, bannerIsError = false))
     }
 }

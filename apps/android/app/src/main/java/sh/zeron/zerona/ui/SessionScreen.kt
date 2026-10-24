@@ -1,10 +1,13 @@
 package sh.zeron.zerona.ui
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,7 +19,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -28,7 +30,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardDoubleArrowDown
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -38,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.background
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,6 +55,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import sh.zeron.zerona.app.AppModel
 import sh.zeron.zerona.transcript.TranscriptLab
 import sh.zeron.zerona.transcript.TranscriptListView
+import sh.zeron.zerona.ui.theme.rememberOrnamentalMotionEnabled
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -80,6 +84,28 @@ fun SessionScreen(
 
     val appState by appModel.state.collectAsState()
     val showLoadingShell = state.loading && state.frameTick == 0L && state.error == null
+    val ornamental = rememberOrnamentalMotionEnabled()
+    val motion = MaterialTheme.motionScheme
+    val transcriptReveal by animateFloatAsState(
+        targetValue = if (showLoadingShell) 0f else 1f,
+        animationSpec =
+            if (ornamental) {
+                motion.defaultEffectsSpec()
+            } else {
+                snap()
+            },
+        label = "transcriptReveal",
+    )
+    val transcriptScale by animateFloatAsState(
+        targetValue = if (showLoadingShell) 0.98f else 1f,
+        animationSpec =
+            if (ornamental) {
+                motion.defaultSpatialSpec()
+            } else {
+                snap()
+            },
+        label = "transcriptScale",
+    )
 
     Scaffold(
         topBar = {
@@ -175,6 +201,11 @@ fun SessionScreen(
                         Modifier
                             .fillMaxSize()
                             .clipToBounds()
+                            .graphicsLayer {
+                                alpha = transcriptReveal
+                                scaleX = transcriptScale
+                                scaleY = transcriptScale
+                            }
                             .background(Color(Palette.background(dark))),
                     factory = { ctx ->
                         TranscriptListView(ctx).also { host ->
@@ -197,14 +228,23 @@ fun SessionScreen(
                     },
                 )
                 val showLatest = state.showScrollToLatest && state.error == null && !showLoadingShell
-                val latestMotionMs = ComposerPresentation.CONTENT_MOTION_DURATION_MS
                 androidx.compose.animation.AnimatedVisibility(
                     visible = showLatest,
                     modifier = Modifier.align(Alignment.BottomCenter),
                     enter =
-                        fadeIn(tween(latestMotionMs)) +
-                            slideInVertically(tween(latestMotionMs)) { it / 3 },
-                    exit = fadeOut(tween(ComposerPresentation.CONTENT_MOTION_DURATION_SHORT_MS)),
+                        if (ornamental) {
+                            fadeIn(motion.fastEffectsSpec()) +
+                                slideInVertically(motion.fastSpatialSpec()) { it / 3 }
+                        } else {
+                            EnterTransition.None
+                        },
+                    exit =
+                        if (ornamental) {
+                            fadeOut(motion.fastEffectsSpec()) +
+                                slideOutVertically(motion.fastSpatialSpec()) { it / 4 }
+                        } else {
+                            ExitTransition.None
+                        },
                 ) {
                     val scrollToLatestLabel = "Scroll to latest"
                     Surface(
@@ -218,36 +258,27 @@ fun SessionScreen(
                         shadowElevation = 4.dp,
                         tonalElevation = 1.dp,
                     ) {
-                        Row(
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardDoubleArrowDown,
+                            contentDescription = null,
                             modifier =
                                 Modifier
                                     .heightIn(min = 48.dp)
-                                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.KeyboardArrowDown,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp),
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                            Text(
-                                "Latest",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
+                                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                                    .size(24.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
                     }
                 }
                 if (state.error == null && showLoadingShell) {
-                    Column(
+                    Box(
                         modifier = Modifier.fillMaxSize(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
+                        contentAlignment = Alignment.Center,
                     ) {
-                        CircularProgressIndicator(modifier = Modifier.padding(24.dp))
-                        Text("Loading transcript…")
+                        ZeronaInitialLoading(
+                            label = "Loading transcript…",
+                            modifier = Modifier.padding(24.dp),
+                        )
                     }
                 } else if (state.error == null && state.loading) {
                     Text(
