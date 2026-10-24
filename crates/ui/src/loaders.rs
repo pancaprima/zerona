@@ -623,6 +623,7 @@ impl Render for TranscriptLoadBarView {
         let offset = transcript_load_bar_offset(phase);
         let (track, fill, marker) = (self.track, self.fill, self.marker);
         div()
+            .id("transcript-load-bar")
             .role(gpui::Role::ProgressIndicator)
             .aria_label("Loading conversation")
             .w_full()
