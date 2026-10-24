@@ -10,6 +10,17 @@ The **Android app** workflow builds `libzeron_mobile.so`, UniFFI Kotlin bindings
 Geist fonts from `crates/ui/assets/fonts`, and runs Gradle `assembleDebug`. Download the
 `zerona-android-debug` artifact from Actions.
 
+**M0 toolchain (Material3 Expressive pilot):** AGP **9.1.1**, Gradle **9.3.1**, JDK **17**,
+`compileSdk` **37** (`platforms;android-37.0` on CI), `targetSdk` **35**, `minSdk` **26**.
+Compose BOM **2026.08.00** (Compose **1.12.0**) with explicit `material3:1.5.0-beta02`.
+Built-in Kotlin (AGP 9); `org.jetbrains.kotlin.android` is not applied. AGP **9.1.1**
+ships **kotlin-gradle-plugin 2.2.10** by default; the root `buildscript` classpath pins
+**KGP / Compose compiler plugin 2.2.20** (Material3’s transitive **kotlin-stdlib 2.2.20**
+does not upgrade the compiler). CI runs `buildEnvironment` plus `dependencyInsight` on
+`material3-android`, `runtime-android`, `ui-android`, `foundation-android`, and
+`kotlin-stdlib`, and checks the published `material3-android` AAR metadata before
+`assembleDebug`.
+
 ## Sideload
 
 ```sh

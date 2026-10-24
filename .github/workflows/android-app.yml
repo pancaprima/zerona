@@ -85,16 +85,76 @@ jobs:
           echo "JAVA_HOME=${JAVA_HOME_17_X64}" >> "$GITHUB_ENV"
           echo "PATH=${JAVA_HOME_17_X64}/bin:$PATH" >> "$GITHUB_ENV"
           java -version
-      - name: Gradle 8.11.1
+      - name: Gradle 9.3.1
         run: |
-          curl -fsSL -o /tmp/gradle-8.11.1-bin.zip \
-            https://services.gradle.org/distributions/gradle-8.11.1-bin.zip
-          unzip -q /tmp/gradle-8.11.1-bin.zip -d /tmp
-          echo "GRADLE_HOME=/tmp/gradle-8.11.1" >> "$GITHUB_ENV"
-          echo "PATH=/tmp/gradle-8.11.1/bin:$PATH" >> "$GITHUB_ENV"
+          curl -fsSL -o /tmp/gradle-9.3.1-bin.zip \
+            https://services.gradle.org/distributions/gradle-9.3.1-bin.zip
+          unzip -q /tmp/gradle-9.3.1-bin.zip -d /tmp
+          echo "GRADLE_HOME=/tmp/gradle-9.3.1" >> "$GITHUB_ENV"
+          echo "PATH=/tmp/gradle-9.3.1/bin:$PATH" >> "$GITHUB_ENV"
           gradle --version
       - name: Android SDK licenses
         run: yes | sdkmanager --licenses || true
+      - name: Android SDK platform 37 (compileSdk)
+        run: |
+          set -euo pipefail
+          sdkmanager --install "platforms;android-37.0" "build-tools;36.0.0"
+          sdkmanager --list_installed | grep -F 'platforms;android-37.0'
+          api37_dir=
+          for prop in "${ANDROID_HOME}/platforms"/*/source.properties; do
+            [[ -f "$prop" ]] || continue
+            if grep -qE '^AndroidVersion\.ApiLevel=37$' "$prop"; then
+              api37_dir="$(dirname "$prop")"
+              break
+            fi
+          done
+          if [[ -z "$api37_dir" || ! -f "$api37_dir/android.jar" ]]; then
+            echo "API 37 platform not found under ${ANDROID_HOME}/platforms (no android.jar)" >&2
+            exit 1
+          fi
+          echo "compileSdk platform: $api37_dir"
+          ls -la "$api37_dir/android.jar"
+      - name: Material3 / Compose dependency evidence
+        run: |
+          set -euo pipefail
+          CORE="$GITHUB_WORKSPACE/target/android-core"
+          GRADLE=(gradle -p apps/android --no-daemon -PzeronCoreDir="$CORE")
+          insight_must_resolve() {
+            local coord="$1"
+            local configuration="$2"
+            local version_marker="$3"
+            echo "=== dependencyInsight: $coord ($configuration) ==="
+            local out
+            out="$("${GRADLE[@]}" :app:dependencyInsight --dependency "$coord" --configuration "$configuration" 2>&1)" || true
+            printf '%s\n' "$out"
+            if printf '%s\n' "$out" | grep -qi 'No dependencies matching given input'; then
+              echo "dependencyInsight found no match for $coord on $configuration" >&2
+              exit 1
+            fi
+            if ! printf '%s\n' "$out" | grep -qF "$version_marker"; then
+              echo "dependencyInsight for $coord did not show expected version marker: $version_marker" >&2
+              exit 1
+            fi
+          }
+          echo "=== buildEnvironment (KGP pin) ==="
+          be_out="$("${GRADLE[@]}" buildEnvironment 2>&1)"
+          printf '%s\n' "$be_out"
+          if ! printf '%s\n' "$be_out" | grep -qF 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.20'; then
+            echo "buildEnvironment did not show kotlin-gradle-plugin:2.2.20" >&2
+            exit 1
+          fi
+          insight_must_resolve "androidx.compose.material3:material3-android" debugCompileClasspath "1.5.0-beta02"
+          insight_must_resolve "androidx.compose.runtime:runtime-android" debugCompileClasspath "1.12.0"
+          insight_must_resolve "androidx.compose.ui:ui-android" debugCompileClasspath "1.12.0"
+          insight_must_resolve "androidx.compose.foundation:foundation-android" debugCompileClasspath "1.12.0"
+          insight_must_resolve "org.jetbrains.kotlin:kotlin-stdlib" debugRuntimeClasspath "2.2.20"
+          echo "=== AAR metadata (Google Maven) ==="
+          curl -fsSL -o /tmp/material3-android-1.5.0-beta02.aar \
+            https://dl.google.com/dl/android/maven2/androidx/compose/material3/material3-android/1.5.0-beta02/material3-android-1.5.0-beta02.aar
+          unzip -p /tmp/material3-android-1.5.0-beta02.aar \
+            META-INF/com/android/build/gradle/aar-metadata.properties | tee /tmp/aar-metadata.properties
+          grep -q 'minCompileSdk=37' /tmp/aar-metadata.properties
+          grep -q 'minAndroidGradlePluginVersion=9.1.0' /tmp/aar-metadata.properties
       - name: Assemble debug APK
         run: |
           gradle -p apps/android :app:assembleDebug \

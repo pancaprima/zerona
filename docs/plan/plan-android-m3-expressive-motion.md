@@ -1,10 +1,38 @@
 # Zerona Android: Material 3 Expressive motion & feel
 
-Status: IMPLEMENTATION AUTHORISED. User selected option 1 on 24 October 2026: full official Expressive plus scoped Android toolchain/CI migration. Composer implements; Asa reviews and executes verification. Start with M0 dependency-only pilot; proceed to UI motion only after exact-SHA dependency CI passes. No merge/release/deploy authorised.
+Status: IMPLEMENTATION AUTHORISED. User selected option 1 on 24 October 2026: full official Expressive plus scoped Android toolchain/CI migration. Composer implements; Asa reviews and executes verification. **M0 dependency/toolchain pilot implemented in source (24 Oct 2026); not yet compile/device-verified until parent CI at exact SHA.** Proceed to UI motion only after exact-SHA dependency CI passes. No merge/release/deploy authorised.
 
 ### M0 actual artifact gate
 
-Asa fetched the real Google Maven `material3:1.5.0-beta02` POM and `material3-android:1.5.0-beta02` AAR on 24 October 2026. AAR metadata declares `minCompileSdk=37` and `minAndroidGradlePluginVersion=9.1.0`; POM lists Compose runtime/foundation/ui 1.12.0 and Kotlin stdlib 2.2.20. Current source uses compileSdk35, AGP8.7.3, Kotlin/compiler2.0.21 and BOM2024.12.01. Full current Expressive therefore needs a major build-toolchain migration, not only a Material library bump. Cursor Composer read-only gate review confirms the repo mismatch but could not independently HTTP-fetch in Ask mode; artifact claims are backed by Asa's live retrieval, not the delegate's self-report. Gradle/JDK/Kotlin-plugin migration requirements still need official-source investigation and CI.
+Asa fetched the real Google Maven `material3:1.5.0-beta02` POM and `material3-android:1.5.0-beta02` AAR on 24 October 2026. Composer independently re-fetched the same artifacts on 24 October 2026 into scratch cache (`/root/.hermes/profiles/girlfriend/cache/scratch/zerona-m3-metadata`).
+
+Verified from `material3-android-1.5.0-beta02.aar` → `META-INF/com/android/build/gradle/aar-metadata.properties`:
+
+- `minCompileSdk=37`
+- `minAndroidGradlePluginVersion=9.1.0`
+
+Verified from `material3-android-1.5.0-beta02.pom` / `material3-1.5.0-beta02.pom` (Google Maven):
+
+- Compose runtime/foundation/ui **1.12.0**
+- Kotlin stdlib **2.2.20**
+
+### M0 pinned toolchain (source-implemented)
+
+| Component | Pin | Evidence |
+| --- | --- | --- |
+| AGP | **9.1.1** | AAR requires ≥9.1.0; [AGP 9.1.1 release notes](https://developer.android.com/build/releases/agp-9-1-0-release-notes) state support for API **37.0** (9.1.0 max was 36.1). |
+| Gradle | **9.3.1** | [AGP compatibility table](https://developer.android.com/build/releases/about-agp): AGP 9.1 → Gradle ≥9.3.1. |
+| JDK | **17** | AGP 9.1 minimum JDK 17 (unchanged on CI). |
+| compileSdk | **37** | Material3 AAR `minCompileSdk`; SDK package `platforms;android-37.0` in [repository2-3.xml](https://dl.google.com/android/repository/repository2-3.xml). |
+| targetSdk / minSdk | **35 / 26** | Unchanged (runtime floor not raised). |
+| Compose BOM | **2026.08.00** | BOM mapping: Compose **1.12.0** ([BOM mapping](https://developer.android.com/jetpack/compose/bom/bom-mapping)); matches Material3 POM Compose rev. |
+| Material3 | **1.5.0-beta02** (explicit) | No published BOM yet maps Material3 1.5.x (BOMs through 2026.09.00 still pin material3 **1.4.0** per fetched POMs). |
+| Kotlin (built-in) | **AGP 9 built-in** | [Migrate to built-in Kotlin](https://developer.android.com/build/migrate-to-built-in-kotlin): no `org.jetbrains.kotlin.android`; UniFFI via `android.sourceSets` `kotlin.directories`. |
+| Kotlin compiler (KGP) | **2.2.20** | AGP **9.1.1** POM runtime-depends **kotlin-gradle-plugin 2.2.10**; explicit root `buildscript` classpath per [AGP KGP override](https://developer.android.com/build/releases/agp-9-0-0-release-notes#runtime-dependency-on-kotlin-gradle-plugin). Material3 POM **stdlib 2.2.20** does not bump KGP. |
+| Compose compiler plugin | **2.2.20** | Same version as pinned KGP; `org.jetbrains.kotlin.plugin.compose` retained. |
+| NDK (CI) | **27.2.12479018** | Pinned in `app/build.gradle.kts` to match existing workflow NDK install (AGP 9.1 default is 28.2.x). |
+
+**Uncertainty / parent CI gates:** first green `:app:assembleDebug` + `testDebugUnitTest` on CI; possible `navigation-compose` / `activity-compose` interaction with Compose 1.12; UniFFI Kotlin on `kotlin.directories` under built-in Kotlin; no VPS Gradle run by Composer.
 
 Decision resolved: user selected (1), latest official Expressive plus scoped Android toolchain/CI migration. Keep targetSdk/minSdk unchanged unless independently necessary. No silent downgrade to an older preview. Implement dependency/build compatibility in isolation, verify CI, then continue authorised motion milestones without another approval. Preserve Edge Dock/palette/native scroll and leave pending PR33 untouched. Any need for Rust/UniFFI/iOS changes remains an escalation.
 
@@ -174,7 +202,8 @@ Each milestone should be a reviewable narrow patch. Recheck open PRs and current
 - Register new pure Kotlin policy tests in both source/class lists of the helper runner if applicable.
 
 ### CI, not heavy VPS builds
-- Existing `.github/workflows/android-app.yml` assembles the APK with generated core artifacts. `:app:assembleDebug` depends on `testDebugUnitTest` in app/build.gradle.kts:108-110.
+- Existing `.github/workflows/android-app.yml` assembles the APK with generated core artifacts. `:app:assembleDebug` depends on `testDebugUnitTest` in `app/build.gradle.kts`.
+- M0 pre-assemble gates in that workflow (not claimed until green at exact SHA): install `platforms;android-37.0` and verify API 37 via `source.properties` + `android.jar`; `buildEnvironment` shows `kotlin-gradle-plugin:2.2.20`; `dependencyInsight` on `material3-android`, `runtime-android`, `ui-android`, `foundation-android`, and `kotlin-stdlib` with version markers; HTTP fetch of `material3-android` AAR metadata (`minCompileSdk`, `minAndroidGradlePluginVersion`); then `:app:assembleDebug` (which runs unit tests).
 - Existing command: `gradle -p apps/android :app:testDebugUnitTest -PzeronCoreDir=<actual-artifact-path>`; assembly equivalent uses `:app:assembleDebug`.
 - Dependency pilot must produce actual resolved versions, compile/AAR metadata results and exact-SHA APK evidence. Do not claim compatibility from a plan or API reference alone.
 - Compose interaction/animation instrumentation coverage is not currently established; add scoped test infrastructure in the implementation milestone instead of pretending JVM helper tests execute Compose motion.
@@ -217,7 +246,8 @@ Completed for this deliverable:
 - [x] Read-only recon pinned to fresh fork main, major claims spot-checked.
 - [x] Prioritised interaction catalogue, ownership boundaries, dependency options, test gates and rollback documented.
 - [x] Plan file created locally.
-- [ ] Native motion prototype / implementation.
-- [ ] Dependency resolution/build/tests for a candidate.
+- [x] M0 toolchain/dependency pilot (Gradle scripts + CI evidence step); **compiled/device-observed: pending parent CI**.
+- [ ] Native motion prototype / implementation (M1+).
+- [ ] Dependency resolution/build/tests for a candidate (**parent CI**).
 - [ ] Physical-device accessibility/performance/feel acceptance.
 - [ ] Commit, PR, merge or release.
