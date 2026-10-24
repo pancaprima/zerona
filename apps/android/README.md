@@ -10,6 +10,30 @@ The **Android app** workflow builds `libzeron_mobile.so`, UniFFI Kotlin bindings
 Geist fonts from `crates/ui/assets/fonts`, and runs Gradle `assembleDebug`. Download the
 `zerona-android-debug` artifact from Actions.
 
+**Pull requests and pushes to `main`** stay debug-only (same checks as before).
+
+**Private signed release APK (manual, `main` only):** In GitHub Actions, open **Android app** →
+**Run workflow**, choose branch **`main`**, optionally set ABIs, then run. After the debug
+build and tests succeed, the workflow builds `:app:assembleRelease` using repository secrets,
+verifies the APK with `apksigner`, checks the signer SHA-256 against
+`ANDROID_RELEASE_CERT_SHA256`, and uploads **`zerona-android-release-private`**
+(`app-release.apk`). Release signing never runs on pull requests or non-`main` refs.
+
+Required GitHub Actions secrets (names only — set values in repo settings, never commit them):
+
+| Secret | Purpose |
+|--------|---------|
+| `ANDROID_RELEASE_KEYSTORE_BASE64` | Base64-encoded release keystore (decoded to a temp path on the runner) |
+| `ANDROID_RELEASE_STORE_PASSWORD` | Keystore password |
+| `ANDROID_RELEASE_KEY_ALIAS` | Key alias |
+| `ANDROID_RELEASE_KEY_PASSWORD` | Key password |
+| `ANDROID_RELEASE_CERT_SHA256` | Expected signer cert SHA-256 (colons optional; case-insensitive compare) |
+
+**Signing key warning:** The release key is the app’s permanent install/update identity on
+device. Back up the keystore and passwords in a user-controlled encrypted store. Losing the
+key or rotating it can force uninstall (and data loss) before sideloading a build signed with
+a new key.
+
 **M0 toolchain (Material3 Expressive pilot):** AGP **9.1.1**, Gradle **9.3.1**, JDK **17**,
 `compileSdk` **37** (`platforms;android-37.0` on CI), `targetSdk` **35**, `minSdk` **26**.
 Compose BOM **2026.08.00** (Compose **1.12.0**) with explicit `material3:1.5.0-beta02`.
@@ -34,6 +58,25 @@ gradle -p apps/android :app:assembleDebug \
   -PzeronCoreDir=../../target/android-core \
   -PzeronAbis=arm64-v8a
 ```
+
+**Local signed release APK** (optional; same env names as CI — export in your shell, do not
+commit values). Gradle decodes `ANDROID_RELEASE_KEYSTORE_BASE64` into a temporary file under
+`$RUNNER_TEMP` on Actions or the JVM temp directory locally:
+
+```sh
+export ANDROID_RELEASE_KEYSTORE_BASE64='…'
+export ANDROID_RELEASE_STORE_PASSWORD='…'
+export ANDROID_RELEASE_KEY_ALIAS='…'
+export ANDROID_RELEASE_KEY_PASSWORD='…'
+
+gradle -p apps/android :app:assembleRelease \
+  -PzeronCoreDir=../../target/android-core \
+  -PzeronAbis=arm64-v8a
+```
+
+Output: `apps/android/app/build/outputs/apk/release/app-release.apk`. Missing any of the
+four signing variables fails `assembleRelease` with an explicit error; `assembleDebug` and
+`:app:testDebugUnitTest` do not require them.
 
 ## Unit tests (JVM)
 
