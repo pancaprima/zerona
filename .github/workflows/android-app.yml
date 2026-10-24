@@ -215,8 +215,15 @@ jobs:
             fi
           }
           echo "=== buildEnvironment (KGP pin) ==="
+          set +e
           be_out="$("${GRADLE[@]}" buildEnvironment 2>&1)"
+          be_ec=$?
+          set -e
           printf '%s\n' "$be_out"
+          if (( be_ec != 0 )); then
+            echo "buildEnvironment failed (exit $be_ec)" >&2
+            exit 1
+          fi
           if ! grep -qF 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.20' <<<"$be_out"; then
             echo "buildEnvironment did not show kotlin-gradle-plugin:2.2.20" >&2
             exit 1

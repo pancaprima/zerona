@@ -111,7 +111,9 @@ android {
         }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            if (requestedAssembleRelease()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
