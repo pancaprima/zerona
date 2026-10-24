@@ -42,6 +42,7 @@ class TranscriptListView
         private var destroyed = false
         private var bindGeneration = 0
         private var renderEpoch = 0
+        private val entranceAnimatedKeys = mutableSetOf<ULong>()
 
         /** Viewport width in logical dp (matches Rust layout units). */
         var layoutWidthDp: Float = 0f
@@ -295,6 +296,7 @@ class TranscriptListView
 
         private fun invalidateDrawCache() {
             renderEpoch++
+            entranceAnimatedKeys.clear()
             cache.clear()
             cacheOrder.clear()
         }
@@ -694,7 +696,10 @@ class TranscriptListView
                         ).apply {
                             topMargin = ceil(p.y * density).toInt()
                         }
-                    row.configure(model, p.kind, previousText, epoch)
+                    val allowEntrance = p.key !in entranceAnimatedKeys
+                    if (row.configure(model, p.kind, previousText, epoch, allowEntrance)) {
+                        entranceAnimatedKeys.add(p.key)
+                    }
                 } else {
                     row.layoutParams =
                         (row.layoutParams as FrameLayout.LayoutParams).apply {

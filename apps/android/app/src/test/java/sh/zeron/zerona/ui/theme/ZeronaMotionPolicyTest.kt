@@ -45,4 +45,20 @@ class ZeronaMotionPolicyTest {
         assertTrue(delta >= 0.01f)
         assertTrue(delta <= 0.02f)
     }
+
+    @Test
+    fun sendInFlightNudgeIsSubtleDrawOnly() {
+        assertTrue(ZeronaMotionPolicy.SEND_IN_FLIGHT_ICON_NUDGE_FRACTION > 0f)
+        assertTrue(ZeronaMotionPolicy.SEND_IN_FLIGHT_ICON_NUDGE_FRACTION <= 0.2f)
+    }
+
+    @Test
+    fun loadingBreatheStaysNearUnity() {
+        assertEquals(1f, ZeronaMotionPolicy.LOADING_ORNAMENTAL_MIN_SCALE, 0.0001f)
+        val delta =
+            ZeronaMotionPolicy.LOADING_ORNAMENTAL_MAX_SCALE -
+                ZeronaMotionPolicy.LOADING_ORNAMENTAL_MIN_SCALE
+        assertTrue(delta > 0f)
+        assertTrue(delta <= 0.08f)
+    }
 }

@@ -1,5 +1,15 @@
 package sh.zeron.zerona.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -45,6 +55,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -59,6 +71,8 @@ import sh.zeron.zerona.app.AppUiState
 import sh.zeron.zerona.app.SessionRowUi
 import sh.zeron.zerona.app.SessionStatusKind
 import sh.zeron.zerona.transcript.TranscriptLab
+import androidx.compose.animation.core.snap
+import sh.zeron.zerona.ui.theme.rememberOrnamentalMotionEnabled
 import sh.zeron.zerona.ui.theme.zeronaTactileCompression
 
 private val sessionListHorizontalInset = 24.dp
@@ -99,14 +113,63 @@ fun SessionsScreen(
     val scheme = MaterialTheme.colorScheme
     val screenBackground = scheme.background
     val groupFill = sessionGroupFillColor()
-    LazyColumn(
+    val motion = MaterialTheme.motionScheme
+    val ornamental = rememberOrnamentalMotionEnabled()
+    val showInitialWait =
+        SessionsListPresentation.showInitialWorkspaceWait(
+            signedIn = state.signedIn,
+            isDemo = state.isDemo,
+            workspaceReady = state.workspaceReady,
+        )
+    val listRevealTarget =
+        if (
+            SessionsListPresentation.showLoadedListReveal(
+                signedIn = state.signedIn,
+                isDemo = state.isDemo,
+                workspaceReady = state.workspaceReady,
+            )
+        ) {
+            1f
+        } else {
+            0f
+        }
+    val listReveal by animateFloatAsState(
+        targetValue = listRevealTarget,
+        animationSpec =
+            if (ornamental) {
+                motion.defaultEffectsSpec()
+            } else {
+                snap()
+            },
+        label = "sessionsListReveal",
+    )
+    val listLift by animateFloatAsState(
+        targetValue = if (listRevealTarget > 0f) 0f else 12f,
+        animationSpec =
+            if (ornamental) {
+                motion.defaultSpatialSpec()
+            } else {
+                snap()
+            },
+        label = "sessionsListLift",
+    )
+    Box(
         modifier =
             Modifier
                 .fillMaxSize()
                 .background(screenBackground)
                 .safeDrawingPadding(),
-        contentPadding = PaddingValues(bottom = 16.dp),
     ) {
+        LazyColumn(
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        alpha = listReveal
+                        translationY = listLift
+                    },
+            contentPadding = PaddingValues(bottom = 16.dp),
+        ) {
         item(key = sessionsListHeaderKey) {
             SessionsListHeader(
                 state = state,
@@ -169,6 +232,18 @@ fun SessionsScreen(
             }
             item(key = "gap-${section.id}") {
                 Spacer(Modifier.height(10.dp))
+            }
+        }
+        }
+        if (showInitialWait) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                ZeronaInitialLoading(
+                    label = "Loading sessions…",
+                    modifier = Modifier.padding(24.dp),
+                )
             }
         }
     }
@@ -243,9 +318,21 @@ private fun SessionsListHeader(
                         )
                     }
                 }
+                val headerOrnamental = rememberOrnamentalMotionEnabled()
+                val menuScale by animateFloatAsState(
+                    targetValue = if (!headerOrnamental || menuOpen) 1f else 0.94f,
+                    animationSpec = MaterialTheme.motionScheme.fastSpatialSpec(),
+                    label = "accountMenuScale",
+                )
                 DropdownMenu(
                     expanded = menuOpen,
                     onDismissRequest = { onMenuOpenChange(false) },
+                    modifier =
+                        Modifier.graphicsLayer {
+                            scaleX = menuScale
+                            scaleY = menuScale
+                            transformOrigin = TransformOrigin(1f, 0f)
+                        },
                 ) {
                     DropdownMenuItem(
                         text = {
@@ -489,7 +576,6 @@ private fun SessionRowItem(
             append(", ")
             append(row.timeLabel)
         }
-    val statusColor = sessionStatusColor(row.status, scheme)
     Box(
         modifier =
             modifier
@@ -551,29 +637,7 @@ private fun SessionRowItem(
                 horizontalAlignment = Alignment.End,
                 modifier = Modifier.widthIn(max = sessionMetaColumnMaxWidth),
             ) {
-                if (row.status != SessionStatusKind.NONE) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        modifier = Modifier.widthIn(max = sessionStatusMaxWidth),
-                    ) {
-                        Box(
-                            modifier =
-                                Modifier
-                                    .size(6.dp)
-                                    .clip(CircleShape)
-                                    .background(statusColor),
-                        )
-                        Text(
-                            row.status.label,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontSize = 11.sp,
-                            color = statusColor,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
+                SessionStatusMotion(status = row.status)
                 Text(
                     row.timeLabel,
                     modifier =
@@ -589,6 +653,66 @@ private fun SessionRowItem(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionStatusMotion(status: SessionStatusKind) {
+    val scheme = MaterialTheme.colorScheme
+    val motion = MaterialTheme.motionScheme
+    val ornamental = rememberOrnamentalMotionEnabled()
+    AnimatedVisibility(
+        visible = status != SessionStatusKind.NONE,
+        enter =
+            if (ornamental) {
+                expandHorizontally(expandFrom = Alignment.End, animationSpec = motion.fastSpatialSpec()) +
+                    fadeIn(motion.fastEffectsSpec())
+            } else {
+                EnterTransition.None
+            },
+        exit =
+            if (ornamental) {
+                shrinkHorizontally(shrinkTowards = Alignment.End, animationSpec = motion.fastSpatialSpec()) +
+                    fadeOut(motion.fastEffectsSpec())
+            } else {
+                ExitTransition.None
+            },
+    ) {
+        AnimatedContent(
+            targetState = status,
+            transitionSpec = {
+                if (ornamental) {
+                    fadeIn(motion.fastEffectsSpec()) togetherWith fadeOut(motion.fastEffectsSpec())
+                } else {
+                    EnterTransition.None togetherWith ExitTransition.None
+                }
+            },
+            label = "sessionStatusLabel",
+        ) { active ->
+            if (active == SessionStatusKind.NONE) return@AnimatedContent
+            val labelColor = sessionStatusColor(active, scheme)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.widthIn(max = sessionStatusMaxWidth),
+            ) {
+                Box(
+                    modifier =
+                        Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(labelColor),
+                )
+                Text(
+                    active.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 11.sp,
+                    color = labelColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }

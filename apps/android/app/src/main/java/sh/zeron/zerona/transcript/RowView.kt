@@ -93,7 +93,8 @@ class RowView(
         rowKind: RowKind,
         previousText: String?,
         presentationEpoch: Int,
-    ) {
+        allowEntrance: Boolean = false,
+    ): Boolean {
         val d = drawModel.display
         val priorKey = rowKey
         if (priorKey != d.key) {
@@ -140,9 +141,10 @@ class RowView(
             freshCanvas.visibility = VISIBLE
             freshCanvas.alpha = 0f
             val generation = ++streamAnimGeneration
+            val revealMs = ZeronaNativeMotion.streamRevealDurationMs(context)
             streamAnimator =
                 ValueAnimator.ofFloat(0f, 1f).apply {
-                    duration = 220
+                    duration = revealMs
                     addUpdateListener { anim ->
                         if (generation != streamAnimGeneration) return@addUpdateListener
                         freshCanvas.alpha = anim.animatedValue as Float
@@ -159,11 +161,21 @@ class RowView(
                             }
                         },
                     )
-                    start()
+                    if (revealMs == 0L) {
+                        freshCanvas.alpha = 1f
+                        finishStreamReveal()
+                    } else {
+                        start()
+                    }
                 }
         } else {
             canvas.pass = RowDrawModel.Pass.ALL
             freshCanvas.visibility = GONE
+        }
+        if (allowEntrance && !grew && veilFrom == 0) {
+            ZeronaNativeMotion.playRowEntrance(this, rowKind)
+        } else {
+            ZeronaNativeMotion.clearRowEntrance(this)
         }
         canvas.model = drawModel
         canvas.dark = dark
@@ -174,6 +186,7 @@ class RowView(
         layoutWidgets(d, density)
         layoutLinkOverlays(d, density)
         contentDescription = rowAccessibilityLabel(d, rowKind)
+        return allowEntrance && !grew && veilFrom == 0
     }
 
     private fun finishStreamReveal() {
@@ -421,6 +434,7 @@ class RowView(
 
     fun resetForPool() {
         longPressActive = false
+        ZeronaNativeMotion.clearRowEntrance(this)
         cancelStreamAnimation()
         for (v in widgetViews) {
             if (v is TranscriptImageWidget) {

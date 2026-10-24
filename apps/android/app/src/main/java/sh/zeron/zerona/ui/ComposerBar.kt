@@ -1,11 +1,18 @@
 package sh.zeron.zerona.ui
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -44,6 +51,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -54,6 +62,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import sh.zeron.zerona.ui.theme.ZeronaMotionPolicy
+import sh.zeron.zerona.ui.theme.rememberOrnamentalMotionEnabled
 import sh.zeron.zerona.ui.theme.zeronaTactileCompression
 import uniffi.zeron_core.BusyPolicy
 
@@ -82,6 +92,7 @@ fun SessionComposerBar(
             lineHeight = bodyMedium.lineHeight,
             color = scheme.onSurface,
         )
+    val ornamental = rememberOrnamentalMotionEnabled()
     val contentSizeSpec: FiniteAnimationSpec<IntSize> = motion.defaultSpatialSpec()
     val contextualEffects: FiniteAnimationSpec<Float> = motion.fastEffectsSpec()
     val sendShape = MaterialTheme.shapes.small
@@ -109,19 +120,55 @@ fun SessionComposerBar(
             HorizontalDivider(color = GlassInspired.tonalDividerColor(), thickness = 1.dp)
 
             // Single vertical size owner: parent animateContentSize; children use opacity only.
+            val bannerKey =
+                ComposerPresentation.sendStatusBannerKey(
+                    composer.banner,
+                    composer.bannerIsError,
+                )
             AnimatedVisibility(
-                visible = composer.banner != null,
-                enter = fadeIn(contextualEffects),
-                exit = fadeOut(contextualEffects),
+                visible = bannerKey != null,
+                enter =
+                    if (ornamental) {
+                        fadeIn(contextualEffects) +
+                            slideInVertically(motion.fastSpatialSpec()) { fullHeight -> fullHeight / 4 }
+                    } else {
+                        EnterTransition.None
+                    },
+                exit =
+                    if (ornamental) {
+                        fadeOut(contextualEffects) +
+                            slideOutVertically(motion.fastSpatialSpec()) { fullHeight -> fullHeight / 4 }
+                    } else {
+                        ExitTransition.None
+                    },
             ) {
-                composer.banner?.let { banner ->
+                AnimatedContent(
+                    targetState = bannerKey,
+                    transitionSpec = {
+                        if (!ornamental) {
+                            EnterTransition.None togetherWith ExitTransition.None
+                        } else {
+                            val spec =
+                                if (targetState?.startsWith("error|") == true) {
+                                    motion.fastEffectsSpec()
+                                } else {
+                                    contextualEffects
+                                }
+                            (fadeIn(spec) + slideInVertically(motion.fastSpatialSpec()) { it / 3 }) togetherWith
+                                (fadeOut(spec) + slideOutVertically(motion.fastSpatialSpec()) { it / 3 })
+                        }
+                    },
+                    label = "sendStatusBanner",
+                ) { key ->
+                    val banner = key?.substringAfter('|') ?: return@AnimatedContent
+                    val isError = key.startsWith("error|")
                     Text(
                         banner,
                         modifier =
                             Modifier
                                 .fillMaxWidth()
                                 .background(
-                                    if (composer.bannerIsError) {
+                                    if (isError) {
                                         scheme.errorContainer
                                     } else {
                                         scheme.surface
@@ -130,7 +177,7 @@ fun SessionComposerBar(
                                 .padding(horizontal = 14.dp, vertical = 8.dp),
                         style = MaterialTheme.typography.bodySmall,
                         color =
-                            if (composer.bannerIsError) {
+                            if (isError) {
                                 scheme.onErrorContainer
                             } else {
                                 scheme.onSurfaceVariant
@@ -325,25 +372,51 @@ fun SessionComposerBar(
                         )
                         val sendInteraction = remember { MutableInteractionSource() }
                         val sendPressed by sendInteraction.collectIsPressedAsState()
+                        val sendVisual =
+                            ComposerPresentation.sendButtonVisual(
+                                draftNonBlank = draftNonBlank,
+                                sendInFlight = composer.sendInFlight,
+                                pressed = sendPressed,
+                            )
                         val sendContainer by animateColorAsState(
                             targetValue =
-                                when {
-                                    !canSend -> scheme.surfaceVariant
-                                    sendPressed -> scheme.primaryContainer
-                                    else -> scheme.primary
+                                when (sendVisual) {
+                                    ComposerPresentation.SendButtonVisual.Disabled ->
+                                        scheme.surfaceVariant
+                                    ComposerPresentation.SendButtonVisual.InFlight ->
+                                        scheme.primaryContainer
+                                    ComposerPresentation.SendButtonVisual.Pressed ->
+                                        scheme.primaryContainer
+                                    ComposerPresentation.SendButtonVisual.Ready ->
+                                        scheme.primary
                                 },
                             animationSpec = motion.fastEffectsSpec(),
                             label = "sendContainer",
                         )
                         val sendContent by animateColorAsState(
                             targetValue =
-                                when {
-                                    !canSend -> scheme.onSurfaceVariant
-                                    sendPressed -> scheme.onPrimaryContainer
-                                    else -> scheme.onPrimary
+                                when (sendVisual) {
+                                    ComposerPresentation.SendButtonVisual.Disabled ->
+                                        scheme.onSurfaceVariant
+                                    ComposerPresentation.SendButtonVisual.InFlight ->
+                                        scheme.onPrimaryContainer
+                                    ComposerPresentation.SendButtonVisual.Pressed ->
+                                        scheme.onPrimaryContainer
+                                    ComposerPresentation.SendButtonVisual.Ready ->
+                                        scheme.onPrimary
                                 },
                             animationSpec = motion.fastEffectsSpec(),
                             label = "sendContent",
+                        )
+                        val sendIconNudge by animateFloatAsState(
+                            targetValue =
+                                if (sendVisual == ComposerPresentation.SendButtonVisual.InFlight) {
+                                    ZeronaMotionPolicy.SEND_IN_FLIGHT_ICON_NUDGE_FRACTION
+                                } else {
+                                    0f
+                                },
+                            animationSpec = motion.fastSpatialSpec(),
+                            label = "sendIconNudge",
                         )
                         FilledIconButton(
                             onClick = onSend,
@@ -368,6 +441,10 @@ fun SessionComposerBar(
                                 modifier =
                                     Modifier
                                         .size(22.dp)
+                                        .graphicsLayer {
+                                            val nudgePx = 22.dp.toPx() * sendIconNudge
+                                            translationX = nudgePx
+                                        }
                                         .zeronaTactileCompression(sendInteraction),
                             )
                         }

@@ -1,8 +1,13 @@
 package sh.zeron.zerona.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.background
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,6 +55,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import sh.zeron.zerona.app.AppModel
 import sh.zeron.zerona.transcript.TranscriptLab
 import sh.zeron.zerona.transcript.TranscriptListView
+import sh.zeron.zerona.ui.theme.rememberOrnamentalMotionEnabled
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -77,6 +84,28 @@ fun SessionScreen(
 
     val appState by appModel.state.collectAsState()
     val showLoadingShell = state.loading && state.frameTick == 0L && state.error == null
+    val ornamental = rememberOrnamentalMotionEnabled()
+    val motion = MaterialTheme.motionScheme
+    val transcriptReveal by animateFloatAsState(
+        targetValue = if (showLoadingShell) 0f else 1f,
+        animationSpec =
+            if (ornamental) {
+                motion.defaultEffectsSpec()
+            } else {
+                snap()
+            },
+        label = "transcriptReveal",
+    )
+    val transcriptScale by animateFloatAsState(
+        targetValue = if (showLoadingShell) 0.98f else 1f,
+        animationSpec =
+            if (ornamental) {
+                motion.defaultSpatialSpec()
+            } else {
+                snap()
+            },
+        label = "transcriptScale",
+    )
 
     Scaffold(
         topBar = {
@@ -172,6 +201,11 @@ fun SessionScreen(
                         Modifier
                             .fillMaxSize()
                             .clipToBounds()
+                            .graphicsLayer {
+                                alpha = transcriptReveal
+                                scaleX = transcriptScale
+                                scaleY = transcriptScale
+                            }
                             .background(Color(Palette.background(dark))),
                     factory = { ctx ->
                         TranscriptListView(ctx).also { host ->
@@ -194,14 +228,23 @@ fun SessionScreen(
                     },
                 )
                 val showLatest = state.showScrollToLatest && state.error == null && !showLoadingShell
-                val motion = MaterialTheme.motionScheme
                 androidx.compose.animation.AnimatedVisibility(
                     visible = showLatest,
                     modifier = Modifier.align(Alignment.BottomCenter),
                     enter =
-                        fadeIn(motion.fastEffectsSpec()) +
-                            slideInVertically(motion.fastSpatialSpec()) { it / 3 },
-                    exit = fadeOut(motion.fastEffectsSpec()),
+                        if (ornamental) {
+                            fadeIn(motion.fastEffectsSpec()) +
+                                slideInVertically(motion.fastSpatialSpec()) { it / 3 }
+                        } else {
+                            EnterTransition.None
+                        },
+                    exit =
+                        if (ornamental) {
+                            fadeOut(motion.fastEffectsSpec()) +
+                                slideOutVertically(motion.fastSpatialSpec()) { it / 4 }
+                        } else {
+                            ExitTransition.None
+                        },
                 ) {
                     val scrollToLatestLabel = "Scroll to latest"
                     Surface(
