@@ -1,7 +1,54 @@
+import java.util.Base64
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.gms.google-services")
+}
+
+fun requestedAssembleRelease(): Boolean =
+    gradle.startParameter.taskNames.any { task ->
+        task.equals("assembleRelease", ignoreCase = true) ||
+            task.equals(":app:assembleRelease", ignoreCase = true) ||
+            task.endsWith(":assembleRelease", ignoreCase = true)
+    }
+
+fun requiredReleaseEnv(name: String): String {
+    val value = System.getenv(name)
+    if (value.isNullOrBlank()) {
+        throw GradleException(
+            "Release signing requires $name. Set ANDROID_RELEASE_KEYSTORE_BASE64, " +
+                "ANDROID_RELEASE_STORE_PASSWORD, ANDROID_RELEASE_KEY_ALIAS, and " +
+                "ANDROID_RELEASE_KEY_PASSWORD (see apps/android/README.md). " +
+                "Debug builds do not need release signing secrets.",
+        )
+    }
+    return value
+}
+
+fun resolveReleaseKeystoreFile(): java.io.File {
+    val base64 = requiredReleaseEnv("ANDROID_RELEASE_KEYSTORE_BASE64")
+    val decoded =
+        try {
+            Base64.getDecoder().decode(base64.replace("\\s".toRegex(), ""))
+        } catch (_: IllegalArgumentException) {
+            throw GradleException("ANDROID_RELEASE_KEYSTORE_BASE64 is not valid Base64.")
+        }
+    if (decoded.isEmpty()) {
+        throw GradleException("ANDROID_RELEASE_KEYSTORE_BASE64 decoded to an empty keystore.")
+    }
+    val parent =
+        System.getenv("RUNNER_TEMP")?.let { java.io.File(it) }
+            ?: java.io.File(System.getProperty("java.io.tmpdir"))
+    if (!parent.isDirectory) {
+        throw GradleException(
+            "Cannot write release keystore: temporary directory missing (${parent.absolutePath}).",
+        )
+    }
+    val keystore = java.io.File.createTempFile("zerona-android-release-", ".keystore", parent)
+    keystore.writeBytes(decoded)
+    keystore.deleteOnExit()
+    return keystore
 }
 
 val zeronCoreDirPath =
@@ -47,9 +94,24 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            if (requestedAssembleRelease()) {
+                storeFile = resolveReleaseKeystoreFile()
+                storePassword = requiredReleaseEnv("ANDROID_RELEASE_STORE_PASSWORD")
+                keyAlias = requiredReleaseEnv("ANDROID_RELEASE_KEY_ALIAS")
+                keyPassword = requiredReleaseEnv("ANDROID_RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isDebuggable = true
+        }
+        release {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 

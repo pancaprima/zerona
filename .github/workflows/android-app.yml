@@ -254,3 +254,94 @@ jobs:
           path: apps/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+      - name: Check private release signing secrets
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        env:
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+          ANDROID_RELEASE_CERT_SHA256: ${{ secrets.ANDROID_RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in \
+            ANDROID_RELEASE_KEYSTORE_BASE64 \
+            ANDROID_RELEASE_STORE_PASSWORD \
+            ANDROID_RELEASE_KEY_ALIAS \
+            ANDROID_RELEASE_KEY_PASSWORD \
+            ANDROID_RELEASE_CERT_SHA256
+          do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "Private release build on main requires GitHub Actions secrets (values not shown):" >&2
+            printf '  - %s\n' "${missing[@]}" >&2
+            echo "Configure them in repository settings, then re-run workflow_dispatch on refs/heads/main." >&2
+            exit 1
+          fi
+      - name: Assemble signed release APK (private)
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        env:
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          gradle -p apps/android :app:assembleRelease \
+            -PzeronCoreDir="$GITHUB_WORKSPACE/target/android-core" \
+            -PzeronAbis="$GRADLE_ABIS" \
+            --no-daemon --stacktrace
+      - name: Verify release APK signature (apksigner)
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        env:
+          ANDROID_RELEASE_CERT_SHA256: ${{ secrets.ANDROID_RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          apk="apps/android/app/build/outputs/apk/release/app-release.apk"
+          if [[ ! -f "$apk" ]]; then
+            echo "Release APK not found: $apk" >&2
+            exit 1
+          fi
+          apksigner_bin="${ANDROID_HOME}/build-tools/36.0.0/apksigner"
+          if [[ ! -x "$apksigner_bin" ]]; then
+            echo "apksigner not found: $apksigner_bin" >&2
+            exit 1
+          fi
+          cert_out="$("$apksigner_bin" verify --print-certs "$apk" 2>&1)"
+          if ! printf '%s\n' "$cert_out" | grep -q 'Verified using'; then
+            echo "apksigner verify failed for $apk" >&2
+            exit 1
+          fi
+          digest_line="$(printf '%s\n' "$cert_out" | grep -E 'SHA-256 digest:' | head -n1 || true)"
+          if [[ -z "$digest_line" ]]; then
+            echo "apksigner did not report an SHA-256 digest" >&2
+            exit 1
+          fi
+          actual="${digest_line#*: }"
+          actual="${actual//[[:space:]]/}"
+          actual_lc="${actual,,}"
+          actual_lc="${actual_lc//:/}"
+          expected="${ANDROID_RELEASE_CERT_SHA256//[[:space:]]/}"
+          expected_lc="${expected,,}"
+          expected_lc="${expected_lc//:/}"
+          if [[ -z "$expected_lc" ]]; then
+            echo "ANDROID_RELEASE_CERT_SHA256 secret is empty" >&2
+            exit 1
+          fi
+          if [[ "$actual_lc" != "$expected_lc" ]]; then
+            echo "Release APK signer SHA-256 does not match ANDROID_RELEASE_CERT_SHA256" >&2
+            exit 1
+          fi
+          echo "Release APK signature verified (SHA-256 matches ANDROID_RELEASE_CERT_SHA256)."
+      - name: Upload private release APK
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zerona-android-release-private
+          path: apps/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
