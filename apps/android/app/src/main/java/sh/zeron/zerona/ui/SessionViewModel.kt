@@ -31,6 +31,7 @@ import sh.zeron.zerona.transcript.TranscriptActions
 import sh.zeron.zerona.transcript.TranscriptLab
 import sh.zeron.zerona.transcript.TranscriptListView
 import sh.zeron.zerona.transcript.TranscriptMessageActionsSupport
+import sh.zeron.zerona.transcript.TranscriptRowKey
 import sh.zeron.zerona.transcript.findActivity
 import sh.zeron.zerona.transcript.isUsableForUi
 import uniffi.zeron_core.BusyPolicy
@@ -315,6 +316,7 @@ class SessionViewModel(
     fun attachTranscriptHost(host: TranscriptListView) {
         transcriptHost?.onScrollToLatestVisibilityChanged = null
         transcriptHost = host
+        syncTranscriptHostPresentation()
         host.onScrollToLatestVisibilityChanged = { visible ->
             if (transcriptHost === host) {
                 _state.update { it.copy(showScrollToLatest = visible) }
@@ -378,7 +380,7 @@ class SessionViewModel(
                 c.sendState == SendState.FAILED -> "Not delivered" to true
                 c.sendState == SendState.QUEUED ->
                     "$hostLabel is offline, will send when it's back" to false
-                c.sendState == SendState.SENDING -> "Sending…" to false
+                c.sendState == SendState.SENDING -> null to false
                 else -> null to false
             }
         var deliveryMode = prev.deliveryMode
@@ -404,6 +406,7 @@ class SessionViewModel(
                     actionPending = q.actionPending,
                 )
             }
+        syncTranscriptHostPresentation()
         _state.update {
             it.copy(
                 title = c.title,
@@ -427,6 +430,23 @@ class SessionViewModel(
         if (isLab) return
         val status = handle?.transcriptStatus()
         _state.update { it.copy(loading = status?.hydrated == false) }
+        syncTranscriptHostPresentation()
+    }
+
+    private fun collectPendingSendRowKeys(): Set<ULong> {
+        if (isLab) return emptySet()
+        val h = handle ?: return emptySet()
+        val c = h.composer()
+        return c.pendingSends
+            .filter { it.state == SendState.SENDING }
+            .map { TranscriptRowKey.userMessage(it.messageId) }
+            .toSet()
+    }
+
+    private fun syncTranscriptHostPresentation() {
+        val host = transcriptHost ?: return
+        host.transcriptReplayHydrated = isLab || !_state.value.loading
+        host.setPendingSendStatusRowKeys(collectPendingSendRowKeys())
     }
 
     fun send() {
