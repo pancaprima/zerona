@@ -4,6 +4,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
+private class NestedFailureKindFixture {
+    class Inner : Exception()
+}
+
 class ModelLabelPresentationTest {
     @Test
     fun prefersCatalogModelLabel() {
@@ -65,12 +69,9 @@ class ModelLabelPresentationTest {
 
     @Test
     fun refreshFailureKindUsesEnclosingClassForNestedTypes() {
-        class Outer {
-            class Inner : Exception()
-        }
         assertEquals(
-            "Outer.Inner",
-            formatModelLabelRefreshFailureKind(Outer.Inner()),
+            "NestedFailureKindFixture.Inner",
+            formatModelLabelRefreshFailureKind(NestedFailureKindFixture.Inner()),
         )
     }
 }
