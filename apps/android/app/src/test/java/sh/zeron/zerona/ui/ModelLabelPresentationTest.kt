@@ -4,6 +4,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
+private class ModelLabelRefreshFailureKindFixtures {
+    class Outer {
+        class Inner : Exception()
+    }
+}
+
 class ModelLabelPresentationTest {
     @Test
     fun prefersCatalogModelLabel() {
@@ -53,5 +59,21 @@ class ModelLabelPresentationTest {
     @Test
     fun unicodeModelIdentifierPreserved() {
         assertEquals("模型-α", formatModelLabel(null, "模型-α", null, null))
+    }
+
+    @Test
+    fun refreshFailureKindUsesSimpleClassName() {
+        assertEquals(
+            "IllegalStateException",
+            formatModelLabelRefreshFailureKind(IllegalStateException("secret detail")),
+        )
+    }
+
+    @Test
+    fun refreshFailureKindUsesEnclosingClassForNestedTypes() {
+        assertEquals(
+            "Outer.Inner",
+            formatModelLabelRefreshFailureKind(ModelLabelRefreshFailureKindFixtures.Outer.Inner()),
+        )
     }
 }
