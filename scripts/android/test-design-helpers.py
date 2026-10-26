@@ -42,6 +42,9 @@ def trove_glob(gradle_home: str) -> str:
 
 PRODUCTION_SOURCES = [
     "apps/android/app/src/main/java/sh/zeron/zerona/fcm/NotificationChatId.kt",
+    "apps/android/app/src/main/java/sh/zeron/zerona/fcm/SessionNotificationIdentity.kt",
+    "apps/android/app/src/main/java/sh/zeron/zerona/fcm/SessionNotificationReconcilePolicy.kt",
+    "apps/android/app/src/main/java/sh/zeron/zerona/ui/SessionAttachPolicy.kt",
     "apps/android/app/src/main/java/sh/zeron/zerona/app/SessionStatusMarker.kt",
     "apps/android/app/src/main/java/sh/zeron/zerona/ui/theme/ZeronaColorTokens.kt",
     "apps/android/app/src/main/java/sh/zeron/zerona/ui/theme/TranscriptColorTokens.kt",
@@ -55,6 +58,9 @@ PRODUCTION_SOURCES = [
 
 TEST_SOURCES = [
     "apps/android/app/src/test/java/sh/zeron/zerona/fcm/NotificationChatIdTest.kt",
+    "apps/android/app/src/test/java/sh/zeron/zerona/fcm/SessionNotificationIdentityTest.kt",
+    "apps/android/app/src/test/java/sh/zeron/zerona/fcm/SessionNotificationReconcilePolicyTest.kt",
+    "apps/android/app/src/test/java/sh/zeron/zerona/ui/SessionAttachPolicyTest.kt",
     "apps/android/app/src/test/java/sh/zeron/zerona/app/SessionStatusMarkerTest.kt",
     "apps/android/app/src/test/java/sh/zeron/zerona/ui/theme/ZeronaColorTokensTest.kt",
     "apps/android/app/src/test/java/sh/zeron/zerona/ui/theme/ContrastTest.kt",
@@ -68,6 +74,9 @@ TEST_SOURCES = [
 
 TEST_CLASSES = [
     "sh.zeron.zerona.fcm.NotificationChatIdTest",
+    "sh.zeron.zerona.fcm.SessionNotificationIdentityTest",
+    "sh.zeron.zerona.fcm.SessionNotificationReconcilePolicyTest",
+    "sh.zeron.zerona.ui.SessionAttachPolicyTest",
     "sh.zeron.zerona.app.SessionStatusMarkerTest",
     "sh.zeron.zerona.ui.theme.ZeronaColorTokensTest",
     "sh.zeron.zerona.ui.theme.ContrastTest",

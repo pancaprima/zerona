@@ -22,6 +22,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import sh.zeron.zerona.app.AppModel
+import sh.zeron.zerona.fcm.Notifications
 import sh.zeron.zerona.transcript.FrameRelay
 import sh.zeron.zerona.transcript.ImageAttachmentSupport
 import sh.zeron.zerona.transcript.MessageActionsController
@@ -204,6 +205,14 @@ class SessionViewModel(
         viewModelScope.launch {
             openSession()
         }
+        if (!isLab) {
+            viewModelScope.launch {
+                appModel.workspaceTick.collect { dismissSessionNotificationIfRead() }
+            }
+            viewModelScope.launch {
+                appModel.refreshTick.collect { dismissSessionNotificationIfRead() }
+            }
+        }
     }
 
     private fun openSession() {
@@ -239,12 +248,16 @@ class SessionViewModel(
             } else {
                 val sessionHandle = core.openSession(chatId)
                 handle = sessionHandle
-                sessionHandle.setViewAttached(true)
                 val attached = tv.attach(core, chatId)
+                val attachOutcome = SessionAttachPolicy.outcome(attached)
                 if (!attached) {
                     releaseTranscriptEngine(tv, relay)
                     _state.update { it.copy(loading = false, error = "Could not attach transcript") }
                     return
+                }
+                sessionHandle.setViewAttached(attachOutcome.setViewAttached)
+                if (attachOutcome.dismissSessionNotification) {
+                    Notifications.cancelSessionNotification(appModel.applicationContext(), chatId)
                 }
                 engineLive = true
                 refreshComposer()
@@ -293,6 +306,26 @@ class SessionViewModel(
                 } catch (_: Exception) {
                 }
             }
+    }
+
+    private suspend fun dismissSessionNotificationIfRead() {
+        if (!engineLive || handle == null) return
+        val core = appModel.client ?: return
+        val stillUnseen =
+            try {
+                withContext(Dispatchers.Default) {
+                    core.sessionRow(chatId)?.unseen
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        if (handle == null || !engineLive) return
+        if (appModel.client !== core) return
+        if (stillUnseen == false) {
+            Notifications.cancelSessionNotification(appModel.applicationContext(), chatId)
+        }
     }
 
     private fun releaseTranscriptEngine(

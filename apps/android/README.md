@@ -85,7 +85,7 @@ gradle -p apps/android :app:testDebugUnitTest \
   -PzeronCoreDir=../../target/android-core
 ```
 
-Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link hit-test, anchor/follow, cache keys, streaming prefixes, viewport scale, image reference/decode planning, message action/copy/link menu models, design tokens/contrast/composer presentation, read-only model label formatting) live under `app/src/test` (182 JVM `@Test` method annotations in 23 classes — static inventory counted by `selfcheck-native-transcript.sh`, not executed native/device tests). `assembleDebug` also runs `testDebugUnitTest` (see `app/build.gradle.kts`). Static wiring checks: `apps/android/scripts/selfcheck-native-transcript.sh` (no Gradle).
+Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link hit-test, anchor/follow, cache keys, streaming prefixes, viewport scale, image reference/decode planning, message action/copy/link menu models, design tokens/contrast/composer presentation, read-only model label formatting, session notification identity/reconciliation policy, session attach policy) live under `app/src/test` (194 JVM `@Test` method annotations in 26 classes — static inventory counted by `selfcheck-native-transcript.sh`, not executed native/device tests). `assembleDebug` also runs `testDebugUnitTest` (see `app/build.gradle.kts`). Static wiring checks: `apps/android/scripts/selfcheck-native-transcript.sh` (no Gradle).
 
 ### Design refresh helpers (no Gradle)
 

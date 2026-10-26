@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  androidNotificationTagForChat,
   apnsPayload,
   chatForNotification,
   fcmPayload,
@@ -98,6 +99,12 @@ describe("prefs and payload", () => {
     const p = fcmPayload("c1", "Fix login", "input");
     expect(p.notification).toEqual({ title: "Fix login", body: "Waiting on your input" });
     expect(p.data).toEqual({ chatId: "c1", category: "input" });
-    expect(p.android.notification).toEqual({ channel_id: "sessions" });
+    expect(p.android.notification).toEqual({
+      channel_id: "sessions",
+      tag: "zerona.chat.c1"
+    });
+  });
+  it("uses a per-chat Android notification tag aligned with the app", () => {
+    expect(androidNotificationTagForChat("abc-123")).toBe("zerona.chat.abc-123");
   });
 });

@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.result.ActivityResultLauncher
@@ -43,7 +44,7 @@ object FcmTokenStore {
 
 object Notifications {
     const val SESSIONS_CHANNEL_ID = "sessions"
-    private const val SESSION_NOTIFICATION_ID = 1
+    const val SESSION_NOTIFICATION_ID = 1
 
     fun ensureSessionsChannel(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -89,16 +90,23 @@ object Notifications {
         ensureSessionsChannel(context)
         if (!hasPostNotificationsPermission(context)) return
 
-        val notificationId = chatId?.hashCode() ?: SESSION_NOTIFICATION_ID
+        val validated = chatId?.let { NotificationChatId.validate(it) }
+        val notificationTag = validated?.let { SessionNotificationIdentity.notificationTag(it) }
+        val notificationId =
+            validated?.let { SessionNotificationIdentity.notificationId(it) }
+                ?: SESSION_NOTIFICATION_ID
         val launchIntent =
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                chatId?.let { putExtra("chatId", it) }
+                validated?.let { id ->
+                    putExtra("chatId", id)
+                    SessionNotificationIdentity.pendingIntentUriString(id)?.let { data = Uri.parse(it) }
+                }
             }
         val pendingIntent =
             PendingIntent.getActivity(
                 context,
-                notificationId,
+                0,
                 launchIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
@@ -114,6 +122,56 @@ object Notifications {
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .build()
 
-        NotificationManagerCompat.from(context).notify(notificationId, notification)
+        val manager = NotificationManagerCompat.from(context)
+        if (notificationTag != null) {
+            manager.notify(notificationTag, notificationId, notification)
+        } else {
+            manager.notify(notificationId, notification)
+        }
+    }
+
+    fun cancelSessionNotification(
+        context: Context,
+        chatId: String,
+    ) {
+        val validated = NotificationChatId.validate(chatId) ?: return
+        val manager = NotificationManagerCompat.from(context)
+        val tag = SessionNotificationIdentity.notificationTag(validated) ?: return
+        val id = SessionNotificationIdentity.notificationId(validated)
+        manager.cancel(tag, id)
+        SessionNotificationIdentity.legacyUntaggedNotificationId(validated)?.let { legacyId ->
+            manager.cancel(legacyId)
+        }
+    }
+
+    /**
+     * Clears tray items for chats confirmed read in a synced workspace snapshot.
+     * Never cancels notifications whose chat id is absent from [unseenByChatId].
+     */
+    fun reconcileReadSessionNotifications(
+        context: Context,
+        unseenByChatId: Map<String, Boolean>,
+        workspaceSynced: Boolean,
+    ) {
+        if (!workspaceSynced) return
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val manager =
+                context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            for (status in manager.activeNotifications) {
+                val tag = status.tag
+                if (tag != null && tag.startsWith(SessionNotificationIdentity.TAG_PREFIX)) {
+                    val chatId = tag.removePrefix(SessionNotificationIdentity.TAG_PREFIX)
+                    if (SessionNotificationReconcilePolicy.shouldCancelForChat(chatId, unseenByChatId, true)) {
+                        manager.cancel(tag, status.id)
+                    }
+                }
+            }
+        }
+        for ((chatId, unseen) in unseenByChatId) {
+            if (!unseen) {
+                cancelSessionNotification(context, chatId)
+            }
+        }
     }
 }

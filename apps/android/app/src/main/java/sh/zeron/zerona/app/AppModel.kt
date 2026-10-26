@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import sh.zeron.zerona.fcm.FcmTokenStore
+import sh.zeron.zerona.fcm.Notifications
+import sh.zeron.zerona.fcm.SessionNotificationReconcile
 import sh.zeron.zerona.core.AndroidPlatformMeasurer
 import sh.zeron.zerona.core.FontLoader
 import sh.zeron.zerona.core.GeistTypefaces
@@ -597,6 +599,16 @@ class AppModel(
         val ws = core.workspace()
         val sections = buildSections(ws)
         _state.update { it.copy(sections = sections, workspaceReady = true) }
+        reconcileSessionNotifications(ws)
+    }
+
+    private fun reconcileSessionNotifications(ws: WorkspaceSnapshot) {
+        val unseenByChatId = SessionNotificationReconcile.unseenByChatId(ws)
+        Notifications.reconcileReadSessionNotifications(
+            appContext,
+            unseenByChatId,
+            ws.synced,
+        )
     }
 
     private fun buildSections(ws: WorkspaceSnapshot): List<SessionSectionUi> {
