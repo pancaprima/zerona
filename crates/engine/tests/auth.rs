@@ -264,6 +264,28 @@ fn query_param(url: &str, key: &str) -> Option<String> {
         .map(|(_, v)| v.to_string())
 }
 
+fn decode_redirect_param(redirect_uri: &str) -> String {
+    redirect_uri
+        .replace("%3A", ":")
+        .replace("%2F", "/")
+        .replace("%3F", "?")
+        .replace("%26", "&")
+        .replace("%3D", "=")
+}
+
+fn loopback_port_from_authorize_url(url: &str) -> u16 {
+    let redirect = decode_redirect_param(&query_param(url, "redirect_uri").expect("redirect_uri"));
+    let after_host = redirect
+        .strip_prefix("http://127.0.0.1:")
+        .expect("loopback redirect");
+    after_host
+        .split('/')
+        .next()
+        .expect("port")
+        .parse()
+        .expect("port number")
+}
+
 async fn wait_for<T: Clone + PartialEq>(
     rx: &mut tokio::sync::watch::Receiver<T>,
     check: impl Fn(&T) -> bool,
@@ -813,6 +835,82 @@ async fn sign_out_invalidates_pending_and_in_flight_oauth_callbacks() {
     assert_eq!(auth.state(), AuthState::SignedOut);
     assert!(!dir.path().join("session.json").exists());
     assert_eq!(edge.state.exchanges.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn loopback_callback_ephemeral_bind_is_idempotent() {
+    let edge = StubEdge::start().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut config = workos_config(&edge.url(), dir.path());
+    config.callback_port = Some(0);
+    let auth = Auth::new(config);
+
+    let url = auth.start_sign_in().await.expect("authorize url");
+    let port = loopback_port_from_authorize_url(&url);
+    assert_ne!(port, 0, "ephemeral bind must pick a concrete loopback port");
+
+    let url_again = auth.start_sign_in().await.expect("second authorize url");
+    assert_eq!(
+        loopback_port_from_authorize_url(&url_again),
+        port,
+        "ensure_loopback reuses the listener for this Auth instance"
+    );
+    let state_a = query_param(&url, "state").expect("state");
+    let state_b = query_param(&url_again, "state").expect("state");
+    assert_ne!(state_a, state_b, "each sign-in mints independent OAuth state");
+
+    let auth_b = auth.clone();
+    let (concurrent_a, concurrent_b) =
+        tokio::join!(auth.start_sign_in(), auth_b.start_sign_in());
+    let port_a = loopback_port_from_authorize_url(&concurrent_a.expect("concurrent a"));
+    let port_b = loopback_port_from_authorize_url(&concurrent_b.expect("concurrent b"));
+    assert_eq!(port_a, port);
+    assert_eq!(port_b, port);
+}
+
+#[tokio::test]
+async fn loopback_callback_falls_back_when_preferred_port_in_use() {
+    let edge = StubEdge::start().await;
+    *edge.state.exchange_org.lock().expect("lock") = "org_1".into();
+    let squatter = TcpListener::bind("127.0.0.1:0").await.expect("squatter bind");
+    let blocked = squatter.local_addr().expect("addr").port();
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut config = workos_config(&edge.url(), dir.path());
+    config.callback_port = Some(blocked);
+    let auth = Auth::new(config);
+
+    let url = auth.start_sign_in().await.expect("authorize url");
+    let port = loopback_port_from_authorize_url(&url);
+    assert_ne!(port, blocked, "must not report the occupied preferred port");
+    let callback = decode_redirect_param(&query_param(&url, "redirect_uri").expect("redirect"));
+    let state = query_param(&url, "state").expect("state");
+
+    let bad = reqwest::get(format!("{callback}?code=abc&state=wrong"))
+        .await
+        .expect("bad cb");
+    assert_eq!(bad.status().as_u16(), 400);
+    assert_eq!(edge.state.exchanges.load(Ordering::SeqCst), 0);
+
+    let ok = reqwest::get(format!("{callback}?code=abc&state={state}"))
+        .await
+        .expect("cb");
+    assert_eq!(ok.status().as_u16(), 200);
+    assert_eq!(edge.state.exchanges.load(Ordering::SeqCst), 1);
+
+    // After successful callback, verify new sign-in reuses fallback listener and gets fresh state.
+    let url_after = auth.start_sign_in().await.expect("post-sign-in authorize url");
+    assert_eq!(
+        loopback_port_from_authorize_url(&url_after),
+        port,
+        "fallback port is stable for the Auth instance"
+    );
+    let state_after = query_param(&url_after, "state").expect("state");
+    assert_ne!(state_after, state);
+    assert!(
+        auth.state().is_signed_in(),
+        "prior callback already committed the session"
+    );
 }
 
 #[tokio::test]
