@@ -54,4 +54,23 @@ class ModelLabelPresentationTest {
     fun unicodeModelIdentifierPreserved() {
         assertEquals("模型-α", formatModelLabel(null, "模型-α", null, null))
     }
+
+    @Test
+    fun refreshFailureKindUsesSimpleClassName() {
+        assertEquals(
+            "IllegalStateException",
+            formatModelLabelRefreshFailureKind(IllegalStateException("secret detail")),
+        )
+    }
+
+    @Test
+    fun refreshFailureKindUsesEnclosingClassForNestedTypes() {
+        class Outer {
+            class Inner : Exception()
+        }
+        assertEquals(
+            "Outer.Inner",
+            formatModelLabelRefreshFailureKind(Outer.Inner()),
+        )
+    }
 }
