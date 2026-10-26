@@ -1261,18 +1261,39 @@ impl Auth {
             return Ok(port);
         }
         let requested = self.inner.config.callback_port.unwrap_or(0);
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", requested))
+        let listener = bind_sign_in_loopback(requested)
             .await
             .map_err(|e| EngineError::Other(format!("sign-in callback bind failed: {e}")))?;
         let port = listener
             .local_addr()
             .map_err(|e| EngineError::Other(format!("sign-in callback addr: {e}")))?
             .port();
+        if requested != 0 && port != requested {
+            tracing::info!(
+                requested,
+                port,
+                "auth: preferred sign-in callback port in use; listening on ephemeral port"
+            );
+        } else {
+            tracing::info!(port, "auth: sign-in callback listening");
+        }
         *slot = Some(port);
         let weak = Arc::downgrade(&self.inner);
         tokio::spawn(loopback_loop(listener, weak));
-        tracing::info!(port, "auth: sign-in callback listening");
         Ok(port)
+    }
+}
+
+/// Loopback listener for headed WorkOS sign-in. `port == 0` picks any free port;
+/// a fixed port that is already taken falls back to `0` so a stale engine or
+/// second install cannot block sign-in.
+async fn bind_sign_in_loopback(port: u16) -> std::io::Result<tokio::net::TcpListener> {
+    match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+        Ok(listener) => Ok(listener),
+        Err(err) if err.kind() == std::io::ErrorKind::AddrInUse && port != 0 => {
+            tokio::net::TcpListener::bind(("127.0.0.1", 0)).await
+        }
+        Err(err) => Err(err),
     }
 }
 
