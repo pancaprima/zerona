@@ -370,9 +370,10 @@ class SessionViewModel(
             handle?.messageCreatedAtMs(messageId)
         }
         host.onVisibleSeenMessageChanged = { visible ->
-            if (transcriptHost !== host) return@onVisibleSeenMessageChanged
-            latestVisibleSeen = visible
-            scheduleSeenReport()
+            if (transcriptHost === host) {
+                latestVisibleSeen = visible
+                scheduleSeenReport()
+            }
         }
     }
 
