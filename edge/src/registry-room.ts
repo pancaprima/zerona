@@ -836,7 +836,7 @@ export class RegistryRoom implements DurableObject {
     return createdAt;
   }
 
-  /** Transcript message createdAt for read matching; not bumped from chat `lastMessageAt` on `done`. */
+  /** Read-matching baseline for `message_created_at`; for `done`, session `updatedAt` (status completion time), not transcript entry `createdAt`; not bumped from chat `lastMessageAt` on `done`. */
   private resolveTriggerMessageCreatedAt(
     category: Category,
     session: Row,
