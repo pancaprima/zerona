@@ -229,6 +229,16 @@ impl LayoutFrame {
             .copied()
     }
 
+    /// Owning transcript entry id for a row (`None` for non-message rows).
+    pub fn row_entry_id(&self, index: u32) -> Option<String> {
+        let id = self.rows.get(index as usize)?.core.entry_id.as_ref();
+        if id.is_empty() {
+            None
+        } else {
+            Some(id.to_string())
+        }
+    }
+
     /// Index of the row containing `y` (clamped).
     pub fn index_at(&self, y: f32) -> Option<u32> {
         if self.rows.is_empty() {

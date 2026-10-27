@@ -11,6 +11,8 @@
     "test": "npm run test:unit && npm run test:workerd",
     "test:unit": "vitest run",
     "test:workerd": "vitest run -c vitest.workerd.config.ts",
+    "test:workerd:unread-push": "vitest run -c vitest.workerd.config.ts test/workerd/unread-push.workerd.test.ts",
+    "test:workerd:unread-push-alarm-twice": "vitest run -c vitest.workerd.config.ts test/workerd/unread-push.workerd.test.ts -t \"fires alarm twice in a row\"",
     "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
