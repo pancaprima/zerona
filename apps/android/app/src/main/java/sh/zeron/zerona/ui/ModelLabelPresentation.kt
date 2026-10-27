@@ -17,3 +17,14 @@ fun formatModelLabel(
     val reasoningPart = reasoning?.trim()?.takeIf { it.isNotBlank() }
     return if (reasoningPart != null) "$base · $reasoningPart" else base
 }
+
+/**
+ * Safe one-line failure kind for model-label refresh logs (no exception message or session fields).
+ */
+fun formatModelLabelRefreshFailureKind(throwable: Throwable): String {
+    val cls = throwable::class.java
+    val simple = cls.simpleName
+    if (simple.isEmpty()) return cls.name
+    val enclosing = cls.enclosingClass?.simpleName?.takeIf { it.isNotEmpty() }
+    return if (enclosing != null) "$enclosing.$simple" else simple
+}

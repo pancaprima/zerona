@@ -7,6 +7,7 @@ import android.graphics.Bitmap
 import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -41,6 +42,8 @@ import uniffi.zeron_core.SendRequest
 import uniffi.zeron_core.SendState
 import uniffi.zeron_core.SessionHandle
 import uniffi.zeron_core.TranscriptView
+
+private const val SESSION_VIEW_MODEL_LOG_TAG = "SessionViewModel"
 
 data class QueueItemUi(
     val id: String,
@@ -290,7 +293,12 @@ class SessionViewModel(
                     _state.update { it.copy(modelLabel = label) }
                 } catch (e: CancellationException) {
                     throw e
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    Log.w(
+                        SESSION_VIEW_MODEL_LOG_TAG,
+                        "Session model label refresh failed (" +
+                            "${formatModelLabelRefreshFailureKind(e)})",
+                    )
                 }
             }
     }

@@ -1,8 +1,16 @@
 package sh.zeron.zerona.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+
+private class ModelLabelRefreshFailureKindFixtures {
+    class Outer {
+        class Inner : Exception()
+    }
+}
 
 class ModelLabelPresentationTest {
     @Test
@@ -53,5 +61,40 @@ class ModelLabelPresentationTest {
     @Test
     fun unicodeModelIdentifierPreserved() {
         assertEquals("模型-α", formatModelLabel(null, "模型-α", null, null))
+    }
+
+    @Test
+    fun refreshFailureKindUsesSimpleClassName() {
+        assertEquals(
+            "IllegalStateException",
+            formatModelLabelRefreshFailureKind(IllegalStateException("secret detail")),
+        )
+    }
+
+    @Test
+    fun refreshFailureKindUsesEnclosingClassForNestedTypes() {
+        assertEquals(
+            "Outer.Inner",
+            formatModelLabelRefreshFailureKind(ModelLabelRefreshFailureKindFixtures.Outer.Inner()),
+        )
+    }
+
+    @Test
+    fun refreshFailureKindUsesBinaryNameForAnonymousException() {
+        val ex = object : Exception("secret detail") {}
+        val result = formatModelLabelRefreshFailureKind(ex)
+        assertEquals(ex::class.java.name, result)
+        assertTrue(result.isNotEmpty())
+        assertFalse(result.contains("secret"))
+    }
+
+    @Test
+    fun refreshFailureKindHandlesLocalClassWithoutMessage() {
+        class Local : Exception("secret detail")
+        val ex = Local()
+        val result = formatModelLabelRefreshFailureKind(ex)
+        assertTrue(result.isNotEmpty())
+        assertTrue(result.endsWith("Local"))
+        assertFalse(result.contains("secret"))
     }
 }
