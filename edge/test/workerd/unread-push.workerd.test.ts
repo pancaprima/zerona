@@ -106,6 +106,12 @@ async function triggerMsgAt(stub: DurableObjectStub) {
     return [...state.storage.sql.exec("SELECT msg_at FROM unread_triggers WHERE chat_id = 'c1'")][0]?.msg_at as number;
   });
 }
+async function triggerMsgId(stub: DurableObjectStub) {
+  return runInDurableObject(stub, (_i, state) => {
+    return [...state.storage.sql.exec("SELECT message_id FROM unread_triggers WHERE chat_id = 'c1'")][0]
+      ?.message_id as string;
+  });
+}
 
 describe("deferred FCM unread push", () => {
   it("does not push when desktop read receipt arrives before the delay", async () => {
@@ -204,8 +210,24 @@ describe("deferred FCM unread push", () => {
     await seen(stub, "desktop-a", "c1", "prev-msg", first);
     await triggerDone(stub);
     expect(await triggerMsgAt(stub)).toBe(first);
+    expect(await triggerMsgId(stub)).toBe("turn-1");
     await markChatMessage(stub, later, "completion-msg");
     expect(await triggerMsgAt(stub)).toBe(later);
+    expect(await triggerMsgId(stub)).toBe("completion-msg");
+    await fastForwardUnread(stub);
+    await runDurableObjectAlarm(stub);
+    expect((await stats(stub)).pushLog).toHaveLength(1);
+  });
+
+  it("still sends push when the chat row never advances before the alarm", async () => {
+    const stub = room();
+    await registerFcm(stub, "android-1");
+    const first = 1_700_000_600_000;
+    await seedChat(stub, first, "prev-msg");
+    await seen(stub, "desktop-a", "c1", "prev-msg", first);
+    await triggerDone(stub);
+    expect(await triggerMsgAt(stub)).toBe(first);
+    expect(await triggerMsgId(stub)).toBe("turn-1");
     await fastForwardUnread(stub);
     await runDurableObjectAlarm(stub);
     expect((await stats(stub)).pushLog).toHaveLength(1);

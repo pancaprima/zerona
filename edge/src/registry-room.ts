@@ -803,6 +803,24 @@ export class RegistryRoom implements DurableObject {
     return typeof v === "string" ? v : "";
   }
 
+  /** Message id for read matching: same-batch chat row when present, else the session event (done → turn id). */
+  private resolveTriggerMessageId(
+    category: Category,
+    session: Row,
+    chat: Row | undefined,
+    chatUpdatedInBatch: boolean
+  ): string {
+    if (chatUpdatedInBatch && chat !== undefined) {
+      const fromChat = this.parseLastMessageId(chat.fields);
+      if (fromChat !== "") return fromChat;
+    }
+    if (category === "done") {
+      const turn = typeof session.fields.lastCompletedTurn === "string" ? session.fields.lastCompletedTurn : "";
+      if (turn !== "") return turn;
+    }
+    return "";
+  }
+
   private resolveTriggerMsgAt(chat: Row | undefined, session: Row, createdAt: number): number {
     const fromChat = chat ? this.parseLastMessageAtMs(chat.fields) : null;
     if (fromChat !== null) return fromChat;
@@ -844,8 +862,7 @@ export class RegistryRoom implements DurableObject {
   ): void {
     const key = this.triggerKey(category, session);
     const msgAt = this.resolveTriggerMsgAt(chat, session, createdAt);
-    const messageId =
-      chatUpdatedInBatch && chat !== undefined ? this.parseLastMessageId(chat.fields) : "";
+    const messageId = this.resolveTriggerMessageId(category, session, chat, chatUpdatedInBatch);
     this.ctx.storage.sql.exec(
       "INSERT OR IGNORE INTO unread_triggers (chat_id, trigger_key, category, created_at, msg_at, message_id) VALUES (?, ?, ?, ?, ?, ?)",
       chatId,
