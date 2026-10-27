@@ -51,16 +51,31 @@ async function seen(stub: DurableObjectStub, device: string, chatId: string, mes
     body: JSON.stringify({ chatId, messageId, messageAt })
   });
 }
-async function seedChat(stub: DurableObjectStub, lastMessageAt?: number) {
+async function seedChat(stub: DurableObjectStub, lastMessageAt?: number, lastMessageId?: string) {
   await push(stub, [
     {
       kind: "chats",
       id: "c1",
       op: "upsert",
       hlc: hlc(),
-      set: { title: "Fix login", ...(lastMessageAt !== undefined ? { lastMessageAt } : {}) }
+      set: {
+        title: "Fix login",
+        ...(lastMessageAt !== undefined ? { lastMessageAt } : {}),
+        ...(lastMessageId !== undefined ? { lastMessageId } : {})
+      }
     },
     session("working", null)
+  ]);
+}
+async function markChatMessage(stub: DurableObjectStub, lastMessageAt: number, lastMessageId: string) {
+  await push(stub, [
+    {
+      kind: "chats",
+      id: "c1",
+      op: "upsert",
+      hlc: hlc(),
+      set: { title: "Fix login", lastMessageAt, lastMessageId }
+    }
   ]);
 }
 async function fastForwardUnread(stub: DurableObjectStub) {
@@ -69,8 +84,22 @@ async function fastForwardUnread(stub: DurableObjectStub) {
     await state.storage.setAlarm(Date.now());
   });
 }
-async function triggerDone(stub: DurableObjectStub, updatedAt = Date.now()) {
-  await push(stub, [session("idle", "turn-1", updatedAt)]);
+async function triggerDone(
+  stub: DurableObjectStub,
+  updatedAt = Date.now(),
+  messageMarker?: { at: number; id: string }
+) {
+  const ops: Op[] = [session("idle", "turn-1", updatedAt)];
+  if (messageMarker !== undefined) {
+    ops.unshift({
+      kind: "chats",
+      id: "c1",
+      op: "upsert",
+      hlc: hlc(),
+      set: { title: "Fix login", lastMessageAt: messageMarker.at, lastMessageId: messageMarker.id }
+    });
+  }
+  await push(stub, ops);
 }
 async function triggerMsgAt(stub: DurableObjectStub) {
   return runInDurableObject(stub, (_i, state) => {
@@ -83,8 +112,8 @@ describe("deferred FCM unread push", () => {
     const stub = room();
     await registerFcm(stub, "android-1");
     const msgAt = Date.now() - 500;
-    await seedChat(stub, msgAt);
-    await triggerDone(stub);
+    await seedChat(stub, msgAt, "m1");
+    await triggerDone(stub, Date.now(), { at: msgAt, id: "m1" });
     await seen(stub, "desktop-a", "c1", "m1", msgAt);
     await fastForwardUnread(stub);
     await runDurableObjectAlarm(stub);
@@ -96,8 +125,8 @@ describe("deferred FCM unread push", () => {
     const stub = room();
     await registerFcm(stub, "android-1");
     const msgAt = Date.now() - 500;
-    await seedChat(stub, msgAt);
-    await triggerDone(stub);
+    await seedChat(stub, msgAt, "m1");
+    await triggerDone(stub, Date.now(), { at: msgAt, id: "m1" });
     await seen(stub, "phone-b", "c1", "m1", msgAt);
     await fastForwardUnread(stub);
     await runDurableObjectAlarm(stub);
@@ -108,8 +137,8 @@ describe("deferred FCM unread push", () => {
     const stub = room();
     await registerFcm(stub, "android-1");
     const msgAt = Date.now() - 5_000;
-    await seedChat(stub, msgAt);
-    await triggerDone(stub);
+    await seedChat(stub, msgAt, "closing");
+    await triggerDone(stub, Date.now(), { at: msgAt, id: "closing" });
     expect(await triggerMsgAt(stub)).toBe(msgAt);
     await seen(stub, "desktop-a", "c1", "closing", msgAt);
     await fastForwardUnread(stub);
@@ -121,8 +150,8 @@ describe("deferred FCM unread push", () => {
     const stub = room();
     await registerFcm(stub, "android-1");
     const msgAt = 1_700_000_100_000;
-    await seedChat(stub, msgAt);
-    await triggerDone(stub);
+    await seedChat(stub, msgAt, "new-msg");
+    await triggerDone(stub, Date.now(), { at: msgAt, id: "new-msg" });
     await seen(stub, "desktop-a", "c1", "old", msgAt - 1);
     await fastForwardUnread(stub);
     await runDurableObjectAlarm(stub);
@@ -134,10 +163,16 @@ describe("deferred FCM unread push", () => {
     await registerFcm(stub, "android-1");
     const updatedAt = Date.now() - 2_000;
     await push(stub, [
-      { kind: "chats", id: "c1", op: "upsert", hlc: hlc(), set: { title: "Fix login" } },
+      {
+        kind: "chats",
+        id: "c1",
+        op: "upsert",
+        hlc: hlc(),
+        set: { title: "Fix login", lastMessageAt: updatedAt, lastMessageId: "m" }
+      },
       session("working", null, updatedAt)
     ]);
-    await triggerDone(stub, updatedAt);
+    await triggerDone(stub, updatedAt, { at: updatedAt, id: "m" });
     expect(await triggerMsgAt(stub)).toBe(updatedAt);
     await seen(stub, "desktop-a", "c1", "m", updatedAt);
     await fastForwardUnread(stub);
@@ -149,14 +184,25 @@ describe("deferred FCM unread push", () => {
     const stub = room();
     await registerFcm(stub, "android-1");
     const first = 1_700_000_300_000;
-    await seedChat(stub, first);
+    await seedChat(stub, first, "partial");
     await triggerDone(stub);
     const later = first + 5_000;
-    await push(stub, [
-      { kind: "chats", id: "c1", op: "upsert", hlc: hlc(), set: { title: "Fix login", lastMessageAt: later } }
-    ]);
+    await markChatMessage(stub, later, "completion-msg");
     expect(await triggerMsgAt(stub)).toBe(later);
     await seen(stub, "desktop-a", "c1", "partial", first);
+    await fastForwardUnread(stub);
+    await runDurableObjectAlarm(stub);
+    expect((await stats(stub)).pushLog).toHaveLength(1);
+  });
+
+  it("still sends push when an older message was already seen at the prior timestamp", async () => {
+    const stub = room();
+    await registerFcm(stub, "android-1");
+    const first = 1_700_000_500_000;
+    await seedChat(stub, first, "prev-msg");
+    await seen(stub, "desktop-a", "c1", "prev-msg", first);
+    await triggerDone(stub);
+    await markChatMessage(stub, first + 5_000, "completion-msg");
     await fastForwardUnread(stub);
     await runDurableObjectAlarm(stub);
     expect((await stats(stub)).pushLog).toHaveLength(1);
