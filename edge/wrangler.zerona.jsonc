@@ -52,6 +52,7 @@
     "WORKOS_ISSUER": "https://api.workos.com/user_management/client_01M5MQQJDGF0WXVBRT08HCEDM3",
     "WORKOS_JWKS_URL": "https://api.workos.com/sso/jwks/client_01M5MQQJDGF0WXVBRT08HCEDM3"
   },
+  "keep_vars": true,
   "observability": {
     "enabled": true
   }
