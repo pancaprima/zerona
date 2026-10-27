@@ -3834,19 +3834,19 @@ impl Transcript {
             v_bottom,
             24.0,
         );
-        let state = self.state.read(cx);
-        let entries = state.transcript.as_slice();
-        let entry_at = |entry_id: &str| {
-            entries
-                .iter()
-                .find(|e| e.id == entry_id)
-                .map(|e| e.created_at)
-        };
-        crate::seen_report::newest_visible_message(
-            &indices,
-            |ix| self.rows.get(ix).map(|r| r.entry_id.as_ref()),
-            entry_at,
-        )
+        self.state.read_with(cx, |state, _| {
+            let entries = state.transcript.as_slice();
+            crate::seen_report::newest_visible_message(
+                &indices,
+                |ix| self.rows.get(ix).map(|r| r.entry_id.as_str()),
+                |entry_id| {
+                    entries
+                        .iter()
+                        .find(|e| e.id == entry_id)
+                        .map(|e| e.created_at)
+                },
+            )
+        })
     }
 
     pub(crate) fn list_state(&self) -> &ListState {

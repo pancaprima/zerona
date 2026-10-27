@@ -45,13 +45,13 @@ pub fn filter_visible_in_viewport(
 }
 
 /// Pick the visible row with the greatest `messageAt` (monotonic read cursor).
-pub fn newest_visible_message(
+pub fn newest_visible_message<'a>(
     placement_indices: &[usize],
-    entry_id_for_index: impl Fn(usize) -> Option<&str>,
+    entry_id_for_index: impl Fn(usize) -> Option<&'a str>,
     created_at_ms: impl Fn(&str) -> Option<i64>,
 ) -> Option<SeenMessage> {
     let mut best: Option<SeenMessage> = None;
-    for index in placement_indices {
+    for &index in placement_indices {
         let entry_id = entry_id_for_index(index)?;
         if entry_id.is_empty() {
             continue;

@@ -3834,7 +3834,7 @@ impl Shell {
         };
         self.seen_last_reported = Some(message.clone());
         self.seen_last_emit_at_ms = Some(now_ms);
-        let Some(handle) = self.state.read(cx).engine.clone() else {
+        let Some(handle) = self.state.read(cx).engine().cloned() else {
             return;
         };
         let message_id = message.message_id;
