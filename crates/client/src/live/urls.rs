@@ -70,6 +70,25 @@ pub(crate) fn registry_push_target(edge: &str, org_id: &str, device_id: &str) ->
     )
 }
 
+/// Read receipt for the newest message rendered on this device (POST).
+pub(crate) fn registry_seen(edge: &str, org_id: &str, device_id: &str) -> String {
+    format!(
+        "{}/registry/{}/seen?device={}",
+        edge.trim_end_matches('/'),
+        encode(org_id),
+        encode(device_id)
+    )
+}
+
+/// JSON body for [`registry_seen`].
+pub(crate) fn seen_report_body(chat_id: &str, message_id: &str, message_at_ms: i64) -> serde_json::Value {
+    serde_json::json!({
+        "chatId": chat_id,
+        "messageId": message_id,
+        "messageAt": message_at_ms,
+    })
+}
+
 pub(crate) fn chat_ws(edge: &str, chat_id: &str, token: &str, device_id: &str) -> String {
     format!(
         "{}/chat2/{}/ws?token={}&device={}",
@@ -143,6 +162,14 @@ mod tests {
             registry_push_target("https://e.sh/", "org_1", "ios-1"),
             "https://e.sh/registry/org_1/push-target?device=ios-1"
         );
+        assert_eq!(
+            registry_seen("https://e.sh/", "org_1", "ios-1"),
+            "https://e.sh/registry/org_1/seen?device=ios-1"
+        );
+        let body = seen_report_body("c1", "m1", 1_700_000_000_000);
+        assert_eq!(body["chatId"], "c1");
+        assert_eq!(body["messageId"], "m1");
+        assert_eq!(body["messageAt"], 1_700_000_000_000);
         assert_eq!(
             nudge("https://e.sh", "dev-mac"),
             "https://e.sh/device/dev-mac/nudge"

@@ -32,6 +32,8 @@ import sh.zeron.zerona.transcript.TranscriptActions
 import sh.zeron.zerona.transcript.TranscriptLab
 import sh.zeron.zerona.transcript.TranscriptListView
 import sh.zeron.zerona.transcript.TranscriptMessageActionsSupport
+import sh.zeron.zerona.seen.SeenReportPolicy
+import sh.zeron.zerona.seen.VisibleSeenMessage
 import sh.zeron.zerona.transcript.TranscriptRowKey
 import sh.zeron.zerona.transcript.findActivity
 import sh.zeron.zerona.transcript.isUsableForUi
@@ -95,6 +97,11 @@ class SessionViewModel(
     private var modelLabelRefreshJob: Job? = null
     @Volatile
     private var engineLive = false
+
+    private var latestVisibleSeen: VisibleSeenMessage? = null
+    private var lastReportedSeen: VisibleSeenMessage? = null
+    private var lastSeenEmitAtMs: Long? = null
+    private var seenDebounceJob: Job? = null
 
     private val sessionImageLoader = SessionImageLoader(viewModelScope)
     private var messageActionsController: MessageActionsController? = null
@@ -323,8 +330,11 @@ class SessionViewModel(
 
     fun attachTranscriptHost(host: TranscriptListView) {
         transcriptHost?.onScrollToLatestVisibilityChanged = null
+        transcriptHost?.onVisibleSeenMessageChanged = null
+        transcriptHost?.messageCreatedAtMs = null
         transcriptHost = host
         syncTranscriptHostPresentation()
+        wireSeenReporting(host)
         host.onScrollToLatestVisibilityChanged = { visible ->
             if (transcriptHost === host) {
                 _state.update { it.copy(showScrollToLatest = visible) }
@@ -342,11 +352,68 @@ class SessionViewModel(
     fun clearTranscriptHost(host: TranscriptListView) {
         if (transcriptHost === host) {
             host.onScrollToLatestVisibilityChanged = null
+            host.onVisibleSeenMessageChanged = null
+            host.messageCreatedAtMs = null
+            seenDebounceJob?.cancel()
+            seenDebounceJob = null
+            latestVisibleSeen = null
             transcriptHost = null
             messageActionsController?.close()
             messageActionsController = null
             _state.update { it.copy(showScrollToLatest = false) }
         }
+    }
+
+    private fun wireSeenReporting(host: TranscriptListView) {
+        if (isLab) return
+        host.messageCreatedAtMs = { messageId ->
+            handle?.messageCreatedAtMs(messageId)
+        }
+        host.onVisibleSeenMessageChanged = { visible ->
+            if (transcriptHost !== host) return@onVisibleSeenMessageChanged
+            latestVisibleSeen = visible
+            scheduleSeenReport()
+        }
+    }
+
+    private fun scheduleSeenReport() {
+        if (isLab || !appModel.isProcessInForeground()) return
+        seenDebounceJob?.cancel()
+        seenDebounceJob =
+            viewModelScope.launch {
+                delay(1_000)
+                if (!appModel.isProcessInForeground()) return@launch
+                val visible = latestVisibleSeen ?: return@launch
+                val candidate =
+                    SeenReportPolicy.candidateToReport(visible, lastReportedSeen)
+                        ?: return@launch
+                var now = System.currentTimeMillis()
+                if (!SeenReportPolicy.mayEmitNow(now, candidate, lastReportedSeen, lastSeenEmitAtMs)) {
+                    val lastEmit = lastSeenEmitAtMs ?: 0L
+                    val wait = 5_000L - (now - lastEmit)
+                    if (wait > 0) delay(wait)
+                    now = System.currentTimeMillis()
+                    val again = latestVisibleSeen ?: return@launch
+                    val retry =
+                        SeenReportPolicy.candidateToReport(again, lastReportedSeen)
+                            ?: return@launch
+                    if (!SeenReportPolicy.mayEmitNow(now, retry, lastReportedSeen, lastSeenEmitAtMs)) {
+                        return@launch
+                    }
+                    emitSeenReport(retry, now)
+                } else {
+                    emitSeenReport(candidate, now)
+                }
+            }
+    }
+
+    private fun emitSeenReport(
+        message: VisibleSeenMessage,
+        nowMs: Long,
+    ) {
+        lastReportedSeen = message
+        lastSeenEmitAtMs = nowMs
+        appModel.reportMessageSeen(chatId, message.messageId, message.messageAtMs)
     }
 
     fun jumpToLatest() {

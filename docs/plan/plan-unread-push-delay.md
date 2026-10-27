@@ -32,3 +32,18 @@ Requested by: Prima via Rora (T2 spec), confirmed directly by Prima on 2026-10-2
 ## Open risks
 - Clock skew between device `messageAt` and edge `created_at` (mitigate: compare against message timestamps from the edge-side log where available; document).
 - Desktop "on screen" is stricter than `mark_chat_seen`; start with newest rendered item of the selected chat while the window is focused.
+
+## Phase 2a notes (Android)
+- `messageAt` on Android is `SessionMessageEntry.createdAt` (epoch ms from the session doc), resolved via `SessionHandle.messageCreatedAtMs` — same field domain as registry `lastMessageAt` / edge `opt_ms`, not wall-clock at render time.
+- Visible rows come from `TranscriptListView` scroll window (`rowsIn`), not Compose `LazyColumn`; working rows are excluded.
+- UniFFI additions: `CoreClient.reportMessageSeen`, `LayoutFrame.rowEntryId`, `SessionHandle.messageCreatedAtMs` (in `crates/mobile`, required for Kotlin bindings).
+
+## Carmen's PR checklist (2026-10-27 09:42, via Rora) and status
+Source: Rora's T2 message (the referenced `specs/T2-unread-push.md` is not in this repo; the text below is the checklist as delivered).
+1. Read marks sent by BOTH clients, desktop (Rust) and Android (Kotlin): id of the exact message once actually on screen. -> Android + Rust client done (phase 2a, `POST /seen`); **desktop pending (phase 2b)**.
+2. Single alarm = earliest of pending push or next daily cleanup; pending pushes persisted in storage. -> done (`unread_triggers` SQLite table, `scheduleAlarm`).
+3. No double pushes: mark each push as sent BEFORE it goes out (alarms can fire twice); a newer message in the same chat updates the pending push instead of adding a second. -> queue is cleared before sending and coalesced per chat; **add explicit test: alarm fired twice -> one push** (phase 2b).
+4. Tests: read on desktop <5 min (no push), read on phone (no push), unread on both (one push), several messages (one push), daily cleanup still runs. -> edge workerd tests exist (`unread-push.workerd.test.ts`).
+
+## Coordination note
+Owner of T2 implementation: the Discord Asa session (Prima's direct go-ahead 2026-10-27). An earlier local-only attempt exists on branch `feature/unread-chat-push` (worktree `/root/zerona-unread-push`, new `chat-sync-room.ts`); it is NOT used. Do not edit `/root/zerona` from parallel sessions.

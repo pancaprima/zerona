@@ -15,6 +15,9 @@ import uniffi.zeron_core.LayoutFrame
 import uniffi.zeron_core.RowKind
 import uniffi.zeron_core.RowPlacement
 import uniffi.zeron_core.TranscriptView
+import sh.zeron.zerona.seen.PlacementBounds
+import sh.zeron.zerona.seen.VisibleSeenMessage
+import sh.zeron.zerona.seen.VisibleSeenMessageSelector
 
 class TranscriptListView
     @JvmOverloads
@@ -68,6 +71,13 @@ class TranscriptListView
         private var jumpSettleDeadlineMs = 0L
         private var jumpSettleArmedAtMs = 0L
         var onScrollToLatestVisibilityChanged: ((Boolean) -> Unit)? = null
+
+        /** Resolves `SessionMessageEntry.createdAt` for a transcript entry id. */
+        var messageCreatedAtMs: ((String) -> Long?)? = null
+
+        var onVisibleSeenMessageChanged: ((VisibleSeenMessage?) -> Unit)? = null
+
+        private var lastNotifiedSeen: VisibleSeenMessage? = null
 
         private val messageEntrances = TranscriptMessageEntranceTracker()
         private var pendingSendStatusKeys: Set<ULong> = emptySet()
@@ -198,6 +208,7 @@ class TranscriptListView
             lastRevision = null
             messageEntrances.reset()
             transcriptHydrated = false
+            lastNotifiedSeen = null
             entranceBaselineSealed = false
             stopEntranceFrames()
         }
@@ -780,6 +791,38 @@ class TranscriptListView
                 recycleRowView(view)
             }
             tickMessageEntrances(nowUptime)
+            emitVisibleSeenIfChanged(frame, placements, scrollTopDp, viewportHeightDp)
+        }
+
+        private fun emitVisibleSeenIfChanged(
+            frame: LayoutFrame,
+            placements: List<RowPlacement>,
+            viewportTopDp: Float,
+            viewportHeightDp: Float,
+        ) {
+            val createdAt = messageCreatedAtMs ?: return
+            val listener = onVisibleSeenMessageChanged ?: return
+            val bounds =
+                placements
+                    .asSequence()
+                    .filter { it.kind != RowKind.WORKING }
+                    .map { PlacementBounds(it.index.toInt(), it.y, it.height) }
+                    .toList()
+            val indices =
+                VisibleSeenMessageSelector.filterVisible(
+                    placements = bounds,
+                    viewportTop = viewportTopDp,
+                    viewportBottom = viewportTopDp + viewportHeightDp,
+                )
+            val newest =
+                VisibleSeenMessageSelector.newest(
+                    placementIndices = indices,
+                    entryIdForIndex = { frame.rowEntryId(it.toUInt()) },
+                    createdAtMs = createdAt,
+                )
+            if (newest == lastNotifiedSeen) return
+            lastNotifiedSeen = newest
+            listener(newest)
         }
 
         private fun applyPendingSendStatusToVisibleRows() {
