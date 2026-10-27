@@ -25,7 +25,7 @@ Carmen review (read-only session model subtitle, PR #27 / `plan-android-model-la
 
 ## Implementation
 
-- **`formatModelLabelRefreshFailureKind(Throwable)`** in `ModelLabelPresentation.kt` — returns simple class name, or `Enclosing.Inner` for nested types; never reads `message` or session/model fields.
+- **`formatModelLabelRefreshFailureKind(Throwable)`** in `ModelLabelPresentation.kt` — returns simple class name, or `Enclosing.Inner` for nested types; if `simpleName` is empty (anonymous or local classes), uses the JVM binary class name instead; never reads `message` or session/model fields.
 - **`refreshModelLabel()`** — on failure after rethrowing `CancellationException`, `Log.w(SESSION_VIEW_MODEL_LOG_TAG, "Session model label refresh failed (<kind>)")` without passing the throwable as the log cause (avoids printing `Throwable.message`, which may include host `detail` text).
 - **Unchanged behavior:** `isLab` / `client == null` early return; cancel prior refresh job; stale guard `handle == null`; no new state fields.
 

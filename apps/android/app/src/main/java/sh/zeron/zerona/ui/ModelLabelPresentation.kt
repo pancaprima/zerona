@@ -22,10 +22,9 @@ fun formatModelLabel(
  * Safe one-line failure kind for model-label refresh logs (no exception message or session fields).
  */
 fun formatModelLabelRefreshFailureKind(throwable: Throwable): String {
-    val simple = throwable::class.java.simpleName
-    val enclosing = throwable::class.java.enclosingClass?.simpleName
-    if (enclosing != null && simple != null) {
-        return "$enclosing.$simple"
-    }
-    return simple ?: throwable::class.java.name
+    val cls = throwable::class.java
+    val simple = cls.simpleName
+    if (simple.isEmpty()) return cls.name
+    val enclosing = cls.enclosingClass?.simpleName?.takeIf { it.isNotEmpty() }
+    return if (enclosing != null) "$enclosing.$simple" else simple
 }
