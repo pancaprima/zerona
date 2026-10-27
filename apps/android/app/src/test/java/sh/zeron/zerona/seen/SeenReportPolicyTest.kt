@@ -19,13 +19,13 @@ class SeenReportPolicyTest {
     }
 
     @Test
-    fun rateLimitAllowsFirstAndAfterInterval() {
+    fun rateLimitAllowsFirstAndRejectsNotNewer() {
         assertTrue(SeenReportPolicy.mayEmitNow(0L, first, null, null))
         assertFalse(
             SeenReportPolicy.mayEmitNow(
                 1_000L,
-                second,
                 first,
+                second,
                 lastEmitAtMs = 0L,
             ),
         )
