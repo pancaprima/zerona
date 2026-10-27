@@ -334,6 +334,9 @@ export default {
       if (parts[2] === "push-target" && (request.method === "POST" || request.method === "DELETE")) {
         return forward(env.REGISTRY_ROOMS, room, request, auth, "/push-target", url.search);
       }
+      if (parts[2] === "seen" && request.method === "POST") {
+        return forward(env.REGISTRY_ROOMS, room, request, auth, "/seen", url.search);
+      }
       // Operator wipe. Unlike the CRDT rooms this needs no recipe: clients
       // detect the seq regression on their next hello and re-seed the table
       // from local rows with original clocks, automatically.

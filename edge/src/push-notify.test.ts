@@ -5,7 +5,8 @@ import {
   fcmPayload,
   notificationFor,
   parsePrefs,
-  SESSION_STALE_MS
+  SESSION_STALE_MS,
+  summaryBodyFor
 } from "./push-notify";
 import type { Row } from "./registry-core";
 
@@ -99,5 +100,19 @@ describe("prefs and payload", () => {
     expect(p.notification).toEqual({ title: "Fix login", body: "Waiting on your input" });
     expect(p.data).toEqual({ chatId: "c1", category: "input" });
     expect(p.android.notification).toEqual({ channel_id: "sessions" });
+  });
+});
+
+describe("summaryBodyFor", () => {
+  it("uses the single-category body for one trigger", () => {
+    expect(summaryBodyFor(["done"])).toBe("Run finished");
+    expect(summaryBodyFor(["input"])).toBe("Waiting on your input");
+    expect(summaryBodyFor(["failed"])).toBe("Run failed");
+  });
+  it("summarizes several triggers with urgency ordering", () => {
+    expect(summaryBodyFor(["done", "input"])).toBe("2 updates: Waiting on your input, Run finished");
+    expect(summaryBodyFor(["done", "failed", "input"])).toBe(
+      "3 updates: Waiting on your input, Run failed, Run finished"
+    );
   });
 });

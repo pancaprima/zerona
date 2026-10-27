@@ -39,6 +39,7 @@ import {
   apnsPayload,
   chatForNotification,
   fcmPayload,
+  fcmPayloadSummary,
   notificationFor,
   parsePrefs,
   type Category,
@@ -46,6 +47,10 @@ import {
 } from "./push-notify";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** Android deferred push: one summary per chat after this delay unless read first. */
+export const UNREAD_PUSH_DELAY_MS = 5 * 60 * 1000;
+/** After enqueue, bump trigger msg_at when chat lastMessageAt rises within this window. */
+export const TRIGGER_MARKER_WINDOW_MS = 30_000;
 /** Tombstones older than this are purged; cursors from before the purge
  * horizon get a full resync (`gcFloor`). */
 const TOMBSTONE_RETAIN_MS = 30 * DAY_MS;
@@ -136,6 +141,16 @@ export class RegistryRoom implements DurableObject {
     if (!pushColumns.some((c) => c.name === "kind")) {
       ctx.storage.sql.exec("ALTER TABLE push_targets ADD COLUMN kind TEXT NOT NULL DEFAULT 'apns'");
     }
+    ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS unread_triggers (chat_id TEXT NOT NULL, trigger_key TEXT NOT NULL, category TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (chat_id, trigger_key))"
+    );
+    const triggerColumns = [...ctx.storage.sql.exec("PRAGMA table_info(unread_triggers)")];
+    if (!triggerColumns.some((c) => c.name === "msg_at")) {
+      ctx.storage.sql.exec("ALTER TABLE unread_triggers ADD COLUMN msg_at INTEGER NOT NULL DEFAULT 0");
+    }
+    ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS read_receipts (chat_id TEXT NOT NULL, device TEXT NOT NULL, message_id TEXT NOT NULL, message_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (chat_id, device))"
+    );
     // Same protocol-level keepalive as SessionRoom — and the same caveat: a
     // pong is runtime-answered and proves nothing about this DO's health.
     // Clients judge liveness by probe frames (crates/sync/src/registry.rs).
@@ -155,6 +170,18 @@ export class RegistryRoom implements DurableObject {
       key,
       value
     );
+  }
+
+  private deleteMeta(key: string): void {
+    this.ctx.storage.sql.exec("DELETE FROM meta WHERE key = ?", key);
+  }
+
+  /** Parsed backupDue ms, or null when unset / empty / invalid (never treat "" as 0). */
+  private backupDueAt(): number | null {
+    const raw = this.getMeta("backupDue");
+    if (raw === undefined || raw === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
   }
 
   private seq(): number {
@@ -369,6 +396,57 @@ export class RegistryRoom implements DurableObject {
         );
         return json({ ok: true });
       }
+    }
+
+    if (url.pathname === "/seen" && request.method === "POST") {
+      const device = url.searchParams.get("device") ?? "";
+      if (device === "") return json({ error: "bad_request", message: "device required" }, 400);
+      let body: Record<string, unknown>;
+      try {
+        body = (await request.json()) as Record<string, unknown>;
+      } catch {
+        return json({ error: "bad_request", message: "malformed body" }, 400);
+      }
+      const chatId = typeof body.chatId === "string" ? body.chatId : "";
+      const messageId = typeof body.messageId === "string" ? body.messageId : "";
+      const messageAt = body.messageAt;
+      if (chatId === "" || messageId === "") {
+        return json({ error: "bad_request", message: "chatId and messageId required" }, 400);
+      }
+      if (typeof messageAt !== "number" || !Number.isFinite(messageAt) || messageAt < 0) {
+        return json({ error: "bad_request", message: "messageAt must be a finite number" }, 400);
+      }
+      const now = Date.now();
+      if (messageAt > now + 60 * 60 * 1000) {
+        return json({ error: "bad_request", message: "messageAt too far in the future" }, 400);
+      }
+      const rows = [
+        ...this.ctx.storage.sql.exec(
+          "SELECT message_at FROM read_receipts WHERE chat_id = ? AND device = ?",
+          chatId,
+          device
+        )
+      ];
+      const prevAt = rows[0]?.message_at as number | undefined;
+      if (prevAt !== undefined && messageAt < prevAt) {
+        return json({ ok: true });
+      }
+      const updatedAt = now;
+      this.ctx.storage.sql.exec(
+        "INSERT INTO read_receipts (chat_id, device, message_id, message_at, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(chat_id, device) DO UPDATE SET message_id = excluded.message_id, message_at = excluded.message_at, updated_at = excluded.updated_at",
+        chatId,
+        device,
+        messageId,
+        messageAt,
+        updatedAt
+      );
+      this.ctx.storage.sql.exec(
+        "DELETE FROM unread_triggers WHERE chat_id = ? AND msg_at <= ?",
+        chatId,
+        messageAt
+      );
+      void this.scheduleAlarm();
+      return json({ ok: true });
     }
 
     if (url.pathname === "/rows" && request.method === "GET") {
@@ -628,7 +706,16 @@ export class RegistryRoom implements DurableObject {
       touched.set(key, row);
     }
     if (applied > 0) {
-      for (const row of touched.values()) this.saveRow(row);
+      for (const row of touched.values()) {
+        this.saveRow(row);
+        if (row.kind === "chats") {
+          if (row.deleted || row.fields.archived === true) {
+            this.clearUnreadQueue(row.id);
+          } else {
+            this.bumpTriggerMarkersFromChat(row);
+          }
+        }
+      }
       this.setMeta("seq", String(nextSeq));
       this.markBackupDirty();
     }
@@ -668,87 +755,269 @@ export class RegistryRoom implements DurableObject {
     );
   }
 
-  /** Session rows that changed in a batch → the desktop's notifications
-   * (done / needs input / failed), sent to every registered phone after the
-   * batch commits. Best effort: a failed delivery is logged, never retried. */
+  private unreadPushDelayMs(): number {
+    const override = this.getMeta("unreadPushDelayMs");
+    if (override !== undefined && override !== "") {
+      const n = Number(override);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+    return UNREAD_PUSH_DELAY_MS;
+  }
+
+  private clearUnreadQueue(chatId: string): void {
+    this.ctx.storage.sql.exec("DELETE FROM unread_triggers WHERE chat_id = ?", chatId);
+  }
+
+  private triggerKey(category: Category, session: Row): string {
+    const fields = session.fields;
+    if (category === "done") {
+      const turn = typeof fields.lastCompletedTurn === "string" ? fields.lastCompletedTurn : "";
+      return `done:${turn}`;
+    }
+    const updatedAt = typeof fields.updatedAt === "number" ? fields.updatedAt : 0;
+    return `${category}:${updatedAt}`;
+  }
+
+  /** Registry chat rows store lastMessageAt as epoch ms (see crates/doc registry opt_ms). */
+  private parseLastMessageAtMs(fields: Record<string, unknown>): number | null {
+    const v = fields.lastMessageAt;
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string" && v !== "") {
+      const n = Number(v);
+      if (Number.isFinite(n)) return n;
+      const parsed = Date.parse(v);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  }
+
+  private resolveTriggerMsgAt(chat: Row | undefined, session: Row, createdAt: number): number {
+    const fromChat = chat ? this.parseLastMessageAtMs(chat.fields) : null;
+    if (fromChat !== null) return fromChat;
+    const updatedAt = typeof session.fields.updatedAt === "number" ? session.fields.updatedAt : null;
+    if (updatedAt !== null) return updatedAt;
+    return createdAt;
+  }
+
+  private bumpTriggerMarkersFromChat(chat: Row): void {
+    const lastMsg = this.parseLastMessageAtMs(chat.fields);
+    if (lastMsg === null) return;
+    const windowStart = Date.now() - TRIGGER_MARKER_WINDOW_MS;
+    this.ctx.storage.sql.exec(
+      "UPDATE unread_triggers SET msg_at = MAX(msg_at, ?) WHERE chat_id = ? AND created_at >= ?",
+      lastMsg,
+      chat.id,
+      windowStart
+    );
+  }
+
+  private enqueueUnreadTrigger(
+    chatId: string,
+    category: Category,
+    session: Row,
+    createdAt: number,
+    chat: Row | undefined
+  ): void {
+    const key = this.triggerKey(category, session);
+    const msgAt = this.resolveTriggerMsgAt(chat, session, createdAt);
+    this.ctx.storage.sql.exec(
+      "INSERT OR IGNORE INTO unread_triggers (chat_id, trigger_key, category, created_at, msg_at) VALUES (?, ?, ?, ?, ?)",
+      chatId,
+      key,
+      category,
+      createdAt,
+      msgAt
+    );
+  }
+
+  private isTriggerRead(chatId: string, msgAt: number): boolean {
+    const rows = [
+      ...this.ctx.storage.sql.exec(
+        "SELECT 1 FROM read_receipts WHERE chat_id = ? AND message_at >= ? LIMIT 1",
+        chatId,
+        msgAt
+      )
+    ];
+    return rows.length > 0;
+  }
+
+  private earliestUnreadPushDue(): number | null {
+    const rows = [...this.ctx.storage.sql.exec("SELECT MIN(created_at) AS m FROM unread_triggers")];
+    const m = rows[0]?.m as number | undefined;
+    if (m === undefined || m === null) return null;
+    return m + this.unreadPushDelayMs();
+  }
+
+  private async scheduleAlarm(): Promise<void> {
+    const pushDue = this.earliestUnreadPushDue() ?? Infinity;
+    const dueAt = this.backupDueAt();
+    const backup = this.getMeta("backupDirty") === "1" && dueAt !== null ? dueAt : Infinity;
+    const next = Math.min(pushDue, backup);
+    if (!Number.isFinite(next)) return;
+    const existing = await this.ctx.storage.getAlarm();
+    if (existing === null || next < existing) await this.ctx.storage.setAlarm(next);
+  }
+
+  private deliverFcm(
+    fcmCfg: NonNullable<ReturnType<typeof fcmConfig>>,
+    target: PushTarget,
+    chatId: string,
+    title: string,
+    categories: Category[],
+    entry: PushLogEntry
+  ): () => Promise<void> {
+    const payload =
+      categories.length === 1
+        ? fcmPayload(chatId, title, categories[0])
+        : fcmPayloadSummary(chatId, title, categories);
+    return async () => {
+      try {
+        const r = await sendFcm(fcmCfg, target.token, payload, chatId);
+        entry.result = r.reason ? `${r.status} ${r.reason}` : String(r.status);
+        if (isDeadFcmToken(r)) {
+          this.ctx.storage.sql.exec("DELETE FROM push_targets WHERE device = ? AND token = ?", target.device, target.token);
+        }
+      } catch (err) {
+        entry.result = `error ${(err as Error).message}`;
+      }
+    };
+  }
+
+  private deliverApns(
+    apnsCfg: NonNullable<ReturnType<typeof apnsConfig>>,
+    target: PushTarget,
+    note: Notification,
+    entry: PushLogEntry
+  ): () => Promise<void> {
+    return async () => {
+      try {
+        const r = await sendApns(
+          apnsCfg,
+          target.environment,
+          target.token,
+          apnsPayload(note.chatId, note.title, note.category),
+          note.chatId
+        );
+        entry.result = r.reason ? `${r.status} ${r.reason}` : String(r.status);
+        if (isDeadApnsToken(r)) {
+          this.ctx.storage.sql.exec("DELETE FROM push_targets WHERE device = ? AND token = ?", target.device, target.token);
+        }
+      } catch (err) {
+        entry.result = `error ${(err as Error).message}`;
+      }
+    };
+  }
+
+  /** Session rows that changed in a batch → APNs immediately; FCM targets enqueue
+   * a deferred summary per chat. Best effort: a failed delivery is logged, never retried. */
   private notifySessions(before: Map<string, Row | undefined>, touched: Map<string, Row>): void {
     if (before.size === 0) return;
     const now = Date.now();
     const notes: Notification[] = [];
+    let enqueuedFcm = false;
     for (const [chatId, prev] of before) {
       const next = touched.get(`sessions ${chatId}`);
       if (!next) continue;
       const category = notificationFor(prev, next, now);
       if (category === null) continue;
       const chat = chatForNotification(touched.get(`chats ${chatId}`) ?? this.loadRow("chats", chatId));
-      if (chat === null) continue;
+      if (chat === null) {
+        this.clearUnreadQueue(chatId);
+        continue;
+      }
       notes.push({ chatId, title: chat.title, category });
+      const chatRow = touched.get(`chats ${chatId}`) ?? this.loadRow("chats", chatId);
+      this.enqueueUnreadTrigger(chatId, category, next, now, chatRow);
+      enqueuedFcm = true;
     }
     if (notes.length === 0) return;
+    if (enqueuedFcm) void this.scheduleAlarm();
     const targets = this.pushTargets();
     const apnsCfg = apnsConfig(this.env);
-    const fcmCfg = fcmConfig(this.env);
+    const apnsTargets = targets.filter((t) => t.kind === "apns");
     const log: PushLogEntry[] = [];
     const sends: Array<() => Promise<void>> = [];
     for (const note of notes) {
-      for (const target of targets) {
+      for (const target of apnsTargets) {
         if (!target.prefs[note.category]) continue;
         const entry: PushLogEntry = { at: now, chatId: note.chatId, category: note.category, device: target.device, result: "pending" };
         log.push(entry);
-        if (target.kind === "fcm") {
-          if (fcmCfg === undefined) {
-            entry.result = "not configured";
-            continue;
-          }
-          sends.push(async () => {
-            try {
-              const r = await sendFcm(
-                fcmCfg,
-                target.token,
-                fcmPayload(note.chatId, note.title, note.category),
-                note.chatId
-              );
-              entry.result = r.reason ? `${r.status} ${r.reason}` : String(r.status);
-              if (isDeadFcmToken(r)) {
-                this.ctx.storage.sql.exec("DELETE FROM push_targets WHERE device = ? AND token = ?", target.device, target.token);
-              }
-            } catch (err) {
-              entry.result = `error ${(err as Error).message}`;
-            }
-          });
-        } else {
-          if (apnsCfg === undefined) {
-            entry.result = "not configured";
-            continue;
-          }
-          sends.push(async () => {
-            try {
-              const r = await sendApns(
-                apnsCfg,
-                target.environment,
-                target.token,
-                apnsPayload(note.chatId, note.title, note.category),
-                note.chatId
-              );
-              entry.result = r.reason ? `${r.status} ${r.reason}` : String(r.status);
-              if (isDeadApnsToken(r)) {
-                this.ctx.storage.sql.exec("DELETE FROM push_targets WHERE device = ? AND token = ?", target.device, target.token);
-              }
-            } catch (err) {
-              entry.result = `error ${(err as Error).message}`;
-            }
-          });
+        if (apnsCfg === undefined) {
+          entry.result = "not configured";
+          continue;
         }
+        sends.push(this.deliverApns(apnsCfg, target, note, entry));
       }
     }
     if (targets.length === 0) {
       for (const note of notes) log.push({ at: now, chatId: note.chatId, category: note.category, device: "", result: "no targets" });
     }
-    this.appendPushLog(log);
+    if (log.length > 0) this.appendPushLog(log);
     if (sends.length > 0) {
       this.ctx.waitUntil(
         Promise.all(sends.map((send) => send())).then(() => this.appendPushLog([], log))
       );
+    }
+  }
+
+  private async processDueUnreadPushes(): Promise<void> {
+    const delay = this.unreadPushDelayMs();
+    const cutoff = Date.now() - delay;
+    const dueChats = [
+      ...this.ctx.storage.sql.exec<{ chat_id: string }>(
+        "SELECT chat_id FROM unread_triggers GROUP BY chat_id HAVING MIN(created_at) <= ?",
+        cutoff
+      )
+    ].map((r) => r.chat_id);
+    if (dueChats.length === 0) return;
+    const fcmCfg = fcmConfig(this.env);
+    const fcmTargets = this.pushTargets().filter((t) => t.kind === "fcm");
+    const now = Date.now();
+    const log: PushLogEntry[] = [];
+    const sends: Array<() => Promise<void>> = [];
+    for (const chatId of dueChats) {
+      const chat = chatForNotification(this.loadRow("chats", chatId));
+      if (chat === null) {
+        this.clearUnreadQueue(chatId);
+        continue;
+      }
+      const triggers = [
+        ...this.ctx.storage.sql.exec<{ category: string; msg_at: number }>(
+          "SELECT category, msg_at FROM unread_triggers WHERE chat_id = ? ORDER BY created_at",
+          chatId
+        )
+      ];
+      const unread: Category[] = [];
+      for (const t of triggers) {
+        if (!this.isTriggerRead(chatId, t.msg_at as number)) {
+          unread.push(t.category as Category);
+        }
+      }
+      this.clearUnreadQueue(chatId);
+      if (unread.length === 0) continue;
+      for (const target of fcmTargets) {
+        const enabled = unread.filter((c) => target.prefs[c]);
+        if (enabled.length === 0) continue;
+        const entry: PushLogEntry = {
+          at: now,
+          chatId,
+          category: enabled.includes("input") ? "input" : enabled.includes("failed") ? "failed" : enabled[0],
+          device: target.device,
+          result: "pending"
+        };
+        log.push(entry);
+        if (fcmCfg === undefined) {
+          entry.result = "not configured";
+          continue;
+        }
+        sends.push(this.deliverFcm(fcmCfg, target, chatId, chat.title, enabled, entry));
+      }
+    }
+    if (log.length === 0) return;
+    this.appendPushLog(log);
+    if (sends.length > 0) {
+      await Promise.all(sends.map((send) => send()));
+      this.appendPushLog([], log);
     }
   }
 
@@ -792,44 +1061,53 @@ export class RegistryRoom implements DurableObject {
 
   private markBackupDirty(): void {
     this.setMeta("backupDirty", "1");
-    void this.ctx.storage.getAlarm().then((existing) => {
-      if (existing === null) void this.ctx.storage.setAlarm(Date.now() + DAY_MS);
-    });
+    if (this.backupDueAt() === null) {
+      this.setMeta("backupDue", String(Date.now() + DAY_MS));
+    }
+    void this.scheduleAlarm();
   }
 
-  /** Daily alarm: tombstone GC + nightly R2 backup of the full table. */
+  private gcReadReceipts(horizon: number): void {
+    this.ctx.storage.sql.exec("DELETE FROM read_receipts WHERE message_at < ?", horizon);
+  }
+
+  /** Deferred FCM pushes + daily tombstone GC / R2 backup share one durable alarm. */
   async alarm(): Promise<void> {
-    if (this.getMeta("backupDirty") !== "1") return; // idle: stop the chain
+    try {
+      await this.processDueUnreadPushes();
+      const backupDue = this.backupDueAt();
+      if (this.getMeta("backupDirty") === "1" && backupDue !== null && backupDue <= Date.now()) {
+        const horizon = Date.now() - TOMBSTONE_RETAIN_MS;
+        const horizonHlc = `${String(horizon).padStart(13, "0")}-`;
+        let purgedMaxSeq = 0;
+        for (const raw of this.ctx.storage.sql.exec(
+          "SELECT seq FROM rows WHERE deleted = 1 AND del_hlc < ?",
+          horizonHlc
+        )) {
+          purgedMaxSeq = Math.max(purgedMaxSeq, raw.seq as number);
+        }
+        if (purgedMaxSeq > 0) {
+          this.ctx.storage.sql.exec("DELETE FROM rows WHERE deleted = 1 AND del_hlc < ?", horizonHlc);
+          this.setMeta("gcFloor", String(Math.max(this.gcFloor(), purgedMaxSeq)));
+          this.setMeta("lastGcAt", String(Date.now()));
+        }
+        this.gcReadReceipts(horizon);
 
-    // 1. Tombstone GC. Raising gcFloor to the purged rows' max seq forces a
-    //    full resync for any cursor that might have missed a purged delete.
-    const horizon = Date.now() - TOMBSTONE_RETAIN_MS;
-    const horizonHlc = `${String(horizon).padStart(13, "0")}-`;
-    let purgedMaxSeq = 0;
-    for (const raw of this.ctx.storage.sql.exec(
-      "SELECT seq FROM rows WHERE deleted = 1 AND del_hlc < ?",
-      horizonHlc
-    )) {
-      purgedMaxSeq = Math.max(purgedMaxSeq, raw.seq as number);
+        const seq = this.seq();
+        if (seq > Number(this.getMeta("backupSeq") ?? "0")) {
+          const rows = this.rowsSince(0);
+          await this.env.BLOBS.put(
+            `backup/registry/${this.ctx.id.toString()}/latest.json`,
+            JSON.stringify({ seq, at: Date.now(), rows })
+          );
+          this.setMeta("backupSeq", String(seq));
+        }
+        this.setMeta("backupDirty", "0");
+        this.deleteMeta("backupDue");
+      }
+    } finally {
+      await this.scheduleAlarm();
     }
-    if (purgedMaxSeq > 0) {
-      this.ctx.storage.sql.exec("DELETE FROM rows WHERE deleted = 1 AND del_hlc < ?", horizonHlc);
-      this.setMeta("gcFloor", String(Math.max(this.gcFloor(), purgedMaxSeq)));
-      this.setMeta("lastGcAt", String(Date.now()));
-    }
-
-    // 2. Nightly R2 backup — monotonic by seq, so a wiped-and-reseeding room
-    //    can never replace the last good copy with a hollow one.
-    const seq = this.seq();
-    if (seq > Number(this.getMeta("backupSeq") ?? "0")) {
-      const rows = this.rowsSince(0);
-      await this.env.BLOBS.put(
-        `backup/registry/${this.ctx.id.toString()}/latest.json`,
-        JSON.stringify({ seq, at: Date.now(), rows })
-      );
-      this.setMeta("backupSeq", String(seq));
-    }
-    this.setMeta("backupDirty", "0");
   }
 }
 
