@@ -169,7 +169,7 @@ mod tests {
         let body = seen_report_body("c1", "m1", 1_700_000_000_000);
         assert_eq!(body["chatId"], "c1");
         assert_eq!(body["messageId"], "m1");
-        assert_eq!(body["messageAt"], 1_700_000_000_000);
+        assert_eq!(body["messageAt"], serde_json::json!(1_700_000_000_000));
         assert_eq!(
             nudge("https://e.sh", "dev-mac"),
             "https://e.sh/device/dev-mac/nudge"

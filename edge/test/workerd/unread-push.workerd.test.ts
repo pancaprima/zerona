@@ -199,10 +199,13 @@ describe("deferred FCM unread push", () => {
     const stub = room();
     await registerFcm(stub, "android-1");
     const first = 1_700_000_500_000;
+    const later = first + 5_000;
     await seedChat(stub, first, "prev-msg");
     await seen(stub, "desktop-a", "c1", "prev-msg", first);
     await triggerDone(stub);
-    await markChatMessage(stub, first + 5_000, "completion-msg");
+    expect(await triggerMsgAt(stub)).toBe(first);
+    await markChatMessage(stub, later, "completion-msg");
+    expect(await triggerMsgAt(stub)).toBe(later);
     await fastForwardUnread(stub);
     await runDurableObjectAlarm(stub);
     expect((await stats(stub)).pushLog).toHaveLength(1);
