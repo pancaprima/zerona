@@ -7,6 +7,9 @@ import { TRIGGER_MARKER_WINDOW_MS } from "../../src/registry-room";
 const H = { [AUTH_USER_HEADER]: "user" };
 let tick = 1;
 const hlc = () => `${String(tick++).padStart(13, "0")}-000000-mac`;
+/** Same shape as engine `new_id()` / transcript `SessionMessageEntry.id` (crates/engine/src/lib.rs). */
+const COMPLETION_ENTRY_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+const PROGRESS_ENTRY_ID = "b2c3d4e5-f6a7-8901-bcde-f23456789012";
 const session = (status: string, turn: string | null, updatedAt = Date.now()): Op => ({
   kind: "sessions",
   id: "c1",
@@ -89,7 +92,7 @@ async function triggerDone(
   updatedAt = Date.now(),
   messageMarker?: { at: number; id: string }
 ) {
-  const ops: Op[] = [session("idle", "turn-1", updatedAt)];
+  const ops: Op[] = [session("idle", COMPLETION_ENTRY_ID, updatedAt)];
   if (messageMarker !== undefined) {
     ops.unshift({
       kind: "chats",
@@ -120,7 +123,7 @@ describe("deferred FCM unread push", () => {
     const msgAt = Date.now() - 500;
     await seedChat(stub, msgAt, "m1");
     await triggerDone(stub, Date.now(), { at: msgAt, id: "m1" });
-    await seen(stub, "desktop-a", "c1", "m1", msgAt);
+    await seen(stub, "desktop-a", "c1", COMPLETION_ENTRY_ID, msgAt);
     await fastForwardUnread(stub);
     await runDurableObjectAlarm(stub);
     const s = await stats(stub);
@@ -133,7 +136,7 @@ describe("deferred FCM unread push", () => {
     const msgAt = Date.now() - 500;
     await seedChat(stub, msgAt, "m1");
     await triggerDone(stub, Date.now(), { at: msgAt, id: "m1" });
-    await seen(stub, "phone-b", "c1", "m1", msgAt);
+    await seen(stub, "phone-b", "c1", COMPLETION_ENTRY_ID, msgAt);
     await fastForwardUnread(stub);
     await runDurableObjectAlarm(stub);
     expect((await stats(stub)).pushLog).toEqual([]);
@@ -146,7 +149,7 @@ describe("deferred FCM unread push", () => {
     await seedChat(stub, msgAt, "closing");
     await triggerDone(stub, Date.now(), { at: msgAt, id: "closing" });
     expect(await triggerMsgAt(stub)).toBe(msgAt);
-    await seen(stub, "desktop-a", "c1", "closing", msgAt);
+    await seen(stub, "desktop-a", "c1", COMPLETION_ENTRY_ID, msgAt);
     await fastForwardUnread(stub);
     await runDurableObjectAlarm(stub);
     expect((await stats(stub)).pushLog).toEqual([]);
@@ -180,7 +183,7 @@ describe("deferred FCM unread push", () => {
     ]);
     await triggerDone(stub, updatedAt, { at: updatedAt, id: "m" });
     expect(await triggerMsgAt(stub)).toBe(updatedAt);
-    await seen(stub, "desktop-a", "c1", "m", updatedAt);
+    await seen(stub, "desktop-a", "c1", COMPLETION_ENTRY_ID, updatedAt);
     await fastForwardUnread(stub);
     await runDurableObjectAlarm(stub);
     expect((await stats(stub)).pushLog).toEqual([]);
@@ -193,7 +196,7 @@ describe("deferred FCM unread push", () => {
     await seedChat(stub, first, "partial");
     await triggerDone(stub);
     const later = first + 5_000;
-    await markChatMessage(stub, later, "completion-msg");
+    await markChatMessage(stub, later, COMPLETION_ENTRY_ID);
     expect(await triggerMsgAt(stub)).toBe(later);
     await seen(stub, "desktop-a", "c1", "partial", first);
     await fastForwardUnread(stub);
@@ -210,10 +213,10 @@ describe("deferred FCM unread push", () => {
     await seen(stub, "desktop-a", "c1", "prev-msg", first);
     await triggerDone(stub);
     expect(await triggerMsgAt(stub)).toBe(first);
-    expect(await triggerMsgId(stub)).toBe("turn-1");
-    await markChatMessage(stub, later, "completion-msg");
+    expect(await triggerMsgId(stub)).toBe(COMPLETION_ENTRY_ID);
+    await markChatMessage(stub, later, COMPLETION_ENTRY_ID);
     expect(await triggerMsgAt(stub)).toBe(later);
-    expect(await triggerMsgId(stub)).toBe("completion-msg");
+    expect(await triggerMsgId(stub)).toBe(COMPLETION_ENTRY_ID);
     await fastForwardUnread(stub);
     await runDurableObjectAlarm(stub);
     expect((await stats(stub)).pushLog).toHaveLength(1);
@@ -227,10 +230,61 @@ describe("deferred FCM unread push", () => {
     await seen(stub, "desktop-a", "c1", "prev-msg", first);
     await triggerDone(stub);
     expect(await triggerMsgAt(stub)).toBe(first);
-    expect(await triggerMsgId(stub)).toBe("turn-1");
+    expect(await triggerMsgId(stub)).toBe(COMPLETION_ENTRY_ID);
     await fastForwardUnread(stub);
     await runDurableObjectAlarm(stub);
     expect((await stats(stub)).pushLog).toHaveLength(1);
+  });
+
+  it("does not suppress done push when only a middle/progress transcript entry was seen", async () => {
+    const stub = room();
+    await registerFcm(stub, "android-1");
+    const progressAt = 1_700_000_700_000;
+    const completionAt = progressAt + 8_000;
+    await seedChat(stub, progressAt, PROGRESS_ENTRY_ID);
+    await seen(stub, "desktop-a", "c1", PROGRESS_ENTRY_ID, progressAt);
+    await push(stub, [
+      {
+        kind: "chats",
+        id: "c1",
+        op: "upsert",
+        hlc: hlc(),
+        set: { title: "Fix login", lastMessageAt: completionAt, lastMessageId: PROGRESS_ENTRY_ID }
+      },
+      session("idle", COMPLETION_ENTRY_ID, Date.now())
+    ]);
+    expect(await triggerMsgId(stub)).toBe(COMPLETION_ENTRY_ID);
+    await fastForwardUnread(stub);
+    await runDurableObjectAlarm(stub);
+    expect((await stats(stub)).pushLog).toHaveLength(1);
+  });
+
+  it("does not let a later stale chat row overwrite done trigger message_id", async () => {
+    const stub = room();
+    await registerFcm(stub, "android-1");
+    const progressAt = 1_700_000_900_000;
+    await seedChat(stub, progressAt, PROGRESS_ENTRY_ID);
+    await seen(stub, "desktop-a", "c1", PROGRESS_ENTRY_ID, progressAt);
+    await triggerDone(stub);
+    expect(await triggerMsgId(stub)).toBe(COMPLETION_ENTRY_ID);
+    await markChatMessage(stub, progressAt + 1_000, PROGRESS_ENTRY_ID);
+    expect(await triggerMsgId(stub)).toBe(COMPLETION_ENTRY_ID);
+    await fastForwardUnread(stub);
+    await runDurableObjectAlarm(stub);
+    expect((await stats(stub)).pushLog).toHaveLength(1);
+  });
+
+  it("suppresses done push when the completed transcript entry was seen (exact message id)", async () => {
+    const stub = room();
+    await registerFcm(stub, "android-1");
+    const completionAt = 1_700_000_800_000;
+    await seedChat(stub, completionAt, COMPLETION_ENTRY_ID);
+    await push(stub, [session("idle", COMPLETION_ENTRY_ID, Date.now())]);
+    expect(await triggerMsgId(stub)).toBe(COMPLETION_ENTRY_ID);
+    await seen(stub, "desktop-a", "c1", COMPLETION_ENTRY_ID, completionAt);
+    await fastForwardUnread(stub);
+    await runDurableObjectAlarm(stub);
+    expect((await stats(stub)).pushLog).toEqual([]);
   });
 
   it("does not raise msg_at when lastMessageAt advances after the marker window", async () => {
@@ -266,7 +320,7 @@ describe("deferred FCM unread push", () => {
     await registerFcm(stub, "android-1");
     await seedChat(stub);
     await triggerDone(stub);
-    await push(stub, [session("awaitingInput", "turn-1")]);
+    await push(stub, [session("awaitingInput", COMPLETION_ENTRY_ID)]);
     await fastForwardUnread(stub);
     await runDurableObjectAlarm(stub);
     const s = await stats(stub);
@@ -292,8 +346,8 @@ describe("deferred FCM unread push", () => {
     const stub = room();
     await registerFcm(stub, "android-1");
     await seedChat(stub);
-    await push(stub, [session("awaitingInput", "turn-1")]);
-    await push(stub, [session("idle", "turn-2")]);
+    await push(stub, [session("awaitingInput", COMPLETION_ENTRY_ID)]);
+    await push(stub, [session("idle", "c2c3d4e5-f6a7-8901-bcde-f23456789012")]);
     await fastForwardUnread(stub);
     await runDurableObjectAlarm(stub);
     const s = await stats(stub);

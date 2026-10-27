@@ -445,10 +445,9 @@ export class RegistryRoom implements DurableObject {
       );
       this.ctx.storage.sql.exec(
         `DELETE FROM unread_triggers WHERE chat_id = ? AND (
-          msg_at < ? OR (message_id != '' AND message_id = ?) OR (message_id = '' AND msg_at <= ?)
+          (message_id != '' AND message_id = ?) OR (message_id = '' AND msg_at <= ?)
         )`,
         chatId,
-        messageAt,
         messageId,
         messageAt
       );
@@ -803,20 +802,21 @@ export class RegistryRoom implements DurableObject {
     return typeof v === "string" ? v : "";
   }
 
-  /** Message id for read matching: same-batch chat row when present, else the session event (done → turn id). */
+  /** Message id for read matching: done → completed transcript entry id (`lastCompletedTurn`, same as clients' seen reports); other categories → same-batch chat `lastMessageId`. */
   private resolveTriggerMessageId(
     category: Category,
     session: Row,
     chat: Row | undefined,
     chatUpdatedInBatch: boolean
   ): string {
+    if (category === "done") {
+      const completed =
+        typeof session.fields.lastCompletedTurn === "string" ? session.fields.lastCompletedTurn : "";
+      if (completed !== "") return completed;
+    }
     if (chatUpdatedInBatch && chat !== undefined) {
       const fromChat = this.parseLastMessageId(chat.fields);
       if (fromChat !== "") return fromChat;
-    }
-    if (category === "done") {
-      const turn = typeof session.fields.lastCompletedTurn === "string" ? session.fields.lastCompletedTurn : "";
-      if (turn !== "") return turn;
     }
     return "";
   }
@@ -836,7 +836,9 @@ export class RegistryRoom implements DurableObject {
     const windowStart = Date.now() - TRIGGER_MARKER_WINDOW_MS;
     if (lastId !== "") {
       this.ctx.storage.sql.exec(
-        "UPDATE unread_triggers SET msg_at = MAX(msg_at, ?), message_id = ? WHERE chat_id = ? AND created_at >= ?",
+        `UPDATE unread_triggers SET msg_at = MAX(msg_at, ?),
+          message_id = CASE WHEN category = 'done' THEN message_id ELSE ? END
+         WHERE chat_id = ? AND created_at >= ?`,
         lastMsg,
         lastId,
         chat.id,
@@ -878,10 +880,9 @@ export class RegistryRoom implements DurableObject {
     if (messageId !== "") {
       const rows = [
         ...this.ctx.storage.sql.exec(
-          "SELECT 1 FROM read_receipts WHERE chat_id = ? AND (message_id = ? OR message_at > ?) LIMIT 1",
+          "SELECT 1 FROM read_receipts WHERE chat_id = ? AND message_id = ? LIMIT 1",
           chatId,
-          messageId,
-          msgAt
+          messageId
         )
       ];
       return rows.length > 0;
