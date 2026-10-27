@@ -1220,6 +1220,61 @@ impl WorkspaceHost {
         Ok(self.mutate(|doc| doc.set_chat_seen(chat_id, at))?)
     }
 
+    /// Fire-and-forget read receipt for the newest message actually shown on
+    /// this device (`POST /registry/{org}/seen`). No-op without edge or before
+    /// the registry room client exists.
+    pub fn report_message_seen(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+        message_at_ms: i64,
+    ) {
+        if self.inner.config.edge.is_none() || lock(&self.inner.room).is_none() {
+            return;
+        }
+        let Some(edge) = self.inner.config.edge.clone() else {
+            return;
+        };
+        let org_id = self.inner.config.org_id.clone();
+        let device_id = self.inner.config.device_id.clone();
+        let chat_id = chat_id.to_string();
+        let message_id = message_id.to_string();
+        tokio::spawn(async move {
+            let Ok(bearer) = edge.bearer().await else {
+                return;
+            };
+            let url = RegistryClient::report_message_seen_url(
+                edge.url.trim_end_matches('/'),
+                &org_id,
+                &device_id,
+            );
+            let body = RegistryClient::report_message_seen_body(
+                &chat_id,
+                &message_id,
+                message_at_ms,
+            );
+            let response = reqwest::Client::new()
+                .post(url)
+                .bearer_auth(&bearer)
+                .json(&body)
+                .send()
+                .await;
+            match response {
+                Ok(r) if r.status().is_success() => {}
+                Ok(r) => {
+                    tracing::warn!(
+                        chat = %chat_id,
+                        status = %r.status(),
+                        "seen report http rejected"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(chat = %chat_id, error = %err, "seen report http failed");
+                }
+            }
+        });
+    }
+
     /// Owner-only git stamp (SpacesSync). Refuses rows owned by another device.
     pub fn set_space_git(
         &self,

@@ -31,6 +31,7 @@ object VisibleSeenMessageSelector {
         minVisibleDp: Float = 24f,
     ): List<Int> =
         placements.mapNotNull { p ->
+            if (p.height <= 0f) return@mapNotNull null
             val rowBottom = p.y + p.height
             val visibleHeight =
                 (minOf(rowBottom, viewportBottom) - maxOf(p.y, viewportTop)).coerceAtLeast(0f)

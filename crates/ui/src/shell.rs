@@ -2285,6 +2285,12 @@ pub struct Shell {
     /// Last observed `window.is_window_active()` — rising edge fires a
     /// ProbeSync so a broadcast-deaf room heals as the user looks at the app.
     was_window_active: bool,
+    /// Current frame's window-active bit (used by deferred seen-report tasks).
+    window_is_active: bool,
+    seen_latest: Option<crate::seen_report::SeenMessage>,
+    seen_last_reported: Option<crate::seen_report::SeenMessage>,
+    seen_last_emit_at_ms: Option<i64>,
+    seen_debounce: Option<Task<()>>,
     /// Dev/testing knobs (`ZERON_OPEN_DIALOG`, `ZERON_FORCE_GATE`,
     /// `ZERON_DEMO_UPLOAD`) — see [`Shell::new`].
     debug_dialog: Option<String>,
@@ -2765,6 +2771,11 @@ impl Shell {
             sidebar_new_keys: std::collections::HashSet::new(),
             resort_epoch: 0,
             was_window_active: false,
+            window_is_active: false,
+            seen_latest: None,
+            seen_last_reported: None,
+            seen_last_emit_at_ms: None,
+            seen_debounce: None,
             debug_dialog,
             debug_gate,
             debug_upload,
@@ -3261,6 +3272,7 @@ impl Shell {
                     .update(&self.active_chat, |panels| panels.right_expanded = expanded);
             }
             self.active_chat = selected;
+            self.reset_seen_report();
             // Route history: a chat switch is a navigation. The very first
             // selection off the untouched boot canvas REPLACES that entry —
             // zeron's `/` route redirected into the last-used chat, leaving no
@@ -3716,6 +3728,129 @@ impl Shell {
                 rows.iter().map(|(surface, _, _, _)| *surface),
             )
         }
+    }
+
+    fn reset_seen_report(&mut self) {
+        self.seen_debounce.take();
+        self.seen_latest = None;
+        self.seen_last_reported = None;
+        self.seen_last_emit_at_ms = None;
+    }
+
+    fn note_visible_seen(
+        &mut self,
+        visible: Option<crate::seen_report::SeenMessage>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.seen_latest == visible {
+            return;
+        }
+        self.seen_latest = visible;
+        self.schedule_seen_report(cx);
+    }
+
+    fn schedule_seen_report(&mut self, cx: &mut Context<Self>) {
+        self.seen_debounce.take();
+        self.seen_debounce = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(
+                    crate::seen_report::SEEN_DEBOUNCE_MS,
+                ))
+                .await;
+            this.update(cx, |this, cx| {
+                this.seen_debounce = None;
+                if !this.window_is_active {
+                    return;
+                }
+                let visible = this.seen_latest.as_ref();
+                let candidate = crate::seen_report::candidate_to_report(
+                    visible,
+                    this.seen_last_reported.as_ref(),
+                );
+                let Some(candidate) = candidate else {
+                    return;
+                };
+                let now = chrono::Utc::now().timestamp_millis();
+                if !crate::seen_report::may_emit_now(
+                    now,
+                    &candidate,
+                    this.seen_last_reported.as_ref(),
+                    this.seen_last_emit_at_ms,
+                    crate::seen_report::SEEN_MIN_INTERVAL_MS,
+                ) {
+                    let last_emit = this.seen_last_emit_at_ms.unwrap_or(0);
+                    let wait_ms = (crate::seen_report::SEEN_MIN_INTERVAL_MS
+                        - (now - last_emit))
+                        .max(0) as u64;
+                    if wait_ms > 0 {
+                        let retry = cx.spawn(async move |this, cx| {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(wait_ms))
+                                .await;
+                            this.update(cx, |this, cx| {
+                                if !this.window_is_active {
+                                    return;
+                                }
+                                let visible = this.seen_latest.as_ref();
+                                let candidate = crate::seen_report::candidate_to_report(
+                                    visible,
+                                    this.seen_last_reported.as_ref(),
+                                );
+                                let Some(candidate) = candidate else {
+                                    return;
+                                };
+                                let now = chrono::Utc::now().timestamp_millis();
+                                if crate::seen_report::may_emit_now(
+                                    now,
+                                    &candidate,
+                                    this.seen_last_reported.as_ref(),
+                                    this.seen_last_emit_at_ms,
+                                    crate::seen_report::SEEN_MIN_INTERVAL_MS,
+                                ) {
+                                    this.emit_seen_report(candidate, now, cx);
+                                }
+                            })
+                            .ok();
+                        });
+                        this.seen_debounce = Some(retry);
+                    }
+                    return;
+                }
+                this.emit_seen_report(candidate, now, cx);
+            })
+            .ok();
+        }));
+    }
+
+    fn emit_seen_report(
+        &mut self,
+        message: crate::seen_report::SeenMessage,
+        now_ms: i64,
+        cx: &mut Context<Self>,
+    ) {
+        let chat_id = self.state.read(cx).selected_chat.clone();
+        let Some(chat_id) = chat_id else {
+            return;
+        };
+        self.seen_last_reported = Some(message.clone());
+        self.seen_last_emit_at_ms = Some(now_ms);
+        let Some(handle) = self.state.read(cx).engine.clone() else {
+            return;
+        };
+        let message_id = message.message_id;
+        let message_at_ms = message.message_at_ms;
+        cx.spawn(async move |_, _| {
+            let params = serde_json::json!({
+                "op": "reportMessageSeen",
+                "chatId": chat_id,
+                "messageId": message_id,
+                "messageAtMs": message_at_ms,
+            });
+            if let Err(err) = handle.client().call(methods::MUTATE, params).await {
+                tracing::warn!(chat = %chat_id, error = %err, "reportMessageSeen failed");
+            }
+        })
+        .detach();
     }
 
     fn suspend_file_images(&mut self, cx: &mut Context<Self>) {
@@ -13979,6 +14114,7 @@ impl Render for Shell {
                 // seconds of the user looking at the app rather than waiting
                 // out the background probe cadence.
                 let window_active = window.is_window_active();
+                self.window_is_active = window_active;
                 if window_active && !self.was_window_active {
                     self.state.update(cx, |s, cx| s.probe_sync(cx));
                 }
@@ -13998,6 +14134,10 @@ impl Render for Shell {
                         self.state
                             .update(cx, |s, cx| s.mark_chat_seen(&chat_id, cx));
                     }
+                    let visible = self.transcript.read(cx).visible_seen_message(cx);
+                    self.note_visible_seen(visible, cx);
+                } else {
+                    self.seen_debounce.take();
                 }
                 // Capture knob: `ZERON_OPEN_DIALOG=model` pops the combined
                 // harness/model menu (needs `window`, so it fires here rather

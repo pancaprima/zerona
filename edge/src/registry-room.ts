@@ -445,7 +445,7 @@ export class RegistryRoom implements DurableObject {
         chatId,
         messageAt
       );
-      void this.scheduleAlarm();
+      this.scheduleAlarmSafe();
       return json({ ok: true });
     }
 
@@ -848,14 +848,22 @@ export class RegistryRoom implements DurableObject {
     return m + this.unreadPushDelayMs();
   }
 
+  private scheduleAlarmSafe(): void {
+    void this.scheduleAlarm().catch((err: Error) => {
+      console.error("scheduleAlarm failed:", err.message);
+    });
+  }
+
   private async scheduleAlarm(): Promise<void> {
     const pushDue = this.earliestUnreadPushDue() ?? Infinity;
     const dueAt = this.backupDueAt();
     const backup = this.getMeta("backupDirty") === "1" && dueAt !== null ? dueAt : Infinity;
     const next = Math.min(pushDue, backup);
     if (!Number.isFinite(next)) return;
+    const alarmAt = Math.max(next, Date.now());
+    if (!Number.isFinite(alarmAt) || alarmAt <= 0) return;
     const existing = await this.ctx.storage.getAlarm();
-    if (existing === null || next < existing) await this.ctx.storage.setAlarm(next);
+    if (existing === null || alarmAt < existing) await this.ctx.storage.setAlarm(alarmAt);
   }
 
   private deliverFcm(
@@ -931,7 +939,7 @@ export class RegistryRoom implements DurableObject {
       enqueuedFcm = true;
     }
     if (notes.length === 0) return;
-    if (enqueuedFcm) void this.scheduleAlarm();
+    if (enqueuedFcm) this.scheduleAlarmSafe();
     const targets = this.pushTargets();
     const apnsCfg = apnsConfig(this.env);
     const apnsTargets = targets.filter((t) => t.kind === "apns");
@@ -1064,7 +1072,7 @@ export class RegistryRoom implements DurableObject {
     if (this.backupDueAt() === null) {
       this.setMeta("backupDue", String(Date.now() + DAY_MS));
     }
-    void this.scheduleAlarm();
+    this.scheduleAlarmSafe();
   }
 
   private gcReadReceipts(horizon: number): void {

@@ -16,6 +16,7 @@ pub mod chat_frames;
 pub mod dial;
 pub mod net_path;
 pub mod registry;
+pub mod registry_seen;
 pub mod socket;
 mod store;
 mod sync_jobs;
@@ -28,5 +29,6 @@ pub use chat_client::{
 pub use registry::{
     ReconnectState, RegistryClient, RegistryEvent, RegistryTransport, RegistryTuning,
 };
+pub use registry_seen::{seen_body, seen_url};
 pub use store::{DocsStore, StoreError};
 pub use types::{RoomStatsSnapshot, StaticUrl, SyncError, UrlProvider};

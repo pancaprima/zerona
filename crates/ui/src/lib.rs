@@ -68,6 +68,7 @@ pub mod queue;
 pub mod rail;
 mod roll_text;
 pub mod running_pill;
+mod seen_report;
 pub mod settings;
 pub mod shell;
 pub mod sound;

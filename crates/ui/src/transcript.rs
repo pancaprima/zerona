@@ -3803,6 +3803,52 @@ impl Transcript {
         &self.rows
     }
 
+    /// Newest message entry intersecting the list viewport (not overscan).
+    pub fn visible_seen_message<C: gpui::AppContext>(&self, cx: &C) -> Option<crate::seen_report::SeenMessage> {
+        if self.doc_override.is_some() || self.chat_id.is_none() {
+            return None;
+        }
+        let viewport = self.list.viewport_bounds();
+        let v_top = f32::from(viewport.top());
+        let v_bottom = f32::from(viewport.bottom());
+        let mut placements = Vec::new();
+        for (ix, row) in self.rows.iter().enumerate() {
+            if !crate::seen_report::row_eligible_for_seen(row) {
+                continue;
+            }
+            if let Some(bounds) = self.list.bounds_for_item(ix) {
+                let height = f32::from(bounds.size.height);
+                if height <= 0.0 {
+                    continue;
+                }
+                placements.push(crate::seen_report::RowBounds {
+                    index: ix,
+                    top: f32::from(bounds.top()),
+                    height,
+                });
+            }
+        }
+        let indices = crate::seen_report::filter_visible_in_viewport(
+            &placements,
+            v_top,
+            v_bottom,
+            24.0,
+        );
+        let state = self.state.read(cx);
+        let entries = state.transcript.as_slice();
+        let entry_at = |entry_id: &str| {
+            entries
+                .iter()
+                .find(|e| e.id == entry_id)
+                .map(|e| e.created_at)
+        };
+        crate::seen_report::newest_visible_message(
+            &indices,
+            |ix| self.rows.get(ix).map(|r| r.entry_id.as_ref()),
+            entry_at,
+        )
+    }
+
     pub(crate) fn list_state(&self) -> &ListState {
         &self.list
     }

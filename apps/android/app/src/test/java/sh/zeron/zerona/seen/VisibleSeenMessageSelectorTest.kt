@@ -99,6 +99,17 @@ class VisibleSeenMessageSelectorTest {
     }
 
     @Test
+    fun filterVisible_excludesZeroHeightRow() {
+        val indices =
+            VisibleSeenMessageSelector.filterVisible(
+                placements = listOf(PlacementBounds(6, 200f, 0f)),
+                viewportTop = 100f,
+                viewportBottom = 500f,
+            )
+        assertEquals(emptyList<Int>(), indices)
+    }
+
+    @Test
     fun filterVisible_includesShortRowWhenFullyVisible() {
         val indices =
             VisibleSeenMessageSelector.filterVisible(

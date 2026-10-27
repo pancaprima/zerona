@@ -449,6 +449,20 @@ impl RegistryClient {
             let _ = task.await;
         }
     }
+
+    /// `POST /registry/{org}/seen?device=` — URL shape (Bearer header; not WS).
+    pub fn report_message_seen_url(edge_base: &str, org_id: &str, device_id: &str) -> String {
+        crate::registry_seen::seen_url(edge_base, org_id, device_id)
+    }
+
+    /// JSON body for [`Self::report_message_seen_url`].
+    pub fn report_message_seen_body(
+        chat_id: &str,
+        message_id: &str,
+        message_at_ms: i64,
+    ) -> serde_json::Value {
+        crate::registry_seen::seen_body(chat_id, message_id, message_at_ms)
+    }
 }
 
 impl Drop for RegistryClient {

@@ -47,3 +47,7 @@ Source: Rora's T2 message (the referenced `specs/T2-unread-push.md` is not in th
 
 ## Coordination note
 Owner of T2 implementation: the Discord Asa session (Prima's direct go-ahead 2026-10-27). An earlier local-only attempt exists on branch `feature/unread-chat-push` (worktree `/root/zerona-unread-push`, new `chat-sync-room.ts`); it is NOT used. Do not edit `/root/zerona` from parallel sessions.
+
+## Phase 2b notes (desktop)
+- Desktop read receipts: UI picks newest viewport-intersecting transcript row (`visible_seen_message`), debounced/throttled like Android; engine `reportMessageSeen` mutates to `WorkspaceHost::report_message_seen` (Bearer POST via `RegistryClient::report_message_seen_*` URL/body helpers in `zeron-sync`).
+- Edge: `scheduleAlarm` clamps alarm time to `max(due, now)`; duplicate alarm + pre-due retrigger tests added in `unread-push.workerd.test.ts`.

@@ -177,6 +177,32 @@ describe("deferred FCM unread push", () => {
     expect(await triggerMsgAt(stub)).toBe(first);
   });
 
+  it("fires alarm twice in a row for one pending push and sends exactly one push", async () => {
+    const stub = room();
+    await registerFcm(stub, "android-1");
+    await seedChat(stub);
+    await triggerDone(stub);
+    await fastForwardUnread(stub);
+    await runDurableObjectAlarm(stub);
+    await runDurableObjectAlarm(stub);
+    const s = await stats(stub);
+    expect(s.pushLog.filter((e) => e.chatId === "c1" && e.device === "android-1")).toHaveLength(1);
+    expect(s.pushLog).toHaveLength(1);
+  });
+
+  it("updates the pending push when a newer trigger arrives before due and still sends one push", async () => {
+    const stub = room();
+    await registerFcm(stub, "android-1");
+    await seedChat(stub);
+    await triggerDone(stub);
+    await push(stub, [session("awaitingInput", "turn-1")]);
+    await fastForwardUnread(stub);
+    await runDurableObjectAlarm(stub);
+    const s = await stats(stub);
+    expect(s.pushLog).toHaveLength(1);
+    expect(s.pushLog[0]).toMatchObject({ chatId: "c1", category: "input", device: "android-1" });
+  });
+
   it("sends exactly one deferred push per chat when still unread on both devices", async () => {
     const stub = room();
     await registerFcm(stub, "android-1");
