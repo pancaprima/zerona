@@ -151,6 +151,11 @@ export class RegistryRoom implements DurableObject {
     if (!triggerColumns.some((c) => c.name === "message_id")) {
       ctx.storage.sql.exec("ALTER TABLE unread_triggers ADD COLUMN message_id TEXT NOT NULL DEFAULT ''");
     }
+    if (!triggerColumns.some((c) => c.name === "message_created_at")) {
+      ctx.storage.sql.exec(
+        "ALTER TABLE unread_triggers ADD COLUMN message_created_at INTEGER NOT NULL DEFAULT 0"
+      );
+    }
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS read_receipts (chat_id TEXT NOT NULL, device TEXT NOT NULL, message_id TEXT NOT NULL, message_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (chat_id, device))"
     );
@@ -445,10 +450,12 @@ export class RegistryRoom implements DurableObject {
       );
       this.ctx.storage.sql.exec(
         `DELETE FROM unread_triggers WHERE chat_id = ? AND (
-          (message_id != '' AND message_id = ?) OR (message_id = '' AND msg_at <= ?)
+          (message_id != '' AND (message_id = ? OR (message_created_at > 0 AND message_created_at < ?)))
+          OR (message_id = '' AND msg_at <= ?)
         )`,
         chatId,
         messageId,
+        messageAt,
         messageAt
       );
       this.scheduleAlarmSafe();
@@ -829,6 +836,27 @@ export class RegistryRoom implements DurableObject {
     return createdAt;
   }
 
+  /** Transcript message createdAt for read matching; not bumped from chat `lastMessageAt` on `done`. */
+  private resolveTriggerMessageCreatedAt(
+    category: Category,
+    session: Row,
+    chat: Row | undefined,
+    createdAt: number,
+    chatUpdatedInBatch: boolean
+  ): number {
+    const updatedAt = typeof session.fields.updatedAt === "number" ? session.fields.updatedAt : null;
+    if (category === "done") {
+      if (updatedAt !== null) return updatedAt;
+      return createdAt;
+    }
+    if (chatUpdatedInBatch && chat !== undefined) {
+      const fromChat = this.parseLastMessageAtMs(chat.fields);
+      if (fromChat !== null) return fromChat;
+    }
+    if (updatedAt !== null) return updatedAt;
+    return createdAt;
+  }
+
   private bumpTriggerMarkersFromChat(chat: Row): void {
     const lastMsg = this.parseLastMessageAtMs(chat.fields);
     if (lastMsg === null) return;
@@ -864,25 +892,40 @@ export class RegistryRoom implements DurableObject {
   ): void {
     const key = this.triggerKey(category, session);
     const msgAt = this.resolveTriggerMsgAt(chat, session, createdAt);
+    const messageCreatedAt = this.resolveTriggerMessageCreatedAt(
+      category,
+      session,
+      chat,
+      createdAt,
+      chatUpdatedInBatch
+    );
     const messageId = this.resolveTriggerMessageId(category, session, chat, chatUpdatedInBatch);
     this.ctx.storage.sql.exec(
-      "INSERT OR IGNORE INTO unread_triggers (chat_id, trigger_key, category, created_at, msg_at, message_id) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO unread_triggers (chat_id, trigger_key, category, created_at, msg_at, message_id, message_created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
       chatId,
       key,
       category,
       createdAt,
       msgAt,
-      messageId
+      messageId,
+      messageCreatedAt
     );
   }
 
-  private isTriggerRead(chatId: string, msgAt: number, messageId: string): boolean {
+  private isTriggerRead(
+    chatId: string,
+    msgAt: number,
+    messageCreatedAt: number,
+    messageId: string
+  ): boolean {
     if (messageId !== "") {
+      const readBaseline = messageCreatedAt > 0 ? messageCreatedAt : msgAt;
       const rows = [
         ...this.ctx.storage.sql.exec(
-          "SELECT 1 FROM read_receipts WHERE chat_id = ? AND message_id = ? LIMIT 1",
+          "SELECT 1 FROM read_receipts WHERE chat_id = ? AND (message_id = ? OR message_at > ?) LIMIT 1",
           chatId,
-          messageId
+          messageId,
+          readBaseline
         )
       ];
       return rows.length > 0;
@@ -1046,15 +1089,22 @@ export class RegistryRoom implements DurableObject {
         continue;
       }
       const triggers = [
-        ...this.ctx.storage.sql.exec<{ category: string; msg_at: number; message_id: string }>(
-          "SELECT category, msg_at, message_id FROM unread_triggers WHERE chat_id = ? ORDER BY created_at",
+        ...this.ctx.storage.sql.exec<{
+          category: string;
+          msg_at: number;
+          message_id: string;
+          message_created_at: number;
+        }>(
+          "SELECT category, msg_at, message_id, message_created_at FROM unread_triggers WHERE chat_id = ? ORDER BY created_at",
           chatId
         )
       ];
       const unread: Category[] = [];
       for (const t of triggers) {
         const mid = typeof t.message_id === "string" ? t.message_id : "";
-        if (!this.isTriggerRead(chatId, t.msg_at as number, mid)) {
+        const messageCreatedAt =
+          typeof t.message_created_at === "number" ? t.message_created_at : 0;
+        if (!this.isTriggerRead(chatId, t.msg_at as number, messageCreatedAt, mid)) {
           unread.push(t.category as Category);
         }
       }

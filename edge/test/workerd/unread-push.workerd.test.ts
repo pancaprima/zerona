@@ -9,6 +9,7 @@ let tick = 1;
 const hlc = () => `${String(tick++).padStart(13, "0")}-000000-mac`;
 /** Same shape as engine `new_id()` / transcript `SessionMessageEntry.id` (crates/engine/src/lib.rs). */
 const COMPLETION_ENTRY_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+const COMPLETION_ENTRY_ID_2 = "c2c3d4e5-f6a7-8901-bcde-f23456789012";
 const PROGRESS_ENTRY_ID = "b2c3d4e5-f6a7-8901-bcde-f23456789012";
 const session = (status: string, turn: string | null, updatedAt = Date.now()): Op => ({
   kind: "sessions",
@@ -282,6 +283,29 @@ describe("deferred FCM unread push", () => {
     await push(stub, [session("idle", COMPLETION_ENTRY_ID, Date.now())]);
     expect(await triggerMsgId(stub)).toBe(COMPLETION_ENTRY_ID);
     await seen(stub, "desktop-a", "c1", COMPLETION_ENTRY_ID, completionAt);
+    await fastForwardUnread(stub);
+    await runDurableObjectAlarm(stub);
+    expect((await stats(stub)).pushLog).toEqual([]);
+  });
+
+  it("suppresses push when two done triggers exist and only the newer completion was seen", async () => {
+    const stub = room();
+    await registerFcm(stub, "android-1");
+    const firstAt = 1_700_001_000_000;
+    const secondAt = firstAt + 10_000;
+    await seedChat(stub, firstAt, COMPLETION_ENTRY_ID);
+    await push(stub, [session("idle", COMPLETION_ENTRY_ID, firstAt)]);
+    await push(stub, [
+      {
+        kind: "chats",
+        id: "c1",
+        op: "upsert",
+        hlc: hlc(),
+        set: { title: "Fix login", lastMessageAt: secondAt, lastMessageId: COMPLETION_ENTRY_ID_2 }
+      },
+      session("idle", COMPLETION_ENTRY_ID_2, secondAt)
+    ]);
+    await seen(stub, "desktop-a", "c1", COMPLETION_ENTRY_ID_2, secondAt);
     await fastForwardUnread(stub);
     await runDurableObjectAlarm(stub);
     expect((await stats(stub)).pushLog).toEqual([]);
