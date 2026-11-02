@@ -2,7 +2,7 @@ import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test"
 import { describe, expect, it } from "vitest";
 import { AUTH_USER_HEADER } from "../../src/env";
 import type { Op } from "../../src/registry-core";
-import { TRIGGER_MARKER_WINDOW_MS } from "../../src/registry-room";
+import { TRIGGER_MARKER_WINDOW_MS, UNREAD_PUSH_DELAY_MS } from "../../src/registry-room";
 
 const H = { [AUTH_USER_HEADER]: "user" };
 let tick = 1;
@@ -115,6 +115,23 @@ async function triggerMsgId(stub: DurableObjectStub) {
     return [...state.storage.sql.exec("SELECT message_id FROM unread_triggers WHERE chat_id = 'c1'")][0]
       ?.message_id as string;
   });
+}
+async function setUnreadPushDelayEnv(stub: DurableObjectStub, value: string | undefined) {
+  await runInDurableObject(stub, (instance) => {
+    const target = instance as unknown as { env: Record<string, string | undefined> };
+    if (value === undefined) delete target.env.UNREAD_PUSH_DELAY_MS;
+    else target.env = { ...target.env, UNREAD_PUSH_DELAY_MS: value };
+  });
+}
+async function setTriggerAgeMs(stub: DurableObjectStub, ageMs: number) {
+  await runInDurableObject(stub, (_i, state) => {
+    state.storage.sql.exec("UPDATE unread_triggers SET created_at = ?", Date.now() - ageMs);
+  });
+}
+async function enqueueDeferredPush(stub: DurableObjectStub) {
+  await registerFcm(stub, "android-1");
+  await seedChat(stub);
+  await triggerDone(stub);
 }
 
 describe("deferred FCM unread push", () => {
@@ -496,6 +513,78 @@ describe("deferred FCM unread push", () => {
     });
     expect(stored?.message_id).toBe("new");
     expect(stored?.message_at).toBe(t0);
+  });
+});
+
+describe("UNREAD_PUSH_DELAY_MS env", () => {
+  it("defaults to 2 min when unset", async () => {
+    const stub = room();
+    await enqueueDeferredPush(stub);
+    await setTriggerAgeMs(stub, 90_000);
+    await runDurableObjectAlarm(stub);
+    expect((await stats(stub)).pushLog).toEqual([]);
+    await setTriggerAgeMs(stub, UNREAD_PUSH_DELAY_MS + 1_000);
+    await runDurableObjectAlarm(stub);
+    expect((await stats(stub)).pushLog).toHaveLength(1);
+  });
+
+  it("honors '60000' as 1 min", async () => {
+    const stub = room();
+    await enqueueDeferredPush(stub);
+    await setUnreadPushDelayEnv(stub, "60000");
+    await setTriggerAgeMs(stub, 90_000);
+    await runDurableObjectAlarm(stub);
+    expect((await stats(stub)).pushLog).toHaveLength(1);
+  });
+
+  it("falls back to default on empty, garbage, and non-finite values", async () => {
+    const stub = room();
+    await enqueueDeferredPush(stub);
+    await setUnreadPushDelayEnv(stub, "");
+    await setTriggerAgeMs(stub, 90_000);
+    await runDurableObjectAlarm(stub);
+    expect((await stats(stub)).pushLog).toEqual([]);
+
+    const stub2 = room();
+    await enqueueDeferredPush(stub2);
+    await setUnreadPushDelayEnv(stub2, "not-ms");
+    await setTriggerAgeMs(stub2, 90_000);
+    await runDurableObjectAlarm(stub2);
+    expect((await stats(stub2)).pushLog).toEqual([]);
+    await setTriggerAgeMs(stub2, UNREAD_PUSH_DELAY_MS + 1_000);
+    await runDurableObjectAlarm(stub2);
+    expect((await stats(stub2)).pushLog).toHaveLength(1);
+  });
+
+  it("clamps negative values to 0 and huge values to 60 min", async () => {
+    const stub = room();
+    await enqueueDeferredPush(stub);
+    await setUnreadPushDelayEnv(stub, "-500");
+    await setTriggerAgeMs(stub, 0);
+    await runDurableObjectAlarm(stub);
+    expect((await stats(stub)).pushLog).toHaveLength(1);
+
+    const stub2 = room();
+    await enqueueDeferredPush(stub2);
+    await setUnreadPushDelayEnv(stub2, String(9_999_999_999));
+    await setTriggerAgeMs(stub2, 59 * 60 * 1000);
+    await runDurableObjectAlarm(stub2);
+    expect((await stats(stub2)).pushLog).toEqual([]);
+    await setTriggerAgeMs(stub2, 61 * 60 * 1000);
+    await runDurableObjectAlarm(stub2);
+    expect((await stats(stub2)).pushLog).toHaveLength(1);
+  });
+
+  it("re-evaluates delay when the alarm runs after env changes", async () => {
+    const stub = room();
+    await enqueueDeferredPush(stub);
+    await setUnreadPushDelayEnv(stub, String(UNREAD_PUSH_DELAY_MS));
+    await setTriggerAgeMs(stub, 90_000);
+    await runDurableObjectAlarm(stub);
+    expect((await stats(stub)).pushLog).toEqual([]);
+    await setUnreadPushDelayEnv(stub, "60000");
+    await runDurableObjectAlarm(stub);
+    expect((await stats(stub)).pushLog).toHaveLength(1);
   });
 });
 

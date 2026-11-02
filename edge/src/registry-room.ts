@@ -769,12 +769,11 @@ export class RegistryRoom implements DurableObject {
   }
 
   private unreadPushDelayMs(): number {
-    const override = this.getMeta("unreadPushDelayMs");
-    if (override !== undefined && override !== "") {
-      const n = Number(override);
-      if (Number.isFinite(n) && n >= 0) return n;
-    }
-    return UNREAD_PUSH_DELAY_MS;
+    const raw = this.env.UNREAD_PUSH_DELAY_MS;
+    if (raw === undefined || raw.trim() === "") return UNREAD_PUSH_DELAY_MS;
+    const n = Number(raw.trim());
+    if (!Number.isFinite(n)) return UNREAD_PUSH_DELAY_MS;
+    return Math.min(Math.max(n, 0), 60 * 60 * 1000);
   }
 
   private clearUnreadQueue(chatId: string): void {
