@@ -29,6 +29,7 @@ jobs:
   # because an environment gate applies before a job's first step — folding
   # detection into the gated job would ask for approval on every push.
   vault-changes:
+    if: false
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.changed.outputs.changed }}
@@ -52,8 +53,8 @@ jobs:
           fi
 
   vault:
+    if: false
     needs: vault-changes
-    if: needs.vault-changes.outputs.changed == 'true'
     runs-on: ubuntu-latest
     environment: vault-production
     env:
@@ -79,17 +80,6 @@ jobs:
         run: npx wrangler deploy
 
   edge:
-    # The edge's VAULT service binding needs the vault worker to exist, so a
-    # vault change deploys (and is approved) first. A skipped vault job (no
-    # vault change) must not block the edge: `!cancelled()` replaces the
-    # implicit success() gate, then we allow exactly success or skipped — a
-    # failed or rejected vault deploy, or failed change detection, stops the
-    # edge too.
-    needs: [vault-changes, vault]
-    if: >-
-      !cancelled()
-      && needs.vault-changes.result == 'success'
-      && (needs.vault.result == 'success' || needs.vault.result == 'skipped')
     runs-on: ubuntu-latest
     env:
       # `secrets` is not a valid context in step `if:` expressions — surface
@@ -135,10 +125,11 @@ jobs:
       - name: deploy
         if: steps.changed.outputs.changed == 'true' && env.CLOUDFLARE_API_TOKEN != ''
         working-directory: edge
-        run: npx wrangler deploy
+        run: npx wrangler deploy -c wrangler.zerona.jsonc
 
   # Static landing page (zeron.sh) — assets-only worker, no build step.
   landing:
+    if: false
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -175,6 +166,7 @@ jobs:
 
   # www.zeron.sh → zeron.sh 301 (see apps/www-redirect/wrangler.jsonc).
   www-redirect:
+    if: false
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

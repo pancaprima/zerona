@@ -438,6 +438,22 @@ impl CoreClient {
         .await
     }
 
+    /// Report the newest message actually shown on screen for deferred unread push.
+    pub async fn report_message_seen(
+        &self,
+        chat_id: String,
+        message_id: String,
+        message_at_ms: i64,
+    ) -> CoreResult<()> {
+        let client = self.client.clone();
+        on_runtime(async move {
+            client
+                .report_message_seen(&chat_id, &message_id, message_at_ms)
+                .await
+        })
+        .await
+    }
+
     /// Stop session notifications to this device.
     pub async fn unregister_push_target(&self) -> CoreResult<()> {
         let client = self.client.clone();

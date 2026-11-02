@@ -1198,6 +1198,11 @@ public protocol CoreClientProtocol: AnyObject, Sendable {
     
     func renameSession(chatId: String, title: String) throws 
     
+    /**
+     * Report the newest message actually shown on screen for deferred unread push.
+     */
+    func reportMessageSeen(chatId: String, messageId: String, messageAtMs: Int64) async throws 
+    
     func search(query: String, limit: UInt32)  -> [SearchHit]
     
     /**
@@ -2027,6 +2032,25 @@ open func renameSession(chatId: String, title: String)throws   {try rustCallWith
         FfiConverterString.lower(title),uniffiCallStatus
     )
 }
+}
+    
+    /**
+     * Report the newest message actually shown on screen for deferred unread push.
+     */
+open func reportMessageSeen(chatId: String, messageId: String, messageAtMs: Int64)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_zeron_mobile_fn_method_coreclient_report_message_seen(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(chatId),FfiConverterString.lower(messageId),FfiConverterInt64.lower(messageAtMs)
+                )
+            },
+            pollFunc: ffi_zeron_mobile_rust_future_poll_void,
+            completeFunc: ffi_zeron_mobile_rust_future_complete_void,
+            freeFunc: ffi_zeron_mobile_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
 }
     
 open func search(query: String, limit: UInt32) -> [SearchHit]  {
@@ -2918,6 +2942,11 @@ public protocol LayoutFrameProtocol: AnyObject, Sendable {
     func rowCount()  -> UInt32
     
     /**
+     * Owning transcript entry id for a row (`None` for non-message rows).
+     */
+    func rowEntryId(index: UInt32)  -> String?
+    
+    /**
      * Rows intersecting `[y0, y1)`.
      */
     func rowsIn(y0: Float, y1: Float)  -> [RowPlacement]
@@ -3090,6 +3119,19 @@ open func rowCount() -> UInt32  {
         uniffiCallStatus in
     uniffi_zeron_mobile_fn_method_layoutframe_row_count(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Owning transcript entry id for a row (`None` for non-message rows).
+     */
+open func rowEntryId(index: UInt32) -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_zeron_mobile_fn_method_layoutframe_row_entry_id(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(index),uniffiCallStatus
     )
 })
 }
@@ -3884,6 +3926,11 @@ public protocol SessionHandleProtocol: AnyObject, Sendable {
     func markSeen() 
     
     /**
+     * Epoch millis for a transcript entry (`SessionMessageEntry.created_at`).
+     */
+    func messageCreatedAtMs(messageId: String)  -> Int64?
+    
+    /**
      * Plain text of one entry's text parts (copy / share).
      */
     func messageText(entryId: String)  -> String?
@@ -4098,6 +4145,19 @@ open func markSeen()  {try! rustCall() {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+    
+    /**
+     * Epoch millis for a transcript entry (`SessionMessageEntry.created_at`).
+     */
+open func messageCreatedAtMs(messageId: String) -> Int64?  {
+    return try!  FfiConverterOptionInt64.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_zeron_mobile_fn_method_sessionhandle_message_created_at_ms(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(messageId),uniffiCallStatus
+    )
+})
 }
     
     /**
@@ -20000,6 +20060,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_zeron_mobile_checksum_method_coreclient_rename_session() != 49666) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_zeron_mobile_checksum_method_coreclient_report_message_seen() != 43261) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_zeron_mobile_checksum_method_coreclient_search() != 33140) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -20180,6 +20243,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_zeron_mobile_checksum_method_sessionhandle_mark_seen() != 7987) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_zeron_mobile_checksum_method_sessionhandle_message_created_at_ms() != 46781) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_zeron_mobile_checksum_method_sessionhandle_message_text() != 60913) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -20259,6 +20325,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_zeron_mobile_checksum_method_layoutframe_row_count() != 53856) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_zeron_mobile_checksum_method_layoutframe_row_entry_id() != 63152) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_zeron_mobile_checksum_method_layoutframe_rows_in() != 18475) {

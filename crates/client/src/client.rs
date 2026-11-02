@@ -1366,6 +1366,41 @@ impl Client {
         Ok(())
     }
 
+    /// Tell the registry the newest message this device has actually shown for
+    /// `chat_id` (`message_at_ms` is the message's client timestamp, same domain
+    /// as chat `lastMessageAt`).
+    pub async fn report_message_seen(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+        message_at_ms: i64,
+    ) -> Result<()> {
+        let Some(live) = self.inner.live() else {
+            return Ok(());
+        };
+        let url = crate::live::urls::registry_seen(
+            &live.edge,
+            self.inner.credentials.org_id(),
+            &self.inner.config.device_id,
+        );
+        let token_value = self.inner.tokens.bearer().await?;
+        let body = crate::live::urls::seen_report_body(chat_id, message_id, message_at_ms);
+        let response = crate::auth::http()
+            .post(url)
+            .bearer_auth(token_value)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ClientError::Network(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(ClientError::HostError(format!(
+                "seen report http {}",
+                response.status()
+            )));
+        }
+        Ok(())
+    }
+
     /// Stop notifications to this device (sign-out, turned off).
     pub async fn unregister_push_target(&self) -> Result<()> {
         let Some(live) = self.inner.live() else {

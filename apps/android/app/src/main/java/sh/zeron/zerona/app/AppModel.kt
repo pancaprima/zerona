@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
@@ -91,6 +92,7 @@ class AppModel(
 ) : ViewModel() {
     companion object {
         private const val APP_VERSION = "0.1.0-m3a"
+        private const val APP_MODEL_LOG_TAG = "AppModel"
 
         fun factory(context: Context): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
@@ -125,6 +127,11 @@ class AppModel(
     private var pendingExchange: AuthExchange? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var processLifecycleRegistered = false
+
+    @Volatile
+    private var processInForeground = false
+
+    fun isProcessInForeground(): Boolean = processInForeground
 
     private val sessionPushPrefs =
         PushPrefs(done = true, input = true, failed = true)
@@ -571,6 +578,7 @@ class AppModel(
         ProcessLifecycleOwner.get().lifecycle.addObserver(
             object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) {
+                    processInForeground = true
                     val c = client
                     if (c != null && !c.isDemo()) {
                         c.onForeground()
@@ -578,6 +586,7 @@ class AppModel(
                 }
 
                 override fun onStop(owner: LifecycleOwner) {
+                    processInForeground = false
                     val c = client
                     if (c != null && !c.isDemo()) {
                         c.onBackground()
@@ -729,6 +738,29 @@ class AppModel(
     private fun tryRegisterStoredFcmToken() {
         val token = FcmTokenStore.getToken(appContext) ?: return
         registerFcmIfReady(token)
+    }
+
+    fun reportMessageSeen(
+        chatId: String,
+        messageId: String,
+        messageAtMs: Long,
+    ) {
+        val core = client ?: return
+        if (_state.value.isDemo || !_state.value.signedIn) return
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.Default) {
+                    core.reportMessageSeen(chatId, messageId, messageAtMs)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(
+                    APP_MODEL_LOG_TAG,
+                    "Seen report failed (${e.javaClass.simpleName})",
+                )
+            }
+        }
     }
 
     private fun registerFcmIfReady(token: String) {

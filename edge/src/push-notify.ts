@@ -59,6 +59,24 @@ export const notificationFor = (before: Row | undefined, after: Row, now: number
 export const bodyFor = (category: Category): string =>
   category === "done" ? "Run finished" : category === "input" ? "Waiting on your input" : "Run failed";
 
+/** Summary ordering: most urgent category first (input > failed > done). */
+export const CATEGORY_URGENCY: Category[] = ["input", "failed", "done"];
+
+export const mostUrgentCategory = (categories: Category[]): Category => {
+  for (const c of CATEGORY_URGENCY) {
+    if (categories.includes(c)) return c;
+  }
+  return categories[0] ?? "done";
+};
+
+/** One trigger → same copy as today; several → "N updates: …" with unique categories in urgency order. */
+export const summaryBodyFor = (categories: Category[]): string => {
+  const unique = CATEGORY_URGENCY.filter((c) => categories.includes(c));
+  if (unique.length <= 1) return bodyFor(unique[0] ?? categories[0] ?? "done");
+  const labels = unique.map((c) => bodyFor(c));
+  return `${categories.length} updates: ${labels.join(", ")}`;
+};
+
 /** Title from the chat row; side chats and archived chats never notify. */
 export const chatForNotification = (chat: Row | undefined): { title: string } | null => {
   if (chat?.deleted) return null;
@@ -104,3 +122,13 @@ export const fcmPayload = (chatId: string, title: string, category: Category) =>
   data: { chatId, category },
   android: { notification: { channel_id: "sessions" } }
 });
+
+/** Deferred FCM send: summary body + most-urgent category in the data payload. */
+export const fcmPayloadSummary = (chatId: string, title: string, categories: Category[]) => {
+  const category = mostUrgentCategory(categories);
+  return {
+    notification: { title, body: summaryBodyFor(categories) },
+    data: { chatId, category },
+    android: { notification: { channel_id: "sessions" } }
+  };
+};

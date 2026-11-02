@@ -1,0 +1,59 @@
+{
+  // Zerona/Prima edge deploy config (CI: wrangler deploy -c wrangler.zerona.jsonc).
+  // Non-secret settings match live /root/zeron/edge/wrangler.jsonc — not upstream comet-native-edge.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "zerona-edge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "account_id": "25385d7655b75ef9a68e19d17d940339",
+  "workers_dev": true,
+  "routes": [],
+  "rules": [{ "type": "Text", "globs": ["**/*.sh"], "fallthrough": true }],
+  "alias": {
+    "loro-crdt": "loro-crdt/base64"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SESSION_ROOMS", "class_name": "SessionRoom" },
+      { "name": "DEVICE_ROOMS", "class_name": "DeviceRoom" },
+      { "name": "PREVIEW_ROOMS", "class_name": "PreviewRoom" },
+      { "name": "REGISTRY_ROOMS", "class_name": "RegistryRoom" },
+      { "name": "CHAT_ROOMS", "class_name": "ChatRoom" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SessionRoom", "DeviceRoom"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["RegistryRoom"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["ChatRoom"]
+    },
+    { "tag": "v4", "new_sqlite_classes": ["PreviewRoom"] }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BLOBS",
+      "bucket_name": "zerona-blobs"
+    },
+    {
+      "binding": "RELEASES",
+      "bucket_name": "zerona-releases"
+    }
+  ],
+  "vars": {
+    "WORKOS_CLIENT_ID": "client_01M5MQRDER15D2DWMP40MCRXRH",
+    "AUTH_MODE": "workos",
+    "WORKOS_ISSUER": "https://api.workos.com/user_management/client_01M5MQQJDGF0WXVBRT08HCEDM3",
+    "WORKOS_JWKS_URL": "https://api.workos.com/sso/jwks/client_01M5MQQJDGF0WXVBRT08HCEDM3"
+  },
+  "keep_vars": true,
+  "observability": {
+    "enabled": true
+  }
+}

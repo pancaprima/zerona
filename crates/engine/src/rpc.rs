@@ -694,6 +694,13 @@ enum MutateParams {
         #[serde(default)]
         at: Option<i64>,
     },
+    /// Per-device read receipt for deferred unread push (message actually on screen).
+    #[serde(rename_all = "camelCase")]
+    ReportMessageSeen {
+        chat_id: String,
+        message_id: String,
+        message_at_ms: i64,
+    },
 }
 
 #[derive(Clone)]
@@ -1789,6 +1796,14 @@ impl EngineRpc {
                     .mark_chat_seen(&chat_id, at)
                     .map_err(failed)
                     .map(drop)
+            }
+            MutateParams::ReportMessageSeen {
+                chat_id,
+                message_id,
+                message_at_ms,
+            } => {
+                self.workspace.report_message_seen(&chat_id, &message_id, message_at_ms);
+                Ok(())
             }
         }
     }

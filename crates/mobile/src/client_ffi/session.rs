@@ -493,6 +493,12 @@ impl SessionHandle {
         }
     }
 
+    /// Epoch millis for a transcript entry (`SessionMessageEntry.created_at`).
+    pub fn message_created_at_ms(&self, message_id: String) -> Option<i64> {
+        let snap = self.inner.snapshot();
+        snap.entry(&message_id).map(|e| e.message.created_at)
+    }
+
     /// Plain text of one entry's text parts (copy / share).
     pub fn message_text(&self, entry_id: String) -> Option<String> {
         let snap = self.inner.snapshot();

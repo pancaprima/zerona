@@ -63,6 +63,8 @@ export interface Env {
   BOAT_API_BASE?: string;
   /** Idle minutes before an unused Cloud session sleeps (default 20). */
   CLOUD_IDLE_MINUTES?: string;
+  /** Deferred FCM unread summary delay in ms (default 2 min; clamped 0–1 h). */
+  UNREAD_PUSH_DELAY_MS?: string;
   /** Credits a user gets the first time they turn Cloud on (default 0). */
   CLOUD_STARTING_CREDITS?: string;
   /** Provider billable seconds per credit (default 60): set to what the
