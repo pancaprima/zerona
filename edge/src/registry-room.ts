@@ -48,7 +48,7 @@ import {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Android deferred push: one summary per chat after this delay unless read first. */
-export const UNREAD_PUSH_DELAY_MS = 5 * 60 * 1000;
+export const UNREAD_PUSH_DELAY_MS = 2 * 60 * 1000;
 /** After enqueue, bump trigger msg_at when chat lastMessageAt rises within this window. */
 export const TRIGGER_MARKER_WINDOW_MS = 30_000;
 /** Tombstones older than this are purged; cursors from before the purge

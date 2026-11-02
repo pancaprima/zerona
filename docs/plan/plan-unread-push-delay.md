@@ -6,7 +6,7 @@ Requested by: Prima via Rora (T2 spec), confirmed directly by Prima on 2026-10-2
 ## Behavior (spec)
 - Triggers: a chat run finishes (`done`), fails (`failed`) or needs input (`input`).
 - A message counts as **read** only once that exact message has been shown on screen on desktop or on the phone. The app being open is not enough.
-- 5 minutes after the triggering message, if it is still unread on **both** devices, send **one** push to the phone for that chat, summarizing all its unread triggers. If it is read on either device first, send nothing.
+- 2 minutes after the triggering message, if it is still unread on **both** devices, send **one** push to the phone for that chat, summarizing all its unread triggers. If it is read on either device first, send nothing.
 - Replaces the current instant push for done / failed / input. Tap opens the chat (existing). Android only, existing Firebase (FCM) path.
 
 ## Decisions (analysis: `registry-room.ts`, `push-notify.ts`, `chat-room.ts`, clients)
@@ -21,7 +21,7 @@ Requested by: Prima via Rora (T2 spec), confirmed directly by Prima on 2026-10-2
 9. Stale guard (`SESSION_STALE_MS`) is applied at enqueue time (same as today), not again at send time.
 
 ## Work breakdown (one branch, reviewed in commits)
-1. **Edge** (`edge/src/registry-room.ts`, `push-notify.ts`, tests): queue + `/seen` + multi-job alarm + deferred FCM send. Tests (workerd + unit): read on desktop before 5 min -> no push; read on phone -> no push; unread on both -> exactly one push per chat; several messages -> one push; daily cleanup still runs; iOS target still instant.
+1. **Edge** (`edge/src/registry-room.ts`, `push-notify.ts`, tests): queue + `/seen` + multi-job alarm + deferred FCM send. Tests (workerd + unit): read on desktop before 2 min -> no push; read on phone -> no push; unread on both -> exactly one push per chat; several messages -> one push; daily cleanup still runs; iOS target still instant.
 2. **Client plumbing** (`crates/client`): `report_message_seen(chat_id, message_id, message_at_ms)` + URL helper + UniFFI export.
 3. **Android** (`apps/android`): report newest rendered message from the session transcript (not just `setViewAttached`).
 4. **Desktop** (`crates/ui`, engine RPC): report newest rendered transcript item for the selected chat in the focused window.
@@ -43,7 +43,7 @@ Source: Rora's T2 message (the referenced `specs/T2-unread-push.md` is not in th
 1. Read marks sent by BOTH clients, desktop (Rust) and Android (Kotlin): id of the exact message once actually on screen. -> Android + Rust client done (phase 2a, `POST /seen`); **desktop pending (phase 2b)**.
 2. Single alarm = earliest of pending push or next daily cleanup; pending pushes persisted in storage. -> done (`unread_triggers` SQLite table, `scheduleAlarm`).
 3. No double pushes: mark each push as sent BEFORE it goes out (alarms can fire twice); a newer message in the same chat updates the pending push instead of adding a second. -> queue is cleared before sending and coalesced per chat; workerd test **alarm fired twice -> one push** (`unread-push.workerd.test.ts`).
-4. Tests: read on desktop <5 min (no push), read on phone (no push), unread on both (one push), several messages (one push), daily cleanup still runs. -> edge workerd tests exist (`unread-push.workerd.test.ts`).
+4. Tests: read on desktop <2 min (no push), read on phone (no push), unread on both (one push), several messages (one push), daily cleanup still runs. -> edge workerd tests exist (`unread-push.workerd.test.ts`).
 
 ## Coordination note
 Owner of T2 implementation: the Discord Asa session (Prima's direct go-ahead 2026-10-27). An earlier local-only attempt exists on branch `feature/unread-chat-push` (worktree `/root/zerona-unread-push`, new `chat-sync-room.ts`); it is NOT used. Do not edit `/root/zerona` from parallel sessions.
