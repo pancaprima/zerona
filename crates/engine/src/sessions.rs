@@ -1397,7 +1397,7 @@ impl SessionsEngine {
         immediate: bool,
         issued_at: i64,
     ) -> Result<SteerOutcome, EngineError> {
-        self.steer_with(chat_id, prompt, Vec::new(), message_id, issued_at)
+        self.steer_with(chat_id, prompt, Vec::new(), message_id, immediate, issued_at)
             .await
     }
 
@@ -1410,6 +1410,7 @@ impl SessionsEngine {
         prompt: &str,
         attachments: Vec<String>,
         message_id: Option<String>,
+        immediate: bool,
         issued_at: i64,
     ) -> Result<SteerOutcome, EngineError> {
         let target = lock(&self.inner.runs)
@@ -1559,6 +1560,7 @@ impl SessionsEngine {
                         &steer.prompt,
                         attachments,
                         Some(steer.message_id),
+                        false,
                         now_ms(),
                     )
                     .await?;
@@ -1567,7 +1569,7 @@ impl SessionsEngine {
                 }
             }
         }
-        self.steer_with(chat_id, prompt, attachments, message_id, issued_at)
+        self.steer_with(chat_id, prompt, attachments, message_id, true, issued_at)
             .await
     }
 
