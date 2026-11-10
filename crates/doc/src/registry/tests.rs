@@ -266,6 +266,8 @@ fn chat(id: &str, device_id: &str) -> Chat {
             reasoning: None,
             model_options: Default::default(),
             sandbox: SandboxLevel::WorkspaceWrite,
+            access: Default::default(),
+            plan: false,
         }),
         last_message_preview: None,
         last_message_at: None,
@@ -274,9 +276,11 @@ fn chat(id: &str, device_id: &str) -> Chat {
         harness_session_cwd: None,
         harness_session_harness: None,
         parent_chat_id: Some("parent-chat".into()),
+        child_kind: None,
         space_id: None,
         last_seen_at: None,
         room_gen: None,
+        sleep: None,
     }
 }
 
@@ -291,6 +295,7 @@ fn space(id: &str, device_id: &str, path: &str) -> Space {
         checkout_id: None,
         repository_id: None,
         github_repo: None,
+        icon: None,
         created_at: ts(1_500),
     }
 }
@@ -301,12 +306,39 @@ fn session(chat_id: &str, device_id: &str, status: SessionStatus) -> Session {
         last_turn_outcome: None,
         terminal_activity: None,
         running_subagents: 0,
+        background_tasks: Vec::new(),
         chat_id: chat_id.into(),
         device_id: device_id.into(),
         status,
         started_at: Some(ts(3_000)),
         updated_at: ts(3_500),
+        waiting: None,
     }
+}
+
+#[test]
+fn background_processes_replicate_and_clear() {
+    let mut host = RegistryDoc::new("host");
+    let mut viewer = RegistryDoc::new("viewer");
+    let mut row = session("chat", "host", SessionStatus::Idle);
+    row.background_tasks = vec![zeron_proto::BackgroundTask {
+        id: "bgsh".into(),
+        command: "npm run dev".into(),
+        description: Some("Start the dev server".into()),
+        started_at: ts(3_100),
+    }];
+    host.upsert_session(&row).unwrap();
+    let mut server = HashMap::new();
+    let mut seq = 0;
+    server_round(&mut server, &mut seq, &mut [&mut host, &mut viewer]);
+    assert_eq!(viewer.read_sessions().unwrap(), vec![row.clone()]);
+
+    // Every process ended: an empty list replaces the old one.
+    row.background_tasks.clear();
+    row.updated_at = ts(3_600);
+    host.upsert_session(&row).unwrap();
+    server_round(&mut server, &mut seq, &mut [&mut host, &mut viewer]);
+    assert_eq!(viewer.read_sessions().unwrap(), vec![row]);
 }
 
 #[test]
@@ -595,6 +627,43 @@ fn delete_chat_tombstones_row_and_session() {
     assert!(ws.read_chats().unwrap().is_empty());
     assert!(ws.read_sessions().unwrap().is_empty());
     assert!(!ws.delete_chat("chat-1").unwrap());
+}
+
+#[test]
+fn a_space_icon_is_set_whole_survives_upserts_and_clears() {
+    use zeron_proto::SpaceIcon;
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.upsert_space(&space("sp-1", "dev-a", "/home/u/project")).unwrap();
+    assert_eq!(ws.space("sp-1").unwrap().unwrap().icon, None);
+
+    let emoji = SpaceIcon { emoji: Some("🚀".into()), image: None, hue: Some("violet".into()) };
+    assert!(ws.set_space_icon("sp-1", Some(&emoji)).unwrap());
+    assert_eq!(ws.space("sp-1").unwrap().unwrap().icon, Some(emoji));
+
+    // Another kind replaces it whole: no emoji left beside the image.
+    let image = SpaceIcon { emoji: None, image: Some("https://edge.test/auth/avatars/ab".into()), hue: None };
+    assert!(ws.set_space_icon("sp-1", Some(&image)).unwrap());
+    assert_eq!(ws.space("sp-1").unwrap().unwrap().icon, Some(image.clone()));
+
+    // An upsert of the row without one (a re-seed, a create) leaves it.
+    ws.upsert_space(&space("sp-1", "dev-a", "/home/u/project")).unwrap();
+    assert_eq!(ws.space("sp-1").unwrap().unwrap().icon, Some(image));
+
+    assert!(ws.set_space_icon("sp-1", None).unwrap());
+    assert_eq!(ws.space("sp-1").unwrap().unwrap().icon, None);
+    assert!(!ws.set_space_icon("nope", None).unwrap());
+}
+
+#[test]
+fn a_malformed_space_icon_is_no_icon_not_a_lost_row() {
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.upsert_space(&space("sp-1", "dev-a", "/home/u/project")).unwrap();
+    // (As a newer or broken writer might leave it.)
+    ws.write(KIND_SPACES, "sp-1", OpKind::Update, fields([("icon", json!("🚀"))]));
+    let row = ws.space("sp-1").unwrap().expect("the row stays");
+    assert_eq!(row.icon, None);
+    ws.write(KIND_SPACES, "sp-1", OpKind::Update, fields([("icon", json!({ "image": "file:///etc/passwd" }))]));
+    assert_eq!(ws.space("sp-1").unwrap().unwrap().icon, None);
 }
 
 #[test]
@@ -1733,6 +1802,36 @@ fn side_chat_origin_syncs_and_survives_updates_and_restart() {
     );
 }
 
+#[test]
+fn a_child_kind_syncs_and_survives_updates_and_restart() {
+    let mut a = RegistryDoc::new("dev-a");
+    let mut b = RegistryDoc::new("dev-b");
+    let mut sub = chat("sub", "dev-a");
+    sub.parent_chat_id = Some("main".into());
+    sub.child_kind = Some(zeron_proto::ChildKind::Subagent);
+    a.upsert_chat(&sub).unwrap();
+    // A person's side chat records none.
+    let mut side = chat("side", "dev-a");
+    side.parent_chat_id = Some("main".into());
+    a.upsert_chat(&side).unwrap();
+    let mut server = HashMap::new();
+    let mut seq = 0;
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    assert_eq!(b.chat("sub").unwrap(), Some(sub.clone()));
+    assert_eq!(b.chat("side").unwrap().unwrap().child_kind, None);
+    b.rename_chat("sub", "Survey the tests").unwrap();
+    server_round(&mut server, &mut seq, &mut [&mut a, &mut b]);
+    assert_eq!(
+        a.chat("sub").unwrap().unwrap().child_kind,
+        Some(zeron_proto::ChildKind::Subagent)
+    );
+    let restored = RegistryDoc::from_bytes(&a.to_bytes().unwrap(), "dev-a").unwrap();
+    assert_eq!(
+        restored.chat("sub").unwrap().unwrap().child_kind,
+        Some(zeron_proto::ChildKind::Subagent)
+    );
+}
+
 // ── bounded pending: local-only folding and tail coalescing ─────────────────
 
 /// Deterministic xorshift — random op shapes without a rand dependency.
@@ -2374,4 +2473,77 @@ fn a_deleted_device_row_reads_as_deleted_not_unknown() {
     back.last_seen_at = Some(ts(9_000));
     ws.upsert_device(&back).unwrap();
     assert!(!ws.device_deleted("cloud-1"));
+}
+
+#[test]
+fn a_chat_sleeps_wakes_once_and_clears() {
+    use zeron_proto::{ChatSleep, SleepState};
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+    assert!(!ws.wake_chat("chat-1", ts(2_000)).unwrap(), "nothing to wake");
+
+    assert!(ws.set_chat_sleep("chat-1", Some(ts(9_000)), ts(1_000)).unwrap());
+    let sleep = ws.chat("chat-1").unwrap().unwrap().sleep;
+    assert_eq!(sleep, Some(ChatSleep { until: ts(9_000), at: ts(1_000), woke_at: None }));
+
+    // Woken early, once.
+    assert!(ws.wake_chat("chat-1", ts(3_000)).unwrap());
+    assert!(!ws.wake_chat("chat-1", ts(4_000)).unwrap(), "the first wake is the one shown");
+    let woke = ws.chat("chat-1").unwrap().unwrap();
+    assert_eq!(woke.sleep.as_ref().unwrap().woke_at, Some(ts(3_000)));
+    assert_eq!(woke.sleep_state(ts(3_500)), SleepState::Woke { at: ts(3_000) });
+
+    // Put to sleep again: a fresh sleep, the old wake gone. Cleared: awake.
+    assert!(ws.set_chat_sleep("chat-1", Some(ts(20_000)), ts(5_000)).unwrap());
+    assert_eq!(ws.chat("chat-1").unwrap().unwrap().sleep.unwrap().woke_at, None);
+    assert!(ws.set_chat_sleep("chat-1", None, ts(6_000)).unwrap());
+    assert_eq!(ws.chat("chat-1").unwrap().unwrap().sleep, None);
+    assert!(!ws.set_chat_sleep("missing", Some(ts(9_000)), ts(1_000)).unwrap());
+}
+
+#[test]
+fn a_sleep_set_on_one_device_and_a_wake_on_its_host_both_land() {
+    let mut host = RegistryDoc::new("host");
+    let mut viewer = RegistryDoc::new("viewer");
+    host.upsert_chat(&chat("chat-1", "host")).unwrap();
+    let mut server = HashMap::new();
+    let mut seq = 0;
+    server_round(&mut server, &mut seq, &mut [&mut host, &mut viewer]);
+    assert!(viewer.set_chat_sleep("chat-1", Some(ts(90_000)), ts(1_000)).unwrap());
+    server_round(&mut server, &mut seq, &mut [&mut host, &mut viewer]);
+    assert_eq!(host.chat("chat-1").unwrap().unwrap().sleep.unwrap().until, ts(90_000));
+    // (Later than the sleep, as a wake always is: the same millisecond
+    // settles by device, and "viewer" would take the tie.)
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    assert!(host.wake_chat("chat-1", ts(2_000)).unwrap());
+    server_round(&mut server, &mut seq, &mut [&mut host, &mut viewer]);
+    let seen = viewer.chat("chat-1").unwrap().unwrap().sleep.unwrap();
+    assert_eq!((seen.until, seen.woke_at), (ts(90_000), Some(ts(2_000))));
+}
+
+#[test]
+fn a_wait_replicates_and_an_unreadable_one_costs_only_the_wait() {
+    let mut host = RegistryDoc::new("host");
+    let mut viewer = RegistryDoc::new("viewer");
+    let mut row = session("chat", "host", SessionStatus::Idle);
+    row.waiting = Some(zeron_proto::SessionWaiting {
+        since: ts(3_000),
+        on: vec![zeron_proto::WaitingOn {
+            id: "bn1".into(),
+            kind: zeron_proto::WaitingKind::Agent,
+            label: "Review the diff".into(),
+        }],
+    });
+    host.upsert_session(&row).unwrap();
+    let mut server = HashMap::new();
+    let mut seq = 0;
+    server_round(&mut server, &mut seq, &mut [&mut host, &mut viewer]);
+    assert_eq!(viewer.read_sessions().unwrap(), vec![row.clone()]);
+
+    // A newer peer's shape this build can't read: the row stays, waitless.
+    host.write(KIND_SESSIONS, "chat", OpKind::Update, fields([("waiting", json!({ "since": "soon" }))]));
+    server_round(&mut server, &mut seq, &mut [&mut host, &mut viewer]);
+    let read = viewer.read_sessions().unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].waiting, None);
 }

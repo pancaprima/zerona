@@ -91,6 +91,10 @@ struct DocPartJson {
     questions: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolved: Option<bool>,
+    /// What an input part's questions were answered (additive): presence is
+    /// the record — `[]` when they closed unanswered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    answers: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     message: Option<String>,
     /// Fork seam (`kind: "fork"`, additive): the chat the history above was
@@ -138,6 +142,17 @@ struct DocPartJson {
     /// One-line live tail of the subagent's output (additive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     subagent_tail: Option<String>,
+    /// A command's exit status (additive; command tools only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i32>,
+    /// `output` is the END of a longer command output (additive; written
+    /// only when true): the UI says earlier output was trimmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_truncated: Option<bool>,
+    /// Lines in the whole command output (additive; only with
+    /// `outputTruncated`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_lines: Option<u64>,
 }
 
 /// App parts → doc part json (mirror of `toDocParts`).
@@ -190,6 +205,9 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             subagent_ref,
             subagent_status,
             subagent_tail,
+            exit_code,
+            output_truncated,
+            output_lines,
         } => DocPartJson {
             id: id.clone(),
             kind: "tool".into(),
@@ -213,6 +231,9 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
                 .to_owned()
             }),
             subagent_tail: subagent_tail.clone(),
+            exit_code: *exit_code,
+            output_truncated: output_truncated.then_some(true),
+            output_lines: *output_lines,
             ..Default::default()
         },
         MessagePart::Input {
@@ -220,11 +241,13 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             request_id,
             questions,
             resolved,
+            answers,
         } => DocPartJson {
             id: request_id.clone(),
             kind: "input".into(),
             questions: Some(serde_json::to_value(questions)?),
             resolved: Some(*resolved),
+            answers: answers.as_ref().map(serde_json::to_value).transpose()?,
             ..Default::default()
         },
         MessagePart::Error { id, message } => DocPartJson {
@@ -297,6 +320,9 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
                     _ => None,
                 }),
                 subagent_tail: p.subagent_tail,
+                exit_code: p.exit_code,
+                output_truncated: p.output_truncated.unwrap_or(false),
+                output_lines: p.output_lines,
             },
             None => MessagePart::Text {
                 id: p.id,
@@ -311,6 +337,7 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
                 .and_then(|q| serde_json::from_value(q).ok())
                 .unwrap_or_default(),
             resolved: p.resolved.unwrap_or(false),
+            answers: p.answers.and_then(|a| serde_json::from_value(a).ok()),
         },
         "error" => MessagePart::Error {
             id: p.id,
@@ -808,12 +835,17 @@ impl SessionDoc {
         Ok(false)
     }
 
-    /// Mark the input part carrying `request_id` resolved, wherever it lives
-    /// (input parts store the request id as their part id). The live-run path
-    /// resolves through the entry fold; this direct write is for answers to a
-    /// question whose run already died — no fold owns the entry anymore.
-    /// Returns `false` when no such part exists.
-    pub fn resolve_input(&self, request_id: &str) -> Result<bool, DocError> {
+    /// Mark the input part carrying `request_id` resolved with `answers`,
+    /// wherever it lives (input parts store the request id as their part
+    /// id). The live-run path resolves through the entry fold; this direct
+    /// write is for answers to a question whose run already died — no fold
+    /// owns the entry anymore. Empty `answers` record the questions closed
+    /// unanswered. Returns `false` when no such part exists.
+    pub fn resolve_input(
+        &self,
+        request_id: &str,
+        answers: &[zeron_proto::UserInputAnswer],
+    ) -> Result<bool, DocError> {
         let messages = self.doc.get_list("messages");
         for i in 0..messages.len() {
             let Some(loro::ValueOrContainer::Container(loro::Container::Map(entry))) =
@@ -842,6 +874,10 @@ impl SessionDoc {
                 );
                 if is_input && id_matches {
                     part.insert("resolved", true)?;
+                    part.insert(
+                        "answers",
+                        loro_value_from_json(&serde_json::to_value(answers)?),
+                    )?;
                     self.doc.commit();
                     return Ok(true);
                 }
@@ -862,6 +898,36 @@ impl SessionDoc {
         status: Option<&str>,
         tail: Option<&str>,
     ) -> Result<bool, DocError> {
+        // Genus gate: subagent lifecycle only ever lands on a SPAWN call.
+        // Mis-keyed tagged traffic (a driver bug — claude's background shells
+        // settled through the subagent subtype, 2026-08-20) must not decorate
+        // an ordinary chip with a ref to a doc it never had.
+        let Some(part) = self.newest_tool_part(part_id).filter(is_spawn_part) else {
+            return Ok(false);
+        };
+        if let Some(r) = subagent_ref {
+            part.insert("subagentRef", r)?;
+        }
+        if let Some(s) = status {
+            part.insert("subagentStatus", s)?;
+        }
+        if let Some(t) = tail {
+            part.insert("subagentTail", t)?;
+        }
+        self.doc.commit();
+        Ok(true)
+    }
+
+    /// Whether `part_id` is one of this doc's subagent SPAWN chips, the only
+    /// part a subagent doc may hang off (same lookup and gate as
+    /// [`Self::update_subagent_chip`]).
+    pub fn has_subagent_spawn(&self, part_id: &str) -> bool {
+        self.newest_tool_part(part_id)
+            .is_some_and(|part| is_spawn_part(&part))
+    }
+
+    /// The tool part with this id, searched from the NEWEST entry back.
+    fn newest_tool_part(&self, part_id: &str) -> Option<LoroMap> {
         let messages = self.doc.get_list("messages");
         for i in (0..messages.len()).rev() {
             let Some(loro::ValueOrContainer::Container(loro::Container::Map(entry))) =
@@ -889,37 +955,11 @@ impl SessionDoc {
                     Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == part_id
                 );
                 if is_tool && id_matches {
-                    // Genus gate: subagent lifecycle only ever lands on a
-                    // SPAWN call. Mis-keyed tagged traffic (a driver bug —
-                    // claude's background shells settled through the
-                    // subagent subtype, 2026-08-20) must not decorate an
-                    // ordinary chip with a ref to a doc it never had.
-                    let is_spawn = part
-                        .get("call")
-                        .and_then(|v| match v {
-                            loro::ValueOrContainer::Value(v) => serde_json::to_value(v).ok(),
-                            _ => None,
-                        })
-                        .and_then(|j| serde_json::from_value::<zeron_proto::ToolCall>(j).ok())
-                        .is_some_and(|c| c.is_subagent_spawn());
-                    if !is_spawn {
-                        return Ok(false);
-                    }
-                    if let Some(r) = subagent_ref {
-                        part.insert("subagentRef", r)?;
-                    }
-                    if let Some(s) = status {
-                        part.insert("subagentStatus", s)?;
-                    }
-                    if let Some(t) = tail {
-                        part.insert("subagentTail", t)?;
-                    }
-                    self.doc.commit();
-                    return Ok(true);
+                    return Some(part);
                 }
             }
         }
-        Ok(false)
+        None
     }
 
     /// Export a snapshot (persistence) — `ExportMode::Snapshot`.
@@ -928,6 +968,17 @@ impl SessionDoc {
             .export(ExportMode::Snapshot)
             .map_err(|e| DocError::Schema(e.to_string()))
     }
+}
+
+/// A tool part whose call is a subagent spawn ([`zeron_proto::ToolCall::is_subagent_spawn`]).
+fn is_spawn_part(part: &LoroMap) -> bool {
+    part.get("call")
+        .and_then(|v| match v {
+            loro::ValueOrContainer::Value(v) => serde_json::to_value(v).ok(),
+            _ => None,
+        })
+        .and_then(|j| serde_json::from_value::<zeron_proto::ToolCall>(j).ok())
+        .is_some_and(|c| c.is_subagent_spawn())
 }
 
 fn write_entry_scalar_fields(map: &LoroMap, entry: &SessionMessageEntry) -> Result<(), DocError> {
@@ -999,6 +1050,9 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
     if let Some(resolved) = doc_part.resolved {
         map.insert("resolved", resolved)?;
     }
+    if let Some(answers) = &doc_part.answers {
+        map.insert("answers", loro_value_from_json(answers))?;
+    }
     if let Some(message) = &doc_part.message {
         map.insert("message", message.as_str())?;
     }
@@ -1040,6 +1094,15 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
     }
     if let Some(subagent_tail) = &doc_part.subagent_tail {
         map.insert("subagentTail", subagent_tail.as_str())?;
+    }
+    if let Some(exit_code) = doc_part.exit_code {
+        map.insert("exitCode", exit_code as i64)?;
+    }
+    if let Some(truncated) = doc_part.output_truncated {
+        map.insert("outputTruncated", truncated)?;
+    }
+    if let Some(lines) = doc_part.output_lines {
+        map.insert("outputLines", lines as i64)?;
     }
     Ok(())
 }
@@ -1205,6 +1268,15 @@ fn salvage_part(part: &serde_json::Value, entry_id: &str, ix: usize) -> Option<M
             subagent_ref: None,
             subagent_status: None,
             subagent_tail: None,
+            exit_code: obj
+                .get("exitCode")
+                .and_then(|x| x.as_i64())
+                .and_then(|x| i32::try_from(x).ok()),
+            output_truncated: obj
+                .get("outputTruncated")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false),
+            output_lines: obj.get("outputLines").and_then(|x| x.as_u64()),
         });
     }
     if let Some(message) = obj.get("message").and_then(|x| x.as_str()) {
@@ -1476,6 +1548,9 @@ fn update_part_fields(map: &LoroMap, part: &MessagePart) -> Result<(), DocError>
     if let Some(resolved) = doc_part.resolved {
         map.insert("resolved", resolved)?;
     }
+    if let Some(answers) = &doc_part.answers {
+        map.insert("answers", loro_value_from_json(answers))?;
+    }
     if let Some(message) = &doc_part.message {
         map.insert("message", message.as_str())?;
     }
@@ -1505,6 +1580,15 @@ fn update_part_fields(map: &LoroMap, part: &MessagePart) -> Result<(), DocError>
     }
     if let Some(subagent_tail) = &doc_part.subagent_tail {
         map.insert("subagentTail", subagent_tail.as_str())?;
+    }
+    if let Some(exit_code) = doc_part.exit_code {
+        map.insert("exitCode", exit_code as i64)?;
+    }
+    if let Some(truncated) = doc_part.output_truncated {
+        map.insert("outputTruncated", truncated)?;
+    }
+    if let Some(lines) = doc_part.output_lines {
+        map.insert("outputLines", lines as i64)?;
     }
     if let Some(text) = &doc_part.text {
         // Defensive path only — the fold never rewrites earlier text.
@@ -1806,6 +1890,9 @@ mod tests {
             subagent_ref: None,
             subagent_status: None,
             subagent_tail: None,
+            exit_code: None,
+            output_truncated: false,
+            output_lines: None,
         };
         let doc = SessionDoc::init("c1").unwrap();
         let mut w = SegmentWriter::begin(&doc, "e1", "dev", 1).unwrap();
@@ -1870,6 +1957,9 @@ mod tests {
             subagent_ref: None,
             subagent_status: None,
             subagent_tail: None,
+            exit_code: None,
+            output_truncated: false,
+            output_lines: None,
         };
         w.sync(std::slice::from_ref(&part)).unwrap();
         if let MessagePart::Tool {
@@ -1922,6 +2012,9 @@ mod tests {
             subagent_ref: None,
             subagent_status: None,
             subagent_tail: None,
+            exit_code: None,
+            output_truncated: false,
+            output_lines: None,
         };
         let parts = vec![
             tool(
@@ -1939,6 +2032,10 @@ mod tests {
             ),
         ];
         w.sync(&parts).unwrap();
+        // The engine asks the same question before it opens a subagent doc.
+        assert!(doc.has_subagent_spawn("toolu_spawn"));
+        assert!(!doc.has_subagent_spawn("toolu_bash"));
+        assert!(!doc.has_subagent_spawn("toolu_elsewhere"));
         assert!(
             doc.update_subagent_chip(
                 "toolu_spawn",
@@ -1979,16 +2076,18 @@ mod tests {
 
     #[test]
     fn resolve_input_stamps_the_part_in_place() {
+        let input = |id: &str| MessagePart::Input {
+            id: id.into(),
+            request_id: id.into(),
+            questions: vec![],
+            resolved: false,
+            answers: None,
+        };
         let doc = SessionDoc::init("chat-1").unwrap();
         doc.push_message(&SessionMessageEntry {
             id: "m1".into(),
             role: MessageRole::Assistant,
-            parts: vec![MessagePart::Input {
-                id: "r1".into(),
-                request_id: "r1".into(),
-                questions: vec![],
-                resolved: false,
-            }],
+            parts: vec![input("r1"), input("r2")],
             created_at: 1,
             device_id: "dev-a".into(),
             // The orphan case: the run died and recovery stamped the entry.
@@ -1997,13 +2096,60 @@ mod tests {
             duration_ms: None,
         })
         .unwrap();
-        assert!(!doc.resolve_input("nope").unwrap());
-        assert!(doc.resolve_input("r1").unwrap());
+        let picked = vec![zeron_proto::UserInputAnswer {
+            question_id: "q".into(),
+            labels: vec!["B".into()],
+        }];
+        assert!(!doc.resolve_input("nope", &picked).unwrap());
+        assert!(doc.resolve_input("r1", &picked).unwrap());
+        // Closed without an answer records an empty list, not nothing.
+        assert!(doc.resolve_input("r2", &[]).unwrap());
         let entries = doc.read_entries().unwrap();
         assert!(matches!(
             &entries[0].parts[0],
-            MessagePart::Input { resolved: true, .. }
+            MessagePart::Input { resolved: true, answers: Some(a), .. } if *a == picked
         ));
+        assert!(matches!(
+            &entries[0].parts[1],
+            MessagePart::Input { resolved: true, answers: Some(a), .. } if a.is_empty()
+        ));
+    }
+
+    #[test]
+    fn input_answers_round_trip_and_old_parts_read_as_unrecorded() {
+        let answered = MessagePart::Input {
+            id: "r1".into(),
+            request_id: "r1".into(),
+            questions: vec![],
+            resolved: true,
+            answers: Some(vec![zeron_proto::UserInputAnswer {
+                question_id: "q".into(),
+                labels: vec!["Deep dive".into()],
+            }]),
+        };
+        let doc = SessionDoc::init("chat-1").unwrap();
+        doc.push_message(&SessionMessageEntry {
+            id: "m1".into(),
+            role: MessageRole::Assistant,
+            parts: vec![answered.clone()],
+            created_at: 1,
+            device_id: "dev-a".into(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+            duration_ms: None,
+        })
+        .unwrap();
+        assert_eq!(doc.read_entries().unwrap()[0].parts[0], answered);
+        // A part map written before answers were recorded has no `answers`
+        // key at all.
+        let legacy = from_doc_part(DocPartJson {
+            id: "r0".into(),
+            kind: "input".into(),
+            questions: Some(serde_json::json!([])),
+            resolved: Some(true),
+            ..Default::default()
+        });
+        assert!(matches!(legacy, MessagePart::Input { answers: None, .. }));
     }
 
     #[test]
@@ -2077,6 +2223,7 @@ mod tests {
                 is_error: false,
                 output: None,
                 diff: None,
+                exit_code: None,
             },
         );
         writer.sync(&folded).unwrap();
@@ -2177,8 +2324,10 @@ mod tests {
             &mut folded,
             &AgentEvent::ToolCall {
                 id: "t1".into(),
-                call: ToolCall::Exec {
-                    command: "ls".into(),
+                call: ToolCall::EditFile {
+                    path: "/w/a.rs".into(),
+                    old_string: None,
+                    new_string: None,
                 },
             },
         );
@@ -2194,6 +2343,7 @@ mod tests {
                     old_text: Some("old\n".into()),
                     new_text: "new\n".into(),
                 }),
+                exit_code: None,
             },
         );
         crate::parts::apply_sidecar_refs("chat-2", &mut folded);
@@ -2229,6 +2379,74 @@ mod tests {
         }
     }
 
+    /// A command's tail, exit code and trimmed flag land in the doc on its
+    /// result (an in-place update of the part pushed with its call) and read
+    /// back as written.
+    #[test]
+    fn a_command_tail_round_trips_through_the_doc() {
+        let doc = SessionDoc::init("chat-4").unwrap();
+        let mut writer = SegmentWriter::begin(&doc, "a1", "dev-a", 5).unwrap();
+        let mut folded = Vec::new();
+        fold_event_into_parts(
+            &mut folded,
+            &AgentEvent::ToolCall {
+                id: "c1".into(),
+                call: ToolCall::Exec {
+                    command: "cargo test".into(),
+                },
+            },
+        );
+        writer.sync(&folded).unwrap();
+        let full: String = (1..=80).map(|i| format!("line {i}\n")).collect();
+        fold_event_into_parts(
+            &mut folded,
+            &AgentEvent::ToolResult {
+                id: "c1".into(),
+                is_error: true,
+                output: Some(full.clone()),
+                diff: None,
+                exit_code: Some(101),
+            },
+        );
+        writer.sync(&folded).unwrap();
+        writer.finish(&folded, MessageStatus::Complete).unwrap();
+        let entries = doc.read_entries().unwrap();
+        match &entries[0].parts[0] {
+            MessagePart::Tool {
+                output: Some(tail),
+                output_bytes,
+                exit_code,
+                output_truncated,
+                output_lines,
+                is_error,
+                ..
+            } => {
+                assert!(*is_error);
+                assert_eq!(*exit_code, Some(101));
+                assert!(*output_truncated);
+                assert_eq!(*output_bytes, Some(full.len() as u64));
+                assert_eq!(tail.lines().count(), crate::parts::COMMAND_TAIL_MAX_LINES);
+                assert_eq!(*output_lines, Some(80));
+                assert!(tail.ends_with("line 80"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // And from a fresh replica of the doc's bytes (what a client reads).
+        let snapshot = doc.export_snapshot().unwrap();
+        let replica = loro::LoroDoc::new();
+        replica.import(&snapshot).unwrap();
+        let entries = SessionDoc::from_doc(replica).read_entries().unwrap();
+        assert!(matches!(
+            &entries[0].parts[0],
+            MessagePart::Tool {
+                exit_code: Some(101),
+                output_truncated: true,
+                output_lines: Some(80),
+                ..
+            }
+        ));
+    }
+
     /// Old pre-strip docs carry inline `output`/`diff` — they must still read
     /// back (schema changes are serde-additive ONLY; old readers, old docs).
     #[test]
@@ -2257,6 +2475,9 @@ mod tests {
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
+                exit_code: None,
+                output_truncated: false,
+                output_lines: None,
             }],
             created_at: 1,
             device_id: "dev-a".into(),

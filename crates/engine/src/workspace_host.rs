@@ -204,6 +204,9 @@ struct WorkspaceHostInner {
     /// device's overlay back to its boot-time row `lastSeenAt` — an instant
     /// (and false) "offline" badge for a host that beat 20s ago.
     presence_seen: Mutex<std::collections::HashMap<String, i64>>,
+    /// Chats whose row this host claimed for a command that outran their
+    /// `createChat` ([`WorkspaceHost::claim_chat`]).
+    claimed: Mutex<std::collections::HashSet<String>>,
     /// Called with a device id whenever its presence heartbeat proves it alive —
     /// wired to `LinkCache::reset_cooldown` so a peer that comes back is dialed
     /// immediately instead of waiting out the failure backoff.
@@ -360,6 +363,7 @@ impl WorkspaceHost {
                 room: Mutex::new(None),
                 changed_tx,
                 presence_seen: Mutex::new(std::collections::HashMap::new()),
+                claimed: Mutex::default(),
                 peer_alive: Mutex::new(None),
                 presence_watch: Mutex::new(PresenceWatch::default()),
                 room_joined_at: std::sync::atomic::AtomicI64::new(0),
@@ -715,6 +719,14 @@ impl WorkspaceHost {
         Ok(self.read(|doc| doc.chat(chat_id))?)
     }
 
+    /// Whether `chat_id`'s parent is unknown here yet: this host claimed its
+    /// row for a command that arrived first ([`Self::claim_chat`]), and its
+    /// `createChat` hasn't landed ([`RegistryDoc::chat_parent_recorded`]).
+    pub fn parent_unknown(&self, chat_id: &str) -> bool {
+        lock(&self.inner.claimed).contains(chat_id)
+            && !self.read(|doc| doc.chat_parent_recorded(chat_id))
+    }
+
     /// The space row as currently known (overlay view).
     pub fn space(&self, space_id: &str) -> Result<Option<Space>, EngineError> {
         Ok(self.read(|doc| doc.space(space_id))?)
@@ -856,6 +868,7 @@ impl WorkspaceHost {
             None => (None, None),
         };
         self.mutate(|doc| doc.claim_chat(chat_id, cwd.as_deref(), space_id.as_deref(), now));
+        lock(&self.inner.claimed).insert(chat_id.to_owned());
         Ok(())
     }
 
@@ -893,6 +906,7 @@ impl WorkspaceHost {
             checkout_id: None,
             repository_id: None,
             github_repo: None,
+            icon: None,
             created_at: Utc::now(),
         };
         self.mutate(|doc| doc.upsert_space(&space))?;
@@ -916,6 +930,8 @@ impl WorkspaceHost {
     /// Sidebar freshness on message persist: preview = first 120 chars of the last
     /// message's text. Claims the row first so a pre-workspace chat gains one.
     pub fn note_message(&self, chat_id: &str, text: &str) {
+        // Annotation tokens carry their element as hex; previews read the label.
+        let text = zeron_proto::annotation::annotation_display(text);
         let preview: String = text.chars().take(120).collect();
         let result = self.claim_chat(chat_id, None).and_then(|_| {
             self.mutate(|doc| doc.set_chat_last_message(chat_id, &preview, Utc::now()))
@@ -1018,6 +1034,7 @@ impl WorkspaceHost {
             config,
             cwd,
             parent_chat_id,
+            None,
         )
     }
 
@@ -1036,6 +1053,7 @@ impl WorkspaceHost {
         config: Option<ChatConfig>,
         cwd: Option<String>,
         parent_chat_id: Option<String>,
+        child_kind: Option<zeron_proto::ChildKind>,
     ) -> Result<(), EngineError> {
         if self.read(|doc| doc.chat(chat_id))?.is_some() {
             return Ok(()); // idempotent: optimistic client retries never duplicate
@@ -1071,6 +1089,7 @@ impl WorkspaceHost {
             }
             None => cwd.unwrap_or_default(),
         };
+        let parent = parent_chat_id.filter(|p| !p.trim().is_empty());
         self.mutate(|doc| {
             doc.upsert_chat(&Chat {
                 id: chat_id.to_string(),
@@ -1094,7 +1113,10 @@ impl WorkspaceHost {
                 harness_session_harness: None,
                 space_id: space.as_ref().map(|s| s.id.clone()),
                 last_seen_at: None,
-                parent_chat_id: parent_chat_id.filter(|p| !p.trim().is_empty()),
+                // (What a child is to its parent: only a child has a kind.)
+                child_kind: child_kind.filter(|_| parent.is_some()),
+                parent_chat_id: parent,
+                sleep: None,
             })
         })?;
         Ok(())
@@ -1147,6 +1169,7 @@ impl WorkspaceHost {
                 checkout_id: None,
                 repository_id: None,
                 github_repo: None,
+                icon: None,
                 created_at: Utc::now(),
             })
         })?;
@@ -1194,6 +1217,7 @@ impl WorkspaceHost {
                 // Groups with the clones of the repository on other devices.
                 repository_id: Some(zeron_proto::view::cloud_repository_id(&spaces, github_repo)),
                 github_repo: Some(github_repo.to_string()),
+                icon: None,
                 created_at: Utc::now(),
             })
         })?;
@@ -1204,11 +1228,30 @@ impl WorkspaceHost {
         Ok(self.mutate(|doc| doc.rename_space(space_id, name))?)
     }
 
+    pub fn set_space_icon(&self, space_id: &str, icon: Option<&zeron_proto::SpaceIcon>) -> Result<bool, EngineError> {
+        Ok(self.mutate(|doc| doc.set_space_icon(space_id, icon))?)
+    }
+
     /// Hard-delete a space and its chats (registry cascade — one atomic batch).
     /// The caller (rpc layer) tears down live runs / doc-host handles for the
     /// returned chat ids.
     pub fn delete_space(&self, space_id: &str) -> Result<DeletedSpace, EngineError> {
         Ok(self.mutate(|doc| doc.delete_space(space_id))?)
+    }
+
+    /// A chat put to sleep until `until` (any device; `None` wakes it).
+    pub fn set_chat_sleep(
+        &self,
+        chat_id: &str,
+        until: Option<chrono::DateTime<Utc>>,
+    ) -> Result<bool, EngineError> {
+        Ok(self.mutate(|doc| doc.set_chat_sleep(chat_id, until, Utc::now()))?)
+    }
+
+    /// A sleeping chat woken early (its host saw it start asking for the
+    /// person, or fail). `false` when it wasn't asleep.
+    pub fn wake_chat(&self, chat_id: &str, at: chrono::DateTime<Utc>) -> Result<bool, EngineError> {
+        Ok(self.mutate(|doc| doc.wake_chat(chat_id, at))?)
     }
 
     /// Synced seen marker (any device; LWW + monotonic guard in the doc layer).
@@ -2084,6 +2127,39 @@ mod tests {
         assert_eq!(host.peer_liveness("laptop"), zeron_rpc::PeerLiveness::Live);
     }
 
+    /// A claimed row doesn't know its parent until the chat's `createChat`
+    /// lands, which records `parentChatId` even when it has none; a row this
+    /// host never claimed always knows it.
+    #[tokio::test]
+    async fn a_claimed_chat_knows_its_parent_once_its_create_lands() {
+        use super::*;
+
+        let dir = tempfile::tempdir().unwrap();
+        let host = WorkspaceHost::open(
+            Arc::new(DocsStore::open(dir.path()).unwrap()),
+            WorkspaceHostConfig {
+                device_id: "test-device".into(),
+                device_name: "Test device".into(),
+                platform: "macos".into(),
+                org_id: "test-org".into(),
+                user_id: "test-user".into(),
+                edge: None,
+                local_only: false,
+            },
+        )
+        .unwrap();
+        host.create_chat("created", None, Some("test-device"), None, None)
+            .unwrap();
+        assert!(!host.parent_unknown("created"));
+
+        host.claim_chat("claimed", Some("/tmp")).unwrap();
+        assert!(host.parent_unknown("claimed"));
+        let mut chat = host.chat("claimed").unwrap().expect("the claimed row");
+        chat.parent_chat_id = None;
+        host.mutate(|doc| doc.upsert_chat(&chat)).unwrap();
+        assert!(!host.parent_unknown("claimed"));
+    }
+
     #[tokio::test]
     async fn sidebar_preferences_watch_preserves_explicit_empty_state() {
         use super::*;
@@ -2189,6 +2265,8 @@ mod tests {
             last_turn_outcome: None,
             terminal_activity: None,
             running_subagents: 0,
+            background_tasks: Vec::new(),
+            waiting: None,
         }
     }
 

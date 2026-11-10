@@ -386,6 +386,19 @@ impl PullRequestsPage {
         -self.board_list.scroll_px_offset_for_scrollbar().y
     }
 
+    /// Show `items` as a loaded board, without an engine.
+    #[cfg(test)]
+    pub(crate) fn show_test_items(
+        &mut self,
+        items: Vec<ChangeRequestListItem>,
+        cx: &mut Context<Self>,
+    ) {
+        self.items = items;
+        self.view_items = None;
+        self.load_state = PullRequestsLoadState::Ready;
+        cx.notify();
+    }
+
     /// The board's rows for the current list, view, stars and collapsed
     /// groups. Rebuilt only when one of those changes; the list state is
     /// spliced so the row at the top of the viewport stays put.
@@ -2493,6 +2506,7 @@ impl Render for PullRequestsPage {
                                                 .id("pull-requests-clear-search")
                                                 .role(gpui::Role::Button)
                                                 .aria_label("Clear search")
+                                                .tooltip(widgets::text_tooltip("Clear search"))
                                                 .tab_index(0)
                                                 .size(px(24.0))
                                                 .flex()
@@ -3684,6 +3698,7 @@ mod tests {
             git_checked_at: None,
             checkout_id: None,
             repository_id: None,
+            icon: None,
             created_at: Utc::now() - TimeDelta::minutes(created_minutes_ago),
         }
     }
@@ -3706,9 +3721,11 @@ mod tests {
             harness_session_harness: None,
             harness_session_cwd: None,
             parent_chat_id: None,
+            child_kind: None,
             space_id: Some(space.into()),
             last_seen_at: None,
             room_gen: None,
+            sleep: None,
         }
     }
 
@@ -4347,6 +4364,7 @@ mod tests {
                 git_checked_at: None,
                 checkout_id: None,
                 repository_id: None,
+                icon: None,
                 created_at: Utc::now(),
             }];
             state.selected_space = Some("project".into());
@@ -4531,6 +4549,7 @@ mod tests {
                 git_checked_at: None,
                 checkout_id: None,
                 repository_id: None,
+                icon: None,
                 created_at: Utc::now(),
             }];
             state.selected_space = Some("project".into());
@@ -4594,6 +4613,7 @@ mod tests {
                 git_checked_at: None,
                 checkout_id: None,
                 repository_id: None,
+                icon: None,
                 created_at: Utc::now(),
             }];
             state.selected_space = Some("project".into());

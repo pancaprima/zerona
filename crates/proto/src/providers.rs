@@ -8,7 +8,7 @@ use crate::HarnessId;
 /// command — named in the empty-state copy, zeron settings.agents.tsx
 /// `PROVIDERS`). Every agent with a login of its own is here; what each one
 /// supports is documented engine-side (`agent_accounts` module docs).
-pub const PROVIDERS: [(HarnessId, &str, &str); 9] = [
+pub const PROVIDERS: [(HarnessId, &str, &str); 10] = [
     (HarnessId::ClaudeCode, "Claude Code", "claude"),
     (HarnessId::Codex, "Codex", "codex"),
     (HarnessId::Cursor, "Cursor", "cursor-agent"),
@@ -18,6 +18,7 @@ pub const PROVIDERS: [(HarnessId, &str, &str); 9] = [
     (HarnessId::Opencode, "OpenCode", "opencode auth login"),
     (HarnessId::Pi, "Pi", "pi"),
     (HarnessId::Hermes, "Hermes", "hermes auth add"),
+    (HarnessId::Muse, "Muse Code", "muse login"),
 ];
 
 /// Whether `harness` has an Accounts section (and sign-in flow). Pure.
@@ -28,6 +29,9 @@ pub fn signs_in(harness: HarnessId) -> bool {
 }
 
 pub fn provider_name(harness: HarnessId) -> &'static str {
+    if harness == HarnessId::Fx {
+        return "fx";
+    }
     PROVIDERS
         .iter()
         .find(|(provider, _, _)| *provider == harness)
@@ -37,7 +41,7 @@ pub fn provider_name(harness: HarnessId) -> &'static str {
 /// Whether the provider reports plan usage. One that doesn't shows no meters
 /// and no "usage unavailable" note — there is nothing missing. Pure.
 pub fn reports_usage(harness: HarnessId) -> bool {
-    harness != HarnessId::Antigravity
+    !matches!(harness, HarnessId::Antigravity | HarnessId::Fx)
 }
 
 /// Providers whose agent holds exactly ONE login (Antigravity): once it is
@@ -49,7 +53,7 @@ pub fn keeps_one_login(harness: HarnessId) -> bool {
 /// Whether zeron switches this agent's logins. Hermes rotates through its
 /// own credential pool (listed, never reordered); Antigravity keeps one.
 pub fn switches_accounts(harness: HarnessId) -> bool {
-    !matches!(harness, HarnessId::Hermes | HarnessId::Antigravity)
+    !matches!(harness, HarnessId::Hermes | HarnessId::Antigravity | HarnessId::Fx)
 }
 
 /// A standing note under a provider's Accounts label, for an agent whose

@@ -1,120 +1,84 @@
-import java.io.File
-import java.util.Base64
-
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.plugin.compose")
-    id("com.google.gms.google-services")
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.compose.compiler)
+    alias(libs.plugins.google.services)
 }
 
-fun requestedAssembleRelease(): Boolean =
-    gradle.startParameter.taskNames.any { task ->
-        task.equals("assembleRelease", ignoreCase = true) ||
-            task.equals(":app:assembleRelease", ignoreCase = true) ||
-            task.endsWith(":assembleRelease", ignoreCase = true)
-    }
+// The Rust mobile core (crates/mobile) — the library the iOS app links —
+// built for Android with its generated Kotlin bindings. `-PzeronSkipCore`
+// reuses the last build while iterating on Kotlin only.
+val NDK_VERSION = "29.0.14206865"
+val repoRoot = rootProject.projectDir.resolve("../..").canonicalFile
+val coreOut = repoRoot.resolve("target/android-core")
+val iconsOut = layout.buildDirectory.dir("generated/zeron-icons")
+val skipCore = providers.gradleProperty("zeronSkipCore").isPresent
 
-fun requiredReleaseEnv(name: String): String {
-    val value = System.getenv(name)
-    if (value.isNullOrBlank()) {
-        throw GradleException(
-            "Release signing requires $name. Set ANDROID_RELEASE_KEYSTORE_BASE64, " +
-                "ANDROID_RELEASE_STORE_PASSWORD, ANDROID_RELEASE_KEY_ALIAS, and " +
-                "ANDROID_RELEASE_KEY_PASSWORD (see apps/android/README.md). " +
-                "Debug builds do not need release signing secrets.",
-        )
-    }
-    return value
+// The app ships the workspace's version (Cargo.toml), like the desktop apps;
+// CI passes a build number that only grows (`-PzeronVersionCode=<n>`).
+val workspaceVersion = Regex("(?m)^version = \"([^\"]+)\"")
+    .find(repoRoot.resolve("Cargo.toml").readText())?.groupValues?.get(1) ?: "0.0.0"
+val buildNumber = providers.gradleProperty("zeronVersionCode").orNull?.toInt() ?: 1
+
+// Release signing: Zeron's upload key from the environment (CI decodes it from
+// secrets), so each build installs over the last. Without it, the debug key.
+val releaseKeystore = System.getenv("ZERON_ANDROID_KEYSTORE")?.takeIf { file(it).exists() }
+
+val buildCore by tasks.registering(Exec::class) {
+    description = "Builds crates/mobile for Android and generates Kotlin bindings."
+    val ndk = System.getenv("ANDROID_NDK_HOME")
+        ?: androidComponents.sdkComponents.sdkDirectory.get().dir("ndk/$NDK_VERSION").asFile.path
+    // Any ABI will do when skipping (`ZERON_ANDROID_ABIS=x86_64` builds only that one).
+    val libs = coreOut.resolve("jniLibs")
+    val skip = skipCore
+    workingDir = repoRoot
+    commandLine("bash", "scripts/android/build-core.sh", coreOut.path)
+    environment("ANDROID_NDK_HOME", ndk)
+    onlyIf { !skip || libs.walkTopDown().none { it.name == "libzeron_mobile.so" } }
 }
 
-fun resolveReleaseKeystoreFile(): File {
-    val base64 = requiredReleaseEnv("ANDROID_RELEASE_KEYSTORE_BASE64")
-    val decoded =
-        try {
-            Base64.getDecoder().decode(base64.replace("\\s".toRegex(), ""))
-        } catch (_: IllegalArgumentException) {
-            throw GradleException("ANDROID_RELEASE_KEYSTORE_BASE64 is not valid Base64.")
-        }
-    if (decoded.isEmpty()) {
-        throw GradleException("ANDROID_RELEASE_KEYSTORE_BASE64 decoded to an empty keystore.")
-    }
-    val parent =
-        System.getenv("RUNNER_TEMP")?.let { File(it) }
-            ?: File(System.getProperty("java.io.tmpdir"))
-    if (!parent.isDirectory) {
-        throw GradleException(
-            "Cannot write release keystore: temporary directory missing (${parent.absolutePath}).",
-        )
-    }
-    val keystore = File.createTempFile("zerona-android-release-", ".keystore", parent)
-    keystore.writeBytes(decoded)
-    keystore.deleteOnExit()
-    return keystore
-}
-
-val zeronCoreDirPath =
-    (findProperty("zeronCoreDir") as String?) ?: "${rootProject.projectDir}/../../target/android-core"
-val zeronCoreDir = file(zeronCoreDirPath)
-if (!zeronCoreDir.isDirectory) {
-    throw GradleException(
-        "Rust core output not found at ${zeronCoreDir.absolutePath}. " +
-            "Run scripts/android/build-core.sh or pass -PzeronCoreDir=...",
-    )
-}
-
-val zeronAbis =
-    (findProperty("zeronAbis") as String?)?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
-        ?: listOf("arm64-v8a")
-
-val copyGeistFonts =
-    tasks.register<Copy>("copyGeistFonts") {
-        from("${rootProject.projectDir}/../../crates/ui/assets/fonts") {
-            include("Geist*.ttf")
-        }
-        into("${projectDir}/src/main/assets/fonts")
-    }
-
-tasks.named("preBuild") {
-    dependsOn(copyGeistFonts)
+// Tool and file icons: the iOS asset catalog's SVGs, rasterized.
+val genIcons by tasks.registering(Exec::class) {
+    description = "Rasterizes the shared transcript icons."
+    val out = iconsOut.get().asFile
+    inputs.dir(repoRoot.resolve("apps/ios/Zeron/Assets.xcassets"))
+    inputs.dir(repoRoot.resolve("crates/ui/assets/icons"))
+    inputs.dir(repoRoot.resolve("apps/android/icons"))
+    inputs.file(repoRoot.resolve("scripts/android/svg2vd.py"))
+    outputs.dir(out)
+    commandLine("bash", repoRoot.resolve("scripts/android/gen-icons.sh").path, out.resolve("assets/icons").path, out.resolve("res").path)
 }
 
 android {
-    namespace = "sh.zeron.zerona"
+    namespace = "sh.zeron.android"
     compileSdk = 37
-    ndkVersion = "27.2.12479018"
+    ndkVersion = NDK_VERSION
 
     defaultConfig {
         applicationId = "sh.zeron.zerona"
-        minSdk = 26
-        targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-m1"
-
-        ndk {
-            abiFilters += zeronAbis
-        }
+        minSdk = 29
+        targetSdk = 37
+        versionCode = buildNumber
+        versionName = workspaceVersion
+        // The ABIs the core was built for (`ZERON_ANDROID_ABIS`): a dependency's
+        // native libraries for others would only add weight.
+        ndk { abiFilters += (System.getenv("ZERON_ANDROID_ABIS") ?: "arm64-v8a x86_64").split(" ").filter { it.isNotBlank() } }
     }
 
     signingConfigs {
-        create("release") {
-            if (requestedAssembleRelease()) {
-                storeFile = resolveReleaseKeystoreFile()
-                storePassword = requiredReleaseEnv("ANDROID_RELEASE_STORE_PASSWORD")
-                keyAlias = requiredReleaseEnv("ANDROID_RELEASE_KEY_ALIAS")
-                keyPassword = requiredReleaseEnv("ANDROID_RELEASE_KEY_PASSWORD")
+        if (releaseKeystore != null) {
+            create("zeron") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("ZERON_ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ZERON_ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ZERON_ANDROID_KEY_PASSWORD")
             }
         }
     }
 
     buildTypes {
-        debug {
-            isDebuggable = true
-        }
         release {
             isMinifyEnabled = false
-            if (requestedAssembleRelease()) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            signingConfig = signingConfigs.findByName("zeron") ?: signingConfigs.getByName("debug")
         }
     }
 
@@ -123,56 +87,57 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    buildFeatures {
-        compose = true
+    buildFeatures { compose = true }
+
+    sourceSets["main"].apply {
+        kotlin.directories.add(coreOut.resolve("kotlin").path)
+        jniLibs.directories.add(coreOut.resolve("jniLibs").path)
+        // The exact font bytes the Rust layout engine measures.
+        assets.directories.add(repoRoot.resolve("apps/ios/Zeron/Fonts").path)
+        assets.directories.add(iconsOut.get().asFile.resolve("assets").path)
+        res.directories.add(iconsOut.get().asFile.resolve("res").path)
     }
 
+    // Compressed: the APK is downloaded from zeron.sh, not delivered by Play
+    // (which compresses for transfer itself); about a third of the size.
     packaging {
-        jniLibs {
-            useLegacyPackaging = true
-        }
-    }
-
-    sourceSets {
-        getByName("main") {
-            kotlin.directories += zeronCoreDir.resolve("kotlin").absolutePath
-            jniLibs.srcDirs(zeronCoreDir.resolve("jniLibs"))
-        }
+        jniLibs { useLegacyPackaging = true }
+        dex { useLegacyPackaging = true }
     }
 }
+
+tasks.named("preBuild") { dependsOn(buildCore, genIcons) }
 
 dependencies {
-    // Compose 1.12.0 aligns with material3 1.5.0-beta02 POM; BOM does not yet ship that Material3 line.
-    val composeBom = platform("androidx.compose:compose-bom:2026.08.00")
-    implementation(composeBom)
-    androidTestImplementation(composeBom)
-
-    implementation("androidx.core:core-ktx:1.15.0")
-    // Transitive play-services-base -> fragment:1.1.0 fails lintVitalRelease (InvalidFragmentVersionForActivityResult).
-    implementation("androidx.fragment:fragment:1.8.9")
-    implementation("androidx.activity:activity-compose:1.9.3")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-tooling-preview")
-    debugImplementation("androidx.compose.ui:ui-tooling")
-    implementation("androidx.compose.material3:material3:1.5.0-beta02")
-    implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.navigation:navigation-compose:2.8.5")
-
-    implementation("androidx.browser:browser:1.8.0")
-    implementation("androidx.security:security-crypto:1.1.0-alpha06")
-    implementation("androidx.lifecycle:lifecycle-process:2.8.7")
-
-    implementation("net.java.dev.jna:jna:5.15.0@aar")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-
-    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
-    implementation("com.google.firebase:firebase-messaging-ktx")
-
-    testImplementation("junit:junit:4.13.2")
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.core.splashscreen)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.process)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.browser)
+    implementation(platform(libs.compose.bom))
+    implementation(libs.compose.ui)
+    implementation(libs.compose.ui.graphics)
+    implementation(libs.compose.ui.tooling.preview)
+    implementation(libs.compose.foundation)
+    implementation(libs.compose.material3)
+    implementation(libs.kotlinx.coroutines.android)
+    implementation("${libs.jna.get()}@aar")
+    implementation(libs.webrtc)
+    implementation(libs.androidx.fragment)
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging.ktx)
+    debugImplementation(libs.compose.ui.tooling)
+    testImplementation(libs.junit)
 }
 
-tasks.matching { it.name == "assembleDebug" }.configureEach {
-    dependsOn("testDebugUnitTest")
+kotlin {
+    compilerOptions {
+        optIn.addAll(
+            "androidx.compose.material3.ExperimentalMaterial3Api",
+            "androidx.compose.material3.ExperimentalMaterial3ExpressiveApi",
+        )
+    }
 }

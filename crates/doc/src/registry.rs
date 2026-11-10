@@ -1135,6 +1135,12 @@ impl RegistryDoc {
             ("githubRepo", opt_str(space.github_repo.as_deref())),
             ("createdAt", json!(space.created_at.timestamp_millis())),
         ]);
+        // (Its icon only when it has one: an upsert never clears a picture
+        // set meanwhile from another device.)
+        let mut set = set;
+        if let Some(icon) = &space.icon {
+            set.insert("icon".into(), json!(icon));
+        }
         self.write(KIND_SPACES, &space.id.clone(), OpKind::Upsert, set);
         Ok(())
     }
@@ -1168,6 +1174,17 @@ impl RegistryDoc {
             OpKind::Update,
             fields([("name", opt_str(name))]),
         );
+        Ok(true)
+    }
+
+    /// LWW picture set from any device, whole (emoji, image and hue in one
+    /// field); `None` clears back to the default tile. `false` when no row.
+    pub fn set_space_icon(&mut self, space_id: &str, icon: Option<&zeron_proto::SpaceIcon>) -> Result<bool, DocError> {
+        if !self.row_exists(KIND_SPACES, space_id) {
+            return Ok(false);
+        }
+        let value = icon.map_or(Value::Null, |icon| json!(icon));
+        self.write(KIND_SPACES, space_id, OpKind::Update, fields([("icon", value)]));
         Ok(true)
     }
 
@@ -1272,6 +1289,7 @@ impl RegistryDoc {
                 chat.room_gen.map(|g| json!(g)).unwrap_or(Value::Null),
             ),
             ("parentChatId", opt_str(chat.parent_chat_id.as_deref())),
+            ("childKind", opt_str(chat.child_kind.map(zeron_proto::ChildKind::as_str))),
         ]);
         self.write(KIND_CHATS, &chat.id.clone(), OpKind::Upsert, set);
         Ok(())
@@ -1322,11 +1340,64 @@ impl RegistryDoc {
         Ok(true)
     }
 
+    /// A chat put to sleep until `until` (`None`: woken, its sleep cleared).
+    /// Each field is its own last write, so a sleep set on one device and an
+    /// early wake on another both land. `false` when no such row.
+    pub fn set_chat_sleep(
+        &mut self,
+        chat_id: &str,
+        until: Option<DateTime<Utc>>,
+        at: DateTime<Utc>,
+    ) -> Result<bool, DocError> {
+        if !self.row_exists(KIND_CHATS, chat_id) {
+            return Ok(false);
+        }
+        self.write(
+            KIND_CHATS,
+            chat_id,
+            OpKind::Update,
+            fields([
+                ("sleepUntil", json!(until.map(|t| t.timestamp_millis()))),
+                ("sleptAt", json!(until.map(|_| at.timestamp_millis()))),
+                ("sleepWokeAt", Value::Null),
+            ]),
+        );
+        Ok(true)
+    }
+
+    /// A sleeping chat woken early by its host (it asked for the person, or
+    /// failed): stamped once, so the first wake is the one shown. `false`
+    /// when it isn't asleep (no row, no sleep, its time passed, or woken
+    /// already).
+    pub fn wake_chat(&mut self, chat_id: &str, at: DateTime<Utc>) -> Result<bool, DocError> {
+        let Some(sleep) = self.chat(chat_id)?.and_then(|c| c.sleep) else {
+            return Ok(false);
+        };
+        if sleep.woke_at.is_some() || sleep.until <= at {
+            return Ok(false);
+        }
+        self.write(
+            KIND_CHATS,
+            chat_id,
+            OpKind::Update,
+            fields([("sleepWokeAt", json!(at.timestamp_millis()))]),
+        );
+        Ok(true)
+    }
+
     pub fn chat(&self, chat_id: &str) -> Result<Option<Chat>, DocError> {
         Ok(self
             .overlay_row(KIND_CHATS, chat_id)
             .and_then(|row| row_to::<crate::workspace::RawChat>(&row))
             .map(Chat::from))
+    }
+
+    /// Whether `chat_id`'s row has recorded its parent: `createChat` writes
+    /// `parentChatId` either way (a null for none), a claimed row
+    /// ([`Self::claim_chat`]) doesn't.
+    pub fn chat_parent_recorded(&self, chat_id: &str) -> bool {
+        self.overlay_row(KIND_CHATS, chat_id)
+            .is_some_and(|row| row.clocks.contains_key("parentChatId"))
     }
 
     pub fn read_chats(&self) -> Result<Vec<Chat>, DocError> {
@@ -1540,6 +1611,11 @@ impl RegistryDoc {
             ("startedAt", opt_ms(session.started_at)),
             ("updatedAt", json!(session.updated_at.timestamp_millis())),
             ("runningSubagents", json!(session.running_subagents)),
+            (
+                "backgroundTasks",
+                serde_json::to_value(&session.background_tasks)?,
+            ),
+            ("waiting", serde_json::to_value(&session.waiting)?),
         ]);
         self.write(KIND_SESSIONS, &session.chat_id.clone(), OpKind::Upsert, set);
         Ok(())
@@ -1706,6 +1782,7 @@ impl RegistryDoc {
                     ("parentChatId", opt_str(chat.parent_chat_id.as_deref())),
                     ("lastSeenAt", opt_ms(chat.last_seen_at)),
                     ("parentChatId", opt_str(chat.parent_chat_id.as_deref())),
+                    ("childKind", opt_str(chat.child_kind.map(zeron_proto::ChildKind::as_str))),
                 ]),
             );
         }

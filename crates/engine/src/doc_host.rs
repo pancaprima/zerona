@@ -1187,6 +1187,13 @@ impl DocHost {
         Ok(())
     }
 
+    /// Start no new work until [`Self::lift_quiesce`]: a new version trying out
+    /// an update, whose changes may yet be undone. Controls keep working, as
+    /// they do in a quiesce, and what queues meanwhile runs when it's lifted.
+    pub fn hold_work(&self) {
+        self.inner.quiesced.store(true, Ordering::SeqCst);
+    }
+
     /// End a quiesce and run everything that queued meanwhile.
     pub fn lift_quiesce(&self) {
         if !self.inner.quiesced.swap(false, Ordering::SeqCst) {
@@ -4142,7 +4149,9 @@ impl DocHost {
     /// Promote one held row without ever interrupting a turn. A live,
     /// steerable turn receives it as steering; if that turn has already ended,
     /// it starts normally as the next turn. Turn-boundary providers retain it
-    /// in their mailbox until ready. Attachment-bearing rows stay untouched.
+    /// in their mailbox until ready. A row's files go with it as the steer's
+    /// attachments (images as images); one whose files from another device
+    /// haven't landed yet stays queued, and the call says why.
     pub async fn steer_queued_now(&self, chat_id: &str, id: &str) -> Result<bool, EngineError> {
         if !self.is_host(chat_id) {
             return Err(EngineError::Other(format!(
@@ -4160,9 +4169,12 @@ impl DocHost {
         else {
             return Ok(false);
         };
-        if !candidate.attachments.is_empty() {
+        // Its files ride the steer, as images where they are. Ones still on
+        // their way from another device can't go yet (the drain waits for
+        // them; a steer says so).
+        if !self.missing_row_attachments(&candidate).is_empty() {
             return Err(EngineError::Other(
-                "messages with attachments cannot be steered mid-turn".into(),
+                "this message's images are still uploading".into(),
             ));
         }
         if candidate.delivery_gate.is_some() {
@@ -4524,7 +4536,13 @@ impl DocHost {
         self.resolve_attachment_refs(&mut prompt, &mut attachments);
         if send == QueueSend::Steer {
             match sessions
-                .steer(chat_id, &prompt, Some(message_id.clone()))
+                .steer_now(
+                    chat_id,
+                    &prompt,
+                    attachments.clone(),
+                    Some(message_id.clone()),
+                    now_ms(),
+                )
                 .await?
             {
                 SteerOutcome::Accepted => return Ok(()),
@@ -5277,12 +5295,22 @@ impl DocHost {
             // between mark-processed and the outcome write. Left alone it is
             // a send no drain or retry can ever reach ("Sending…" forever,
             // 2026-08-19); terminalize it so the truth lands in the doc and
-            // a user retry can mint a fresh attempt.
+            // a user retry can mint a fresh attempt. `commands` may predate a
+            // racing drain that has since resolved the command and released
+            // its claim (resolve comes first), so once no claim is seen the
+            // status is read again rather than overwriting that outcome.
+            let still_pending = |id: &str| {
+                handle.doc.read_commands().is_ok_and(|now| {
+                    now.iter()
+                        .any(|c| c.id == id && c.status == SessionCommandStatus::Pending)
+                })
+            };
             for c in &commands {
                 if c.status == SessionCommandStatus::Pending
                     && !skipped.contains(&c.id)
                     && is_processed(&c.id)
                     && !lock(&self.inner.executing).contains(&c.id)
+                    && still_pending(&c.id)
                 {
                     tracing::warn!(chat = %handle.chat_id, command = %c.id,
                         "command consumed but never resolved (crash mid-execute?); rejecting");
@@ -5680,6 +5708,8 @@ impl DocHost {
                         reasoning: request.reasoning,
                         model_options: request.model_options.clone(),
                         sandbox: request.sandbox,
+                        access: request.access,
+                        plan: request.plan,
                     };
                     if let Err(err) = ws.set_chat_config(chat_id, &config) {
                         tracing::warn!(chat = %chat_id, error = %err, "run-config backfill failed");
@@ -5708,7 +5738,8 @@ impl DocHost {
                 // issued_at, clamped against clock skew) — not whenever this
                 // host got around to draining a queued command. Idempotent by
                 // id, so the dispatch path's own execution-time write dedupes
-                // to a no-op.
+                // to a no-op. A provider switch's seam lands with it, above.
+                sessions.note_provider_switch(chat_id, harness, handle);
                 if let Err(err) = handle.write_user_message(
                     message_id,
                     &request.prompt,
@@ -5803,6 +5834,15 @@ impl DocHost {
                         Some("no pending input request".into()),
                     ));
                 };
+                // Closed without an answer: there is nothing to deliver, and
+                // a resumed turn would only say so. Record it and stop.
+                if answers.is_empty() {
+                    handle.doc.resolve_input(request_id, answers)?;
+                    return Ok((
+                        SessionCommandStatus::Applied,
+                        Some("closed unanswered".into()),
+                    ));
+                }
                 // The run died under the question (engine restart, crash).
                 // The question is still open in the doc and the command is
                 // durable, so honor it anyway — stamp the part resolved and
@@ -5822,7 +5862,7 @@ impl DocHost {
                 request.prompt = respond_input_prompt(&questions, answers);
                 request.resume = None; // dispatch re-derives the harness session
                 request.attachments = Vec::new();
-                if let Err(err) = handle.doc.resolve_input(request_id) {
+                if let Err(err) = handle.doc.resolve_input(request_id, answers) {
                     tracing::warn!(chat = %chat_id, request = %request_id, error = %err,
                         "orphaned input resolve failed");
                 }
@@ -5925,8 +5965,10 @@ impl DocHost {
         {
             tracing::warn!(chat = %chat_id, error = %err, "canonical user-message write failed");
         }
+        // A steer is read at once: while a command runs, its turn stops in
+        // place first (the runtime and its background work stay).
         match sessions
-            .steer_at(chat_id, &prompt, message_id.clone(), false, issued_at)
+            .steer_now(chat_id, &prompt, Vec::new(), message_id.clone(), issued_at)
             .await?
         {
             SteerOutcome::Accepted => {
@@ -6162,10 +6204,13 @@ impl DocHost {
                 .map(|c| c.sandbox)
                 .unwrap_or(zeron_proto::SandboxLevel::WorkspaceWrite),
             auto_approve: false,
+            access: config.as_ref().map(|c| c.access).unwrap_or_default(),
+            plan: config.as_ref().is_some_and(|c| c.plan),
             attachments: Vec::new(),
             resume: None,
             worktree: None,
             env: Default::default(),
+            extra_mcp: Vec::new(),
         })
     }
 

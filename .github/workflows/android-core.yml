@@ -40,11 +40,13 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Android NDK
+        env:
+          NDK_VERSION: 29.0.14206865
         run: |
           if [[ -z "${ANDROID_NDK_HOME:-}" ]]; then
             echo "ANDROID_NDK_HOME is unset; installing NDK via sdkmanager" >&2
-            sdkmanager --install "ndk;27.2.12479018"
-            echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+            sdkmanager --install "ndk;$NDK_VERSION"
+            echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
           fi
           echo "$ANDROID_NDK_HOME"
           if [[ ! -d "${ANDROID_NDK_HOME:-}" ]]; then
@@ -60,7 +62,7 @@ jobs:
             cargo install cargo-ndk --locked
           fi
       - name: Build mobile core for Android
-        run: REQUIRE_SO=1 scripts/android/build-core.sh "$GITHUB_WORKSPACE/target/android-core"
+        run: scripts/android/build-core.sh "$GITHUB_WORKSPACE/target/android-core"
       - name: Verify Android core outputs
         run: |
           out="$GITHUB_WORKSPACE/target/android-core"

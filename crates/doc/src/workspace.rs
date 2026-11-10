@@ -297,6 +297,7 @@ impl WorkspaceDoc {
         set_opt_str(&row, "parentChatId", chat.parent_chat_id.as_deref())?;
         set_opt_ms(&row, "lastSeenAt", chat.last_seen_at)?;
         set_opt_str(&row, "parentChatId", chat.parent_chat_id.as_deref())?;
+        set_opt_str(&row, "childKind", chat.child_kind.map(zeron_proto::ChildKind::as_str))?;
         self.doc.commit();
         Ok(())
     }
@@ -685,13 +686,21 @@ pub(crate) struct RawSpace {
     #[serde(default)]
     repository_id: Option<String>,
     github_repo: Option<String>,
+    /// (Read leniently: a malformed icon is no icon, never a lost row.)
+    #[serde(default)]
+    icon: Option<serde_json::Value>,
     #[serde(default)]
     created_at: i64,
 }
 
 impl From<RawSpace> for Space {
     fn from(raw: RawSpace) -> Self {
+        let icon = raw
+            .icon
+            .and_then(|v| serde_json::from_value::<zeron_proto::SpaceIcon>(v).ok())
+            .and_then(|icon| icon.normalized().ok().flatten());
         Space {
+            icon,
             id: raw.id,
             device_id: raw.device_id,
             path: raw.path,
@@ -751,6 +760,18 @@ pub(crate) struct RawChat {
     room_gen: Option<u32>,
     #[serde(default)]
     parent_chat_id: Option<String>,
+    /// LENIENT, as `config`: a kind from a newer peer reads as none.
+    #[serde(default, deserialize_with = "zeron_proto::lenient_child_kind")]
+    child_kind: Option<zeron_proto::ChildKind>,
+    /// Its sleep, a field apiece so each is its own last write
+    /// ([`crate::RegistryDoc::set_chat_sleep`]): until (ms; none, awake),
+    /// when it was put to sleep, and when it woke early.
+    #[serde(default)]
+    sleep_until: Option<i64>,
+    #[serde(default)]
+    slept_at: Option<i64>,
+    #[serde(default)]
+    sleep_woke_at: Option<i64>,
 }
 
 /// Decode a chat row's `config` leniently: unknown enum values (a newer
@@ -793,6 +814,12 @@ impl From<RawChat> for Chat {
             last_seen_at: raw.last_seen_at.map(dt),
             room_gen: raw.room_gen,
             parent_chat_id: raw.parent_chat_id,
+            child_kind: raw.child_kind,
+            sleep: raw.sleep_until.map(|until| zeron_proto::ChatSleep {
+                until: dt(until),
+                at: dt(raw.slept_at.unwrap_or(until)),
+                woke_at: raw.sleep_woke_at.map(dt),
+            }),
         }
     }
 }
@@ -815,6 +842,20 @@ pub(crate) struct RawSession {
     updated_at: i64,
     #[serde(default)]
     running_subagents: u32,
+    #[serde(default)]
+    background_tasks: Vec<zeron_proto::BackgroundTask>,
+    /// LENIENT, as a chat's `config`: a wait this build can't read (a newer
+    /// peer's) costs the wait, not the row.
+    #[serde(default, deserialize_with = "lenient_waiting")]
+    waiting: Option<zeron_proto::SessionWaiting>,
+}
+
+fn lenient_waiting<'de, D>(deserializer: D) -> Result<Option<zeron_proto::SessionWaiting>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 impl From<RawSession> for Session {
@@ -829,6 +870,8 @@ impl From<RawSession> for Session {
             last_turn_outcome: raw.last_turn_outcome,
             terminal_activity: raw.terminal_activity,
             running_subagents: raw.running_subagents,
+            background_tasks: raw.background_tasks,
+            waiting: raw.waiting,
         }
     }
 }
@@ -901,6 +944,8 @@ mod tests {
                 reasoning: None,
                 model_options: Default::default(),
                 sandbox: SandboxLevel::WorkspaceWrite,
+                access: Default::default(),
+                plan: false,
             }),
             last_message_preview: None,
             last_message_at: None,
@@ -909,9 +954,11 @@ mod tests {
             harness_session_cwd: None,
             harness_session_harness: None,
             parent_chat_id: Some("parent-chat".into()),
+            child_kind: None,
             space_id: None,
             last_seen_at: None,
             room_gen: None,
+            sleep: None,
         }
     }
 
@@ -926,6 +973,7 @@ mod tests {
             checkout_id: None,
             repository_id: None,
             github_repo: None,
+            icon: None,
             created_at: ts(1_500),
         }
     }
@@ -941,6 +989,8 @@ mod tests {
             last_turn_outcome: None,
             terminal_activity: None,
             running_subagents: 0,
+            background_tasks: Vec::new(),
+            waiting: None,
         }
     }
 
@@ -972,6 +1022,8 @@ mod tests {
             reasoning: Some(zeron_proto::ReasoningLevel::XHigh),
             model_options: options,
             sandbox: SandboxLevel::WorkspaceWrite,
+            access: Default::default(),
+            plan: false,
         };
         assert!(ws.set_chat_config("chat-1", &config).unwrap());
         let row = ws.chat("chat-1").unwrap().expect("row exists");
@@ -1015,6 +1067,19 @@ mod tests {
             .delete("lastCompletedTurn")
             .unwrap();
         assert_eq!(ws.read_sessions().unwrap()[0].last_completed_turn, None);
+    }
+
+    #[test]
+    fn a_child_kind_round_trips() {
+        let ws = WorkspaceDoc::new();
+        let mut sub = chat("chat-1", "dev-a");
+        sub.child_kind = Some(zeron_proto::ChildKind::Subagent);
+        ws.upsert_chat(&sub).unwrap();
+        assert_eq!(ws.chat("chat-1").unwrap(), Some(sub.clone()));
+        // Cleared by a full-row upsert without one.
+        sub.child_kind = None;
+        ws.upsert_chat(&sub).unwrap();
+        assert_eq!(ws.chat("chat-1").unwrap().unwrap().child_kind, None);
     }
 
     #[test]
