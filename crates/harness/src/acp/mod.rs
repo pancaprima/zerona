@@ -5545,7 +5545,7 @@ async fn run_session(session: Session) {
     // steering response).
     let mut steering_call: Option<(PromptInput, BoxFuture<'static, Result<Value, HarnessError>>)> =
         None;
-    let mut slash_steer_call: Option<(String, BoxFuture<'static, Result<Value, HarnessError>>)> =
+    let mut slash_steer_call: Option<(PromptInput, BoxFuture<'static, Result<Value, HarnessError>>)> =
         None;
     let mut slash_steer_no_active = false;
     let mut steer_backlog: VecDeque<PromptInput> = VecDeque::new();
@@ -5768,6 +5768,9 @@ async fn run_session(session: Session) {
                                     &params,
                                     &request_input,
                                     &session_id,
+                                    &mut questions,
+                                    access,
+                                    agent_name,
                                 ) {
                                     if !send(&event_tx, ev).await {
                                         consumer_gone = true;
@@ -6282,7 +6285,8 @@ async fn run_session(session: Session) {
                     if turn.is_some() && !interrupted {
                         if slash_steer {
                             slash_steer_no_active = false;
-                            let fut = slash_steer_call_future(&client, &session_id, &next_text);
+                            let fut =
+                                slash_steer_call_future(&client, &session_id, &next_text.text);
                             slash_steer_call = Some((next_text, fut));
                         } else {
                             let fut = steering_call_future(&client, &session_id, &next_text);
@@ -6329,6 +6333,9 @@ async fn run_session(session: Session) {
                                 &params,
                                 &request_input,
                                 &session_id,
+                                &mut questions,
+                                access,
+                                agent_name,
                             ) {
                                 if !send(&event_tx, ev).await {
                                     consumer_gone = true;
@@ -6382,6 +6389,9 @@ async fn run_session(session: Session) {
                                     &params,
                                     &request_input,
                                     &session_id,
+                                    &mut questions,
+                                    access,
+                                    agent_name,
                                 ) {
                                     if !send(&event_tx, ev).await {
                                         consumer_gone = true;
@@ -6433,11 +6443,11 @@ async fn run_session(session: Session) {
                         prompt_complete_extension.then(|| format!("zeron-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
-                    current_prompt_text = text.clone();
+                    current_prompt = text;
                     turn = Some(prompt_turn(
                         client.clone(),
                         session_id.clone(),
-                        text,
+                        &current_prompt,
                         current_prompt_id.clone(),
                     ));
                 }
@@ -6445,7 +6455,8 @@ async fn run_session(session: Session) {
                     if turn.is_some() && !interrupted {
                         if slash_steer {
                             slash_steer_no_active = false;
-                            let fut = slash_steer_call_future(&client, &session_id, &next_text);
+                            let fut =
+                                slash_steer_call_future(&client, &session_id, &next_text.text);
                             slash_steer_call = Some((next_text, fut));
                         } else {
                             let fut = steering_call_future(&client, &session_id, &next_text);
@@ -6735,13 +6746,13 @@ async fn run_session(session: Session) {
                         current_prompt_id.clone(),
                     ));
                     } else if slash_steer && immediate && turn.is_some() {
-                        let text = prompt.text.clone();
                         if slash_steer_call.is_some() || steering_call.is_some() {
                             steer_backlog.push_back(prompt);
                         } else {
                             slash_steer_no_active = false;
-                            let fut = slash_steer_call_future(&client, &session_id, &text);
-                            slash_steer_call = Some((text, fut));
+                            let fut =
+                                slash_steer_call_future(&client, &session_id, &prompt.text);
+                            slash_steer_call = Some((prompt, fut));
                         }
                     } else if steer_ext {
                         // Mid-turn injection via the `_session/steering`
