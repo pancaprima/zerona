@@ -446,7 +446,7 @@ impl RowBuilder {
                 .collect::<Vec<_>>()
                 .join("\n");
             let gap = if first { Gap::First } else { Gap::Turn };
-            rows.push(Placed { core: Arc::new(self.user_row(ctx, &entry.id, &text, false, workspace)), gap });
+            rows.push(placed_row(Arc::new(self.user_row(ctx, &entry.id, &text, false, workspace)), gap));
             return rows;
         }
         let streaming = entry.status == Some(MessageStatus::Streaming);
@@ -479,7 +479,7 @@ impl RowBuilder {
                     for (mi, message) in sent.iter().enumerate() {
                         let gap = gap_for(&rows, false);
                         let row = self.outgoing_row(ctx, &entry.id, &format!("{id}.m{mi}"), message, !*resolved, *is_error, workspace);
-                        rows.push(Placed { core: Arc::new(row), gap });
+                        rows.push(placed_row(Arc::new(row), gap));
                     }
                 }
                 MessagePart::Tool { call, .. } => {
@@ -557,7 +557,7 @@ impl RowBuilder {
                                 InputOutcome::Answered(lines) => (lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n"), WhiteSpace::PreLine),
                             };
                             let gap = gap_for(&rows, false);
-                            rows.push(Placed { core: Arc::new(chip_row(ctx, &entry.id, id, "questionmark.bubble", ColorRole::Accent, &text, white_space)), gap });
+                            rows.push(placed_row(Arc::new(chip_row(ctx, &entry.id, id, "questionmark.bubble", ColorRole::Accent, &text, white_space)), gap));
                         }
                         MessagePart::Error { id, message } => {
                             let gap = gap_for(&rows, false);
@@ -566,7 +566,7 @@ impl RowBuilder {
                         MessagePart::Fork { id, source_title, .. } => {
                             let gap = gap_for(&rows, false);
                             let text = format!("Forked from {source_title}");
-                            rows.push(Placed { core: Arc::new(chip_row(ctx, &entry.id, id, "arrow.triangle.branch", ColorRole::TextTertiary, &text, WhiteSpace::Normal)), gap });
+                            rows.push(placed_row(Arc::new(chip_row(ctx, &entry.id, id, "arrow.triangle.branch", ColorRole::TextTertiary, &text, WhiteSpace::Normal)), gap));
                         }
                         MessagePart::Switch { id, from, to, from_harness, to_harness } => {
                             let gap = gap_for(&rows, false);
@@ -1223,6 +1223,7 @@ fn chat_caption(ctx: &mut Ctx, lead: &str, title: &str, harness: Option<&str>, o
         badges: Vec::new(),
         marks: vec![(1, icon)],
         math: Vec::new(),
+        images: Vec::new(),
     }
 }
 
