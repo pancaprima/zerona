@@ -1222,10 +1222,7 @@ fn in_service_cgroup(cgroups: &str, unit: &str) -> bool {
     cgroups
         .lines()
         .filter_map(|line| line.rsplit(':').next())
-        .any(|path| {
-            path.split('/')
-                .any(|part| part == unit || part == SYSTEMD_SERVICE_NAME || part == "zeron.service")
-        })
+        .any(|path| path.split('/').any(|part| part == unit))
 }
 
 /// The systemd unit this engine runs as. `ZERON_SERVICE_UNIT` names another, so
@@ -2887,7 +2884,7 @@ mod tests {
         assert!(in_zeron_service_cgroup(
             "12:pids:/user.slice/user@1000.service/zerona.service\n1:name=systemd:/x\n"
         ));
-        assert!(in_zeron_service_cgroup(
+        assert!(!in_zeron_service_cgroup(
             "0::/user.slice/user-1000.slice/user@1000.service/app.slice/zeron.service\n"
         ));
         assert!(!in_zeron_service_cgroup(

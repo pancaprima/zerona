@@ -7080,6 +7080,8 @@ impl Transcript {
         let markdown_images = self.markdown_images.clone();
         let chat_id = self.chat_id.clone();
         let viewer = owner.clone();
+        let image_owner = owner.clone();
+        let diagram_owner = owner.clone();
         let media = self.diagram_media.get_or_insert_with(|| render::MediaUi {
             image: Some(Rc::new(move |image, id, theme| {
                 use crate::reply_images::{ReplyImage, frame, sized};
@@ -7145,7 +7147,7 @@ impl Transcript {
                     crate::chat_images::MarkdownImageState::Ready(media) => Some(media.image.clone()),
                     _ => None,
                 });
-                let open_owner = owner.clone();
+                let open_owner = image_owner.clone();
                 let open_key = key.clone();
                 Some(crate::chat_images::render_markdown_image(
                     snapshot.as_ref(),
@@ -7171,7 +7173,7 @@ impl Transcript {
                         let body = if show_source {
                             gpui::Empty.into_any_element()
                         } else {
-                            let open = owner.clone();
+                            let open = diagram_owner.clone();
                             let source = media.clone();
                             crate::image_media::preview_element(
                                 &media,
@@ -7183,7 +7185,7 @@ impl Transcript {
                                 },
                             )
                         };
-                        let toggle = owner.clone();
+                        let toggle = diagram_owner.clone();
                         render::DiagramView::Diagram(render::DiagramUi {
                             body,
                             show_source,
