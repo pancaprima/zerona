@@ -6575,7 +6575,7 @@ impl Transcript {
                 let read = match &chat_image {
                     Some((chat, mime)) => {
                         crate::attachments::read_chat_image_bytes(
-                            &engine, &executor, target, chat, &path, mime,
+                            &engine, &executor, target, chat, &path, Some(mime),
                         )
                         .await
                     }
@@ -7086,7 +7086,7 @@ impl Transcript {
                 if let Some((row_prefix, _)) = id.rsplit_once("-image-") {
                     let row = SharedString::from(row_prefix.to_owned());
                     match images.borrow_mut().lookup(&image.source, row) {
-                        Ok(ReplyImage::Loaded(loaded, request)) => {
+                        Some(ReplyImage::Loaded(loaded, request)) => {
                             let (open, menu) = (viewer.clone(), viewer.clone());
                             return Some(
                                 sized(frame(id), &loaded.image, theme)
@@ -7117,7 +7117,7 @@ impl Transcript {
                                     .into_any_element(),
                             );
                         }
-                        Ok(ReplyImage::Loading) => {
+                        Some(ReplyImage::Loading) => {
                             return Some(
                                 frame(id)
                                     .text_color(theme.text_muted)
@@ -7125,7 +7125,7 @@ impl Transcript {
                                     .into_any_element(),
                             );
                         }
-                        Err(_) => {}
+                        None => {}
                     }
                 }
                 let Some(chat_id) = chat_id.clone() else {
@@ -7397,6 +7397,7 @@ impl Transcript {
                         target.as_deref(),
                         &chat_id,
                         &source,
+                        None,
                     )
                     .await
                 }

@@ -754,7 +754,19 @@ pub(crate) async fn read_chat_image_bytes(
     target_device_id: Option<&str>,
     chat_id: &str,
     path: &str,
+    expected_raster_mime: Option<&str>,
 ) -> Option<(String, String, Vec<u8>)> {
+    if let Some(expected) = expected_raster_mime {
+        return read_chunks(
+            engine,
+            executor,
+            target_device_id,
+            methods::READ_CHAT_IMAGE_CHUNK,
+            serde_json::json!({ "chatId": chat_id, "path": path }),
+            Some(expected),
+        )
+        .await;
+    }
     let chat_id = chat_id.to_string();
     let path = path.to_string();
     read_chat_image_rpc(
@@ -819,7 +831,7 @@ pub(crate) async fn read_attachment_bytes_with_chat_fallback(
         return Some(bytes);
     }
     let chat_id = chat_id?;
-    read_chat_image_bytes(engine, executor, target_device_id, chat_id, path).await
+    read_chat_image_bytes(engine, executor, target_device_id, chat_id, path, None).await
 }
 
 /// Read back a staged file of any type (a queued message restored for editing).
@@ -883,8 +895,15 @@ pub(crate) async fn read_chat_image(
     path: &str,
     expected: &str,
 ) -> Option<LoadedAttachmentImage> {
-    let (name, mime, bytes) =
-        read_chat_image_bytes(engine, executor, target_device_id, chat_id, path, expected).await?;
+    let (name, mime, bytes) = read_chat_image_bytes(
+        engine,
+        executor,
+        target_device_id,
+        chat_id,
+        path,
+        Some(expected),
+    )
+    .await?;
     if bytes.is_empty() {
         return None;
     }
@@ -896,28 +915,6 @@ pub(crate) async fn read_chat_image(
             name
         },
     })
-}
-
-/// The original bytes of a reply's Markdown image (`{name, mimeType, bytes}`),
-/// under the same jail as [`read_chat_image`]: what Copy image puts on the
-/// clipboard, not the downscaled preview.
-pub(crate) async fn read_chat_image_bytes(
-    engine: &EngineHandle,
-    executor: &BackgroundExecutor,
-    target_device_id: Option<&str>,
-    chat_id: &str,
-    path: &str,
-    expected: &str,
-) -> Option<(String, String, Vec<u8>)> {
-    read_chunks(
-        engine,
-        executor,
-        target_device_id,
-        methods::READ_CHAT_IMAGE_CHUNK,
-        serde_json::json!({ "chatId": chat_id, "path": path }),
-        Some(expected),
-    )
-    .await
 }
 
 /// PNG, JPEG, WebP, or GIF bytes of the `expected` type, decoded off the UI

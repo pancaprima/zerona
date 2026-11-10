@@ -2108,6 +2108,7 @@ fn plan_config(plan: bool) -> crate::SteerMessage {
         message_id: None,
         attachments: Vec::new(),
         config: Some(Box::new(config)),
+        immediate: false,
     }
 }
 
