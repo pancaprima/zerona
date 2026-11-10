@@ -1215,7 +1215,9 @@ pub fn running_as_installed_service() -> bool {
 }
 
 fn in_zeron_service_cgroup(cgroups: &str) -> bool {
-    in_service_cgroup(cgroups, &service_unit())
+    let unit = service_unit();
+    in_service_cgroup(cgroups, &unit)
+        || (unit == SYSTEMD_SERVICE_NAME && in_service_cgroup(cgroups, "zeron.service"))
 }
 
 fn in_service_cgroup(cgroups: &str, unit: &str) -> bool {
@@ -2884,7 +2886,7 @@ mod tests {
         assert!(in_zeron_service_cgroup(
             "12:pids:/user.slice/user@1000.service/zerona.service\n1:name=systemd:/x\n"
         ));
-        assert!(!in_zeron_service_cgroup(
+        assert!(in_zeron_service_cgroup(
             "0::/user.slice/user-1000.slice/user@1000.service/app.slice/zeron.service\n"
         ));
         assert!(!in_zeron_service_cgroup(
