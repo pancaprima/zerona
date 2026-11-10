@@ -147,7 +147,7 @@ jobs:
   # gpui_macos lives in the pinned GPUI checkout, a separate workspace with its own cache.
   macos-frame-source:
     if: inputs.frame-source
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
