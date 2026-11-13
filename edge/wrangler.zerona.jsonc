@@ -1,5 +1,5 @@
 // Zerona/Prima edge deploy config (CI: wrangler deploy -c wrangler.zerona.jsonc).
-// No routes: workers.dev only. New bindings mirror edge/wrangler.jsonc production; their Cloudflare resources must exist before the first deploy.
+// No routes: workers.dev only. Mirrors edge/wrangler.jsonc production except CARD_IMAGES and BROWSER are intentionally unbound (optional at runtime). Other bindings’ Cloudflare resources must exist before first deploy.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "zerona-edge",
@@ -12,7 +12,6 @@
   "rules": [{ "type": "Text", "globs": ["**/*.sh"], "fallthrough": true }],
   "alias": { "loro-crdt": "loro-crdt/base64" },
   "assets": { "directory": "public" },
-  "browser": { "binding": "BROWSER" },
   "durable_objects": {
     "bindings": [
       { "name": "SESSION_ROOMS", "class_name": "SessionRoom" },
@@ -35,8 +34,7 @@
   ],
   "r2_buckets": [
     { "binding": "BLOBS", "bucket_name": "zerona-blobs" },
-    { "binding": "RELEASES", "bucket_name": "zerona-releases" },
-    { "binding": "CARD_IMAGES", "bucket_name": "zerona-card-images" }
+    { "binding": "RELEASES", "bucket_name": "zerona-releases" }
   ],
   "vars": {
     "WORKOS_CLIENT_ID": "client_01M5MQRDER15D2DWMP40MCRXRH",
