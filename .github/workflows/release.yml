@@ -194,8 +194,9 @@ jobs:
           # replaced. Keep the ones already there, so re-running this job
           # after a failed R2 upload gets past this step.
           overwrite_files: false
+      # R2 bucket and account belong to upstream; the fork publishes via GitHub Releases only.
       - name: upload to R2 (zeron.sh/releases/*)
-        if: env.CLOUDFLARE_API_TOKEN != ''
+        if: github.repository == 'zeronsh/zeron' && env.CLOUDFLARE_API_TOKEN != ''
         run: |
           # The Cloudflare API returns the odd 502; retry each object.
           put() {
