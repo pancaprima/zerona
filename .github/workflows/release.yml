@@ -67,7 +67,8 @@ jobs:
   # main may use: a run from any other branch gets no environment, so no
   # credentials, and builds ad-hoc-signed.
   macos:
-    if: github.repository == 'zeronsh/zeron'
+    # Fork pancaprima/zerona is allowed too; without signing secrets the build is ad-hoc signed.
+    if: github.repository == 'zeronsh/zeron' || github.repository == 'pancaprima/zerona'
     runs-on: macos-latest # Apple silicon
     environment: ${{ (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main') && 'apple-release' || '' }}
     env:
@@ -148,7 +149,8 @@ jobs:
           if-no-files-found: error
 
   publish:
-    if: github.repository == 'zeronsh/zeron' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Fork pancaprima/zerona is allowed too; R2 upload step self-skips without CLOUDFLARE_API_TOKEN.
+    if: (github.repository == 'zeronsh/zeron' || github.repository == 'pancaprima/zerona') && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [cursor-compatibility, linux, macos, windows]
     runs-on: ubuntu-latest
     environment: cloudflare
