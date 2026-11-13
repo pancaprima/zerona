@@ -169,10 +169,14 @@ jobs:
             echo "apksigner did not report an SHA-256 digest in --print-certs output" >&2
             exit 1
           fi
-          actual="${digest_line#*: }"
+          actual="${digest_line##*: }"
           actual="${actual//[[:space:]]/}"
           actual_lc="${actual,,}"
           actual_lc="${actual_lc//:/}"
+          if [[ ! "$actual_lc" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "apksigner SHA-256 digest line not parseable: ${digest_line}" >&2
+            exit 1
+          fi
           expected="${ANDROID_RELEASE_CERT_SHA256//[[:space:]]/}"
           expected_lc="${expected,,}"
           expected_lc="${expected_lc//:/}"
