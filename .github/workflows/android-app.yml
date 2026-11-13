@@ -115,10 +115,34 @@ jobs:
             echo "ZERON_ANDROID_KEY_ALIAS=$ANDROID_RELEASE_KEY_ALIAS"
             echo "ZERON_ANDROID_KEY_PASSWORD=$ANDROID_RELEASE_KEY_PASSWORD"
           } >> "$GITHUB_ENV"
+          keystore_bytes="$(wc -c < "$keystore" | tr -d ' ')"
+          echo "Release keystore written: ${keystore_bytes} bytes"
+          set +e
+          keytool_sha="$(keytool -list -v -keystore "$keystore" -storepass "$ANDROID_RELEASE_STORE_PASSWORD" -alias "$ANDROID_RELEASE_KEY_ALIAS" 2>&1 | grep -E 'SHA256:|SHA-256:')"
+          keytool_ec=${PIPESTATUS[0]}
+          set -e
+          if (( keytool_ec != 0 )); then
+            echo "keytool failed to read keystore alias (exit ${keytool_ec}); check ANDROID_RELEASE_KEY_ALIAS and store password" >&2
+            exit 1
+          fi
+          if [[ -z "$keytool_sha" ]]; then
+            echo "keytool did not report SHA-256 for alias $ANDROID_RELEASE_KEY_ALIAS" >&2
+            exit 1
+          fi
+          echo "Keystore certificate fingerprint (keytool):"
+          printf '%s\n' "$keytool_sha"
       - name: Assemble signed release APK (private)
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         working-directory: apps/android
-        run: ./gradlew :app:assembleRelease -PzeronVersionCode="${{ github.run_number }}" --console=plain --no-configuration-cache
+        run: |
+          set -euo pipefail
+          ./gradlew --stop
+          if test -f "$ZERON_ANDROID_KEYSTORE"; then
+            echo "ZERON_ANDROID_KEYSTORE present: yes"
+          else
+            echo "ZERON_ANDROID_KEYSTORE present: no"
+          fi
+          ./gradlew :app:assembleRelease -PzeronVersionCode="${{ github.run_number }}" --console=plain --no-configuration-cache
       - name: Verify release APK signature (apksigner)
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         env:
@@ -154,6 +178,9 @@ jobs:
           expected_lc="${expected_lc//:/}"
           if [[ "$actual_lc" != "$expected_lc" ]]; then
             echo "Release APK signer SHA-256 does not match ANDROID_RELEASE_CERT_SHA256" >&2
+            echo "APK signer SHA-256 (actual): ${actual_lc}"
+            echo "apksigner --print-certs (first 6 lines):"
+            head -n 6 <<<"$cert_out"
             exit 1
           fi
           echo "Release APK signature verified (SHA-256 matches ANDROID_RELEASE_CERT_SHA256)."
