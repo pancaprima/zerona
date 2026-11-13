@@ -103,14 +103,60 @@ pub fn running_subagents(session: Option<&Session>, now: DateTime<Utc>) -> u32 {
         .map_or(0, |s| s.running_subagents)
 }
 
+/// Background processes of a chat, staleness-checked like
+/// [`running_subagents`]: engines heartbeat a live runtime's row, so a row
+/// past [`SESSION_STALE_MS`] belongs to an engine that took its processes
+/// with it. Pure.
+pub fn background_tasks(session: Option<&Session>, now: DateTime<Utc>) -> &[crate::BackgroundTask] {
+    session
+        .filter(|s| now.signed_duration_since(s.updated_at).num_milliseconds() <= SESSION_STALE_MS)
+        .map_or(&[], |s| s.background_tasks.as_slice())
+}
+
+/// What a chat's agent waits on after its turn ended, while its engine still
+/// says so: a row nobody refreshed inside [`SESSION_STALE_MS`] belongs to an
+/// engine that is gone, and its wait with it. Pure.
+pub fn waiting(session: Option<&Session>, now: DateTime<Utc>) -> Option<&crate::SessionWaiting> {
+    session
+        .filter(|s| now.signed_duration_since(s.updated_at).num_milliseconds() <= SESSION_STALE_MS)
+        .and_then(|s| s.waiting.as_ref())
+}
+
+/// A session whose wait has gone stale, read as if it held none: its turn
+/// did end, so it reads as finished (unseen) rather than idle or waiting.
+fn without_stale_wait<'a>(
+    session: Option<&'a Session>,
+    now: DateTime<Utc>,
+) -> Option<std::borrow::Cow<'a, Session>> {
+    let session = session?;
+    if session.waiting.is_some() && waiting(Some(session), now).is_none() {
+        let mut cleared = session.clone();
+        cleared.waiting = None;
+        return Some(std::borrow::Cow::Owned(cleared));
+    }
+    Some(std::borrow::Cow::Borrowed(session))
+}
+
 /// The full display status for a chat row / tab dot: live states win, then the
 /// synced seen marker decides completed-vs-idle. Staleness gating rides on
-/// [`effective_indicator`]; the derivation itself is [`crate::chat_indicator`].
+/// [`effective_indicator`] and [`waiting`]; the derivation itself is
+/// [`crate::chat_indicator`].
 pub fn display_status(chat: &Chat, session: Option<&Session>, now: DateTime<Utc>) -> ChatIndicator {
+    display_status_from(chat.seen_marks(), session, now)
+}
+
+/// [`display_status`] from a chat's [`crate::SeenMarks`] alone, for a viewport
+/// that holds chats as raw rows. The same rule, not a copy of it.
+pub fn display_status_from(
+    chat: crate::SeenMarks,
+    session: Option<&Session>,
+    now: DateTime<Utc>,
+) -> ChatIndicator {
     if session.is_some_and(|s| session_stale(s, now)) {
         return ChatIndicator::Idle;
     }
-    crate::chat_indicator(chat, session)
+    let session = without_stale_wait(session, now);
+    crate::entities::indicator_from(chat, session.as_deref(), true)
 }
 
 /// Same seen/outcome rules, restricted to native work for composer controls.
@@ -127,7 +173,8 @@ pub fn native_display_status(
     }) {
         return ChatIndicator::Idle;
     }
-    crate::entities::chat_indicator_inner(chat, session, false)
+    let session = without_stale_wait(session, now);
+    crate::entities::indicator_from(chat.seen_marks(), session.as_deref(), false)
 }
 
 /// Includes terminal-only results, which do not append an assistant message.
@@ -151,8 +198,10 @@ pub fn attention_rank(status: ChatIndicator) -> u8 {
         ChatIndicator::AwaitingInput => 0,
         ChatIndicator::Errored => 1,
         ChatIndicator::Working => 2,
-        ChatIndicator::Completed => 3,
-        ChatIndicator::Idle => 4,
+        // (It isn't the person's yet: after work, before anything done.)
+        ChatIndicator::Waiting => 3,
+        ChatIndicator::Completed => 4,
+        ChatIndicator::Idle => 5,
     }
 }
 
@@ -311,6 +360,7 @@ mod project_tests {
             checkout_id: None,
             repository_id: repository.map(str::to_string),
             github_repo: None,
+            icon: None,
             created_at: DateTime::<Utc>::UNIX_EPOCH + chrono::TimeDelta::minutes(minutes),
         }
     }
@@ -385,7 +435,78 @@ mod gate_tests {
             last_turn_outcome: None,
             terminal_activity: None,
             running_subagents: running,
+            background_tasks: Vec::new(),
+            waiting: None,
         }
+    }
+
+    fn chat_at(now: DateTime<Utc>, seen: Option<DateTime<Utc>>) -> Chat {
+        let mut chat: Chat = serde_json::from_value(serde_json::json!({
+            "id": "chat", "deviceId": "dev", "archived": false,
+            "createdAt": now, "lastMessageAt": now,
+        }))
+        .unwrap();
+        chat.last_seen_at = seen;
+        chat
+    }
+
+    fn waiting_session(updated_at: DateTime<Utc>) -> Session {
+        let mut s = running_session(0, updated_at);
+        s.status = SessionStatus::Idle;
+        s.waiting = Some(crate::SessionWaiting {
+            since: updated_at,
+            on: vec![crate::WaitingOn {
+                id: "bn1".into(),
+                kind: crate::WaitingKind::Process,
+                label: "cargo test".into(),
+            }],
+        });
+        s
+    }
+
+    #[test]
+    fn a_wait_shows_while_its_engine_holds_it_and_reads_finished_once_gone() {
+        let now = Utc::now();
+        let chat = chat_at(now, None);
+        let fresh = waiting_session(now - chrono::Duration::seconds(10));
+        assert_eq!(display_status(&chat, Some(&fresh), now), ChatIndicator::Waiting);
+        assert!(waiting(Some(&fresh), now).is_some());
+        // The engine that held it went away: the turn did end, so it reads
+        // as finished and unseen, never waiting forever, never idle.
+        let stale = waiting_session(now - chrono::Duration::milliseconds(SESSION_STALE_MS + 1));
+        assert!(waiting(Some(&stale), now).is_none());
+        assert_eq!(display_status(&chat, Some(&stale), now), ChatIndicator::Completed);
+        assert_eq!(native_display_status(&chat, Some(&stale), now), ChatIndicator::Completed);
+    }
+
+    #[test]
+    fn asking_and_working_beat_waiting() {
+        let now = Utc::now();
+        let chat = chat_at(now, None);
+        let mut s = waiting_session(now);
+        s.status = SessionStatus::AwaitingInput;
+        assert_eq!(display_status(&chat, Some(&s), now), ChatIndicator::AwaitingInput);
+        s.status = SessionStatus::Working;
+        assert_eq!(display_status(&chat, Some(&s), now), ChatIndicator::Working);
+    }
+
+    #[test]
+    fn sleep_states_follow_time_early_wakes_and_seen() {
+        use crate::{ChatSleep, SleepState};
+        let now = Utc::now();
+        let hour = chrono::Duration::hours(1);
+        let mut chat = chat_at(now - hour * 3, Some(now - hour * 3));
+        assert_eq!(chat.sleep_state(now), SleepState::Awake);
+        chat.sleep = Some(ChatSleep { until: now + hour, at: now - hour, woke_at: None });
+        assert_eq!(chat.sleep_state(now), SleepState::Asleep { until: now + hour });
+        // Its time passed: woke then, until it's seen.
+        assert_eq!(chat.sleep_state(now + hour * 2), SleepState::Woke { at: now + hour });
+        chat.last_seen_at = Some(now + hour + chrono::Duration::seconds(1));
+        assert_eq!(chat.sleep_state(now + hour * 2), SleepState::Awake);
+        // Woken early by its engine: woke then, whatever its time says.
+        chat.last_seen_at = Some(now - hour);
+        chat.sleep.as_mut().unwrap().woke_at = Some(now);
+        assert_eq!(chat.sleep_state(now), SleepState::Woke { at: now });
     }
 
     #[test]
@@ -859,6 +980,152 @@ pub fn tool_group_summary(tools: &[(crate::ToolCall, bool)]) -> String {
     summary
 }
 
+// ---------------------------------------------------------------------------
+// Question answers (pure)
+// ---------------------------------------------------------------------------
+
+/// Longest answer or label a one-line surface shows, in chars. The doc keeps
+/// the whole answer; a chip only summarizes it.
+const ANSWER_DISPLAY_MAX: usize = 160;
+
+/// What became of the questions an agent asked — one derivation for every
+/// surface that shows them (the desktop chip, the iOS chip, `read_chat`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputOutcome {
+    /// Still waiting on the person.
+    Pending,
+    /// Resolved before answers were recorded on the transcript: only that it
+    /// was resolved is known.
+    Unrecorded,
+    /// Closed without an answer: dismissed, or the run stopped waiting —
+    /// `Recherche → Not answered`.
+    Closed(AnswerLine),
+    /// One line per question, in the order asked.
+    Answered(Vec<AnswerLine>),
+}
+
+/// One question and what came back, ready for a one-line surface:
+/// `Recherche → Deep dive`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnswerLine {
+    /// The question's header — or its text, when headers don't tell the
+    /// questions apart (an MCP form names every field "<server> asks").
+    pub label: String,
+    /// What the agent received: picked options joined with ", ", typed text
+    /// in quotes, "Skipped" when nothing was given.
+    pub answer: String,
+    /// Some of the answer is text the person typed rather than an offered
+    /// option.
+    pub typed: bool,
+    /// Nothing was given for this question.
+    pub skipped: bool,
+}
+
+impl std::fmt::Display for AnswerLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} → {}", self.label, self.answer)
+    }
+}
+
+/// [`InputOutcome`] from an input part's fields. `answers` is `None` on parts
+/// written before answers were recorded, `Some([])` when the questions closed
+/// unanswered.
+pub fn input_outcome(
+    questions: &[crate::UserInputQuestion],
+    resolved: bool,
+    answers: Option<&[crate::UserInputAnswer]>,
+) -> InputOutcome {
+    if !resolved {
+        return InputOutcome::Pending;
+    }
+    let Some(answers) = answers else {
+        return InputOutcome::Unrecorded;
+    };
+    if answers.is_empty() {
+        return InputOutcome::Closed(AnswerLine {
+            label: input_header(questions),
+            answer: "Not answered".to_owned(),
+            typed: false,
+            skipped: true,
+        });
+    }
+    let lines: Vec<AnswerLine> = questions
+        .iter()
+        .map(|question| {
+            let given: Vec<&String> = answers
+                .iter()
+                .find(|a| a.question_id == question.id)
+                .map(|a| a.labels.iter().filter(|l| !l.trim().is_empty()).collect())
+                .unwrap_or_default();
+            let typed = given.iter().any(|l| !question.options.contains(l));
+            let answer = if given.is_empty() {
+                "Skipped".to_owned()
+            } else {
+                given
+                    .iter()
+                    .map(|l| {
+                        let text = clip(&single_line(l), ANSWER_DISPLAY_MAX);
+                        if question.options.contains(l) {
+                            text
+                        } else {
+                            format!("“{text}”")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            AnswerLine {
+                label: answer_label(question, questions),
+                answer,
+                typed,
+                skipped: given.is_empty(),
+            }
+        })
+        .collect();
+    if lines.is_empty() {
+        return InputOutcome::Unrecorded;
+    }
+    InputOutcome::Answered(lines)
+}
+
+/// What a one-line surface calls a set of questions: the first one's
+/// header, "Question" when it has none.
+pub fn input_header(questions: &[crate::UserInputQuestion]) -> String {
+    questions
+        .first()
+        .map(|q| single_line(&q.header))
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "Question".to_owned())
+}
+
+fn answer_label(question: &crate::UserInputQuestion, all: &[crate::UserInputQuestion]) -> String {
+    let header = single_line(&question.header);
+    let shared = all
+        .iter()
+        .filter(|q| single_line(&q.header) == header)
+        .count()
+        > 1;
+    if !header.is_empty() && !shared {
+        return header;
+    }
+    let text = single_line(&question.question);
+    if !text.is_empty() {
+        return clip(&text, ANSWER_DISPLAY_MAX);
+    }
+    if header.is_empty() {
+        "Question".to_owned()
+    } else {
+        header
+    }
+}
+
+fn clip(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((end, _)) => format!("{}…", text[..end].trim_end()),
+        None => text.to_owned(),
+    }
+}
+
 /// The status-dot palette, as oklch triples (L, C, H°).
 ///
 /// Colors live here rather than in the viewport because the *meaning* of a
@@ -1015,6 +1282,130 @@ mod checkout_tests {
             checkout_label(CheckoutKind::NewWorktree, Some(&plain("main"))),
             "New worktree"
         );
+    }
+}
+
+#[cfg(test)]
+mod input_outcome_tests {
+    use super::*;
+    use crate::{UserInputAnswer, UserInputQuestion};
+
+    fn question(id: &str, header: &str, text: &str, options: &[&str]) -> UserInputQuestion {
+        UserInputQuestion {
+            id: id.into(),
+            header: header.into(),
+            question: text.into(),
+            options: options.iter().map(|o| (*o).to_owned()).collect(),
+            multi_select: false,
+            prefill: None,
+            multiline: false,
+        }
+    }
+
+    fn answer(id: &str, labels: &[&str]) -> UserInputAnswer {
+        UserInputAnswer {
+            question_id: id.into(),
+            labels: labels.iter().map(|l| (*l).to_owned()).collect(),
+        }
+    }
+
+    fn lines(outcome: InputOutcome) -> Vec<String> {
+        match outcome {
+            InputOutcome::Answered(lines) => lines.iter().map(ToString::to_string).collect(),
+            other => panic!("not answered: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolution_without_answers_reads_as_what_is_known() {
+        let qs = [question("q", "Recherche", "How deep?", &["Deep dive"])];
+        assert_eq!(input_outcome(&qs, false, None), InputOutcome::Pending);
+        // Answers may already be stamped while the part still reads open.
+        assert_eq!(
+            input_outcome(&qs, false, Some(&[answer("q", &["Deep dive"])])),
+            InputOutcome::Pending
+        );
+        // Older docs: resolved, but never recorded what was answered — must
+        // not claim it went unanswered.
+        assert_eq!(input_outcome(&qs, true, None), InputOutcome::Unrecorded);
+        let InputOutcome::Closed(closed) = input_outcome(&qs, true, Some(&[])) else {
+            panic!("closed");
+        };
+        assert_eq!(closed.to_string(), "Recherche → Not answered");
+        assert!(closed.skipped);
+        // No header to name the questions by.
+        let bare = [question("q", " ", "How deep?", &[])];
+        let InputOutcome::Closed(closed) = input_outcome(&bare, true, Some(&[])) else {
+            panic!("closed");
+        };
+        assert_eq!(closed.to_string(), "Question → Not answered");
+    }
+
+    #[test]
+    fn answers_pair_with_their_questions_in_the_order_asked() {
+        let qs = [
+            question("depth", "Recherche", "How deep?", &["Quick", "Deep dive"]),
+            question(
+                "format",
+                "Format",
+                "Deliver as?",
+                &["Table", "Diagram", "Prose"],
+            ),
+            question("scope", "Scope", "Anything else?", &["No"]),
+            question("notes", "Notes", "Notes for me?", &[]),
+        ];
+        let given = [
+            answer("notes", &["  "]),
+            answer("scope", &["Include the\niOS app"]),
+            answer("format", &["Table", "Diagram"]),
+            answer("depth", &["Deep dive"]),
+        ];
+        assert_eq!(
+            lines(input_outcome(&qs, true, Some(&given))),
+            vec![
+                "Recherche → Deep dive",
+                "Format → Table, Diagram",
+                "Scope → “Include the iOS app”",
+                "Notes → Skipped",
+            ]
+        );
+        let InputOutcome::Answered(parsed) = input_outcome(&qs, true, Some(&given)) else {
+            unreachable!()
+        };
+        assert_eq!(
+            parsed
+                .iter()
+                .map(|l| (l.typed, l.skipped))
+                .collect::<Vec<_>>(),
+            vec![(false, false), (false, false), (true, false), (false, true)]
+        );
+    }
+
+    #[test]
+    fn shared_headers_fall_back_to_the_question_text() {
+        // An MCP form asks every field under one "<server> asks" header.
+        let qs = [
+            question("a", "figma asks", "File name", &[]),
+            question("b", "figma asks", "Make it public?", &["Yes", "No"]),
+        ];
+        let given = [answer("a", &["Landing v2"]), answer("b", &["No"])];
+        assert_eq!(
+            lines(input_outcome(&qs, true, Some(&given))),
+            vec!["File name → “Landing v2”", "Make it public? → No"]
+        );
+    }
+
+    #[test]
+    fn long_typed_answers_are_clipped_for_one_line_surfaces() {
+        let qs = [question("q", "Notes", "Notes?", &[])];
+        let long = "word ".repeat(80);
+        let InputOutcome::Answered(parsed) =
+            input_outcome(&qs, true, Some(&[answer("q", &[long.as_str()])]))
+        else {
+            panic!("answered");
+        };
+        assert!(parsed[0].answer.ends_with("…”"), "{}", parsed[0].answer);
+        assert!(parsed[0].answer.chars().count() <= ANSWER_DISPLAY_MAX + 3);
     }
 }
 

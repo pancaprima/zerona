@@ -32,12 +32,62 @@ final class AppModel {
         }
     }
 
+    /// Activity: the Sessions page as one list of the chats that need you,
+    /// Working, Asleep and Archived folded at its foot (the desktop
+    /// sidebar's Activity view). Local to this phone; off by default.
+    var activityOn: Bool {
+        get { UserDefaults.standard.bool(forKey: ActivityList.Keys.on) }
+        set {
+            guard newValue != activityOn else { return }
+            UserDefaults.standard.set(newValue, forKey: ActivityList.Keys.on)
+            settingsChanged()
+        }
+    }
+
+    /// Activity folds chats under way (working, or waiting on work that
+    /// will wake them) into Working.
+    var activityWorkingShelf: Bool {
+        get { UserDefaults.standard.object(forKey: ActivityList.Keys.workingShelf) as? Bool ?? true }
+        set {
+            guard newValue != activityWorkingShelf else { return }
+            UserDefaults.standard.set(newValue, forKey: ActivityList.Keys.workingShelf)
+            settingsChanged()
+        }
+    }
+
+    /// Days a chat may sit idle before Activity archives it (0: never).
+    var activityArchiveAfter: Int {
+        get { UserDefaults.standard.integer(forKey: ActivityList.Keys.archiveAfter) }
+        set {
+            guard newValue != activityArchiveAfter else { return }
+            UserDefaults.standard.set(newValue, forKey: ActivityList.Keys.archiveAfter)
+            settingsChanged()
+        }
+    }
+
+    /// A view setting changed: redraw, and sweep at once rather than a
+    /// minute on.
+    private func settingsChanged() {
+        lastSweep = nil
+        refreshWorkspace()
+        observers.values.forEach { $0() }
+    }
+
+    /// Chats on screen now (a session page): never archived for being idle.
+    var openChatIds = Set<String>()
+    private var lastSweep: Date?
+    /// The archived chats the last sweep saw (nil until the first: it only
+    /// looks).
+    private var sweptArchived: Set<String>?
+
     struct LiveCounts: Equatable {
         var working = 0
         var awaiting = 0
     }
 
     @MainActor lazy var voice = RemoteVoiceController(app: self)
+    /// Every chat's terminals (shells on their hosts).
+    @MainActor lazy var terminals = TerminalStore(app: self)
     /// Cloud for this account (status, GitHub, agent logins, billing).
     @MainActor lazy var cloud = CloudStore(app: self)
     private(set) var client: CoreClient?
@@ -56,6 +106,9 @@ final class AppModel {
     private var refreshScheduled = false
     private var clock: Timer?
     private let path = NWPathMonitor()
+    /// The network path's shape last seen (interfaces in order), so only a
+    /// real change re-pairs direct connections.
+    private var pathShape: String?
 
     var onSignedIn: (() -> Void)?
     var onSignOut: (() -> Void)?
@@ -98,7 +151,21 @@ final class AppModel {
     init() {
         // Online/offline + interface changes cut sync backoff short.
         path.pathUpdateHandler = { [weak self] p in
-            DispatchQueue.main.async { self?.client?.setNetworkOnline(online: p.status == .satisfied) }
+            // What a direct connection's path depends on: the interfaces in
+            // use and their order (Wi-Fi first, or cellular), and whether
+            // there's a route at all. Re-delivered paths with the same shape
+            // must not tear down a healthy direct link.
+            let shape = p.status == .satisfied
+                ? p.availableInterfaces.map { "\($0.type)/\($0.name)" }.joined(separator: ",") + (p.isExpensive ? "!" : "")
+                : ""
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.client?.setNetworkOnline(online: p.status == .satisfied)
+                if let last = self.pathShape, last != shape, !shape.isEmpty {
+                    self.client?.networkPathChanged()
+                }
+                self.pathShape = shape
+            }
         }
         path.start(queue: DispatchQueue(label: "sh.zeron.path"))
         let args = ProcessInfo.processInfo.arguments
@@ -113,6 +180,19 @@ final class AppModel {
             return
         }
         #endif
+        if args.contains("-demo") {
+            // The demo (and its UI tests) start Activity as asked (`-activity
+            // on`), off otherwise: one run's choice must not seed the next.
+            let i = args.firstIndex(of: "-activity")
+            let on = i.map { $0 + 1 < args.count && args[$0 + 1] == "on" } ?? false
+            UserDefaults.standard.set(on, forKey: ActivityList.Keys.on)
+            for key in [ActivityList.Keys.workingShelf, ActivityList.Keys.archiveAfter, ActivityList.Keys.unarchived, ActivityList.Keys.openShelves] {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+            // A test that says how Activity starts says how the list folds
+            // too: nothing folded.
+            if i != nil { UserDefaults.standard.removeObject(forKey: "collapsedSections") }
+        }
         if args.contains("-demo") || args.contains("-route") && Credentials.stored() == nil {
             start(.demo(options: Self.demoOptions()))
         } else if let stored = Credentials.stored() {
@@ -158,6 +238,11 @@ final class AppModel {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let dir = credentials.isDemo ? support.appendingPathComponent("demo", isDirectory: true) : Self.coreDir
         if !credentials.isDemo { Self.claimCoreDir(for: credentials) }
+        // `-fresh-demo`: the demo from its fixtures alone, none of an earlier
+        // run's writes (sleeps, archives) carried over.
+        if credentials.isDemo, ProcessInfo.processInfo.arguments.contains("-fresh-demo") {
+            try? FileManager.default.removeItem(at: dir)
+        }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let config = CoreConfig(
             edgeUrl: Self.edgeURL,
@@ -231,6 +316,7 @@ final class AppModel {
 
     @MainActor func signOutLocally() {
         voice.stop()
+        terminals.signOut()
         endDeliveryBackgroundTask()
         lastDeliveryActivity = .distantPast
         client?.shutdown()
@@ -413,9 +499,50 @@ final class AppModel {
         let changed = rowsChanged || page != frontPage || archivedVMs != archived || counts != live || hosts != lastHosts
         lastHosts = hosts
         live = counts
+        if !freshSideChats.isEmpty { sweepFreshSideChats() }
         frontPage = page
         archived = archivedVMs
         if changed { observers.values.forEach { $0() } }
+        sweepIdle(pinsReady: ws.pinsReady)
+    }
+
+    /// Activity's auto-archive, at most once a minute: each chat idle longer
+    /// than the days set goes to Archived. Never one that's pinned, open now,
+    /// asleep, woken, under way or needing you; nothing until the pins are
+    /// known (or a pinned chat could look unpinned). A chat brought back
+    /// from Archived counts as just moved, so being old doesn't send it
+    /// straight back. (As the desktop's sweep: screens/shell/activity.)
+    private func sweepIdle(pinsReady: Bool, now: Date = Date()) {
+        if let last = lastSweep, now.timeIntervalSince(last) < 60 { return }
+        guard pinsReady else { return }
+        lastSweep = now
+        let active = frontPage.sessions + frontPage.sectionSessions.values.flatMap { $0 }
+        let archivedNow = Set(archived.map(\.id))
+        var back = UserDefaults.standard.dictionary(forKey: ActivityList.Keys.unarchived) as? [String: Double] ?? [:]
+        let was = sweptArchived
+        sweptArchived = archivedNow
+        let here = Set(active.map(\.id))
+        var changed = false
+        if let was {
+            for id in here where was.contains(id) {
+                back[id] = now.timeIntervalSince1970
+                changed = true
+            }
+        }
+        for id in back.keys where !here.contains(id) {
+            back[id] = nil
+            changed = true
+        }
+        if changed { UserDefaults.standard.set(back, forKey: ActivityList.Keys.unarchived) }
+        guard was != nil, activityOn, activityArchiveAfter > 0 else { return }
+        let cutoff = now.addingTimeInterval(-Double(activityArchiveAfter) * 86_400)
+        var seen = Set<String>()
+        for vm in active where seen.insert(vm.id).inserted {
+            let idleSince = max(vm.lastActivity, back[vm.id].map { Date(timeIntervalSince1970: $0) } ?? .distantPast)
+            if ActivityList.archivesWhenIdle(vm, open: openChatIds.contains(vm.id)), idleSince < cutoff {
+                attempt("auto-archive") { try client?.archiveSession(chatId: vm.id) }
+            }
+        }
     }
 
     /// Like the desktop's project grouping: checkouts of one repository
@@ -448,7 +575,9 @@ final class AppModel {
 
     static func status(_ i: ChatIndicator) -> SessionRowVM.Status {
         switch i {
-        case .working: .working
+        // Waiting is drawn exactly as Working (`SessionRowVM.waiting` tells
+        // them apart).
+        case .working, .waiting: .working
         case .awaitingInput: .awaiting
         case .errored: .errored
         case .completed: .completed
@@ -478,7 +607,12 @@ final class AppModel {
             timeLabel: r.timeLabel,
             unseen: r.unseen,
             pinned: r.pinned,
-            sendFailed: r.sendState == .failed
+            sendFailed: r.sendState == .failed,
+            waiting: r.indicator == .waiting,
+            canStopWaiting: r.waitsOnProcess,
+            sleepUntil: r.sleepUntilMs.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000) },
+            wokeAt: r.wokeAtMs.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000) },
+            lastActivity: Date(timeIntervalSince1970: TimeInterval(r.lastActivityMs) / 1000)
         )
     }
 
@@ -517,6 +651,45 @@ final class AppModel {
         Toast.show("Archived", action: "Undo", in: window) { [weak self] in self?.unarchive(id) }
     }
     func unarchive(_ id: String) { attempt("unarchive") { try client?.unarchiveSession(chatId: id) } }
+
+    /// Activity's Sleep: asleep until `until`, on every device.
+    func sleep(_ id: String, until: Date) {
+        do {
+            try client?.sleepSession(chatId: id, untilMs: Int64((until.timeIntervalSince1970 * 1000).rounded()))
+        } catch {
+            NSLog("sleep failed: \(error)")
+            Self.toast("Couldn't put this chat to sleep")
+        }
+    }
+
+    /// Activity's Wake: awake now.
+    func wake(_ id: String) {
+        do {
+            try client?.sleepSession(chatId: id, untilMs: nil)
+        } catch {
+            NSLog("wake failed: \(error)")
+            Self.toast("Couldn't wake this chat")
+        }
+    }
+
+    /// Stop waiting on the background process its agent said it waits on
+    /// (asked of the chat's host): its turn then reads as finished.
+    func stopWaiting(_ id: String) {
+        guard let client else { return }
+        Task { @MainActor in
+            do {
+                _ = try await client.stopWaiting(chatId: id)
+            } catch {
+                NSLog("stop waiting failed: \(error)")
+                Self.toast("Couldn't stop waiting")
+            }
+        }
+    }
+
+    private static func toast(_ text: String) {
+        let window = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
+        Toast.show(text, in: window)
+    }
     /// Permanently: the row on every device (a Cloud chat's machine too).
     func delete(_ id: String) { attempt("delete") { try client?.deleteSession(chatId: id) } }
     func move(_ id: String, toSection section: String?) { attempt("assign") { try client?.assignSection(chatId: id, sectionId: section) } }
@@ -548,6 +721,67 @@ final class AppModel {
             NSLog("open session failed: \(error)")
             return nil
         }
+    }
+
+    // MARK: Companions (side chats, subagents)
+
+    /// A session's side chats, newest first.
+    func sideChats(of chatId: String) -> [SessionRowVM] {
+        (client?.childSessions(parentId: chatId) ?? []).filter { !$0.archived }.map(Self.vm)
+    }
+
+    /// The subagents a session's agent spawned (its open transcript).
+    func sessionSubagents(_ chatId: String) -> [SubagentRow] {
+        guard let client, !chatId.contains("--sub--") else { return [] }
+        return (client.session(chatId: chatId) ?? (try? client.openSession(chatId: chatId)))?.subagents() ?? []
+    }
+
+    /// Side chats started here that nothing has been sent in yet: closed
+    /// unused, they go (the desktop only writes one at its first send).
+    /// Kept across launches, so one left open when the app was killed goes
+    /// too.
+    private(set) var freshSideChats = Set(UserDefaults.standard.stringArray(forKey: "freshSideChats") ?? []) {
+        didSet { UserDefaults.standard.set(Array(freshSideChats), forKey: "freshSideChats") }
+    }
+
+    func forgetFreshSideChat(_ id: String) {
+        freshSideChats.remove(id)
+    }
+
+    /// Fresh side chats nobody has open: empty a minute on, they go; one
+    /// that got a message (from any device) is just a side chat now.
+    private func sweepFreshSideChats() {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        for id in freshSideChats {
+            guard let row = rows[id] ?? client?.sessionRow(chatId: id) else { continue }
+            if row.preview != nil {
+                freshSideChats.remove(id)
+            } else if SessionViewController.live(id) == nil, now - row.createdAtMs > 60_000 {
+                freshSideChats.remove(id)
+                delete(id)
+            }
+        }
+    }
+
+    /// A fresh side chat under `parentId`; nil when it couldn't be made.
+    func createSideChat(parentId: String) -> String? {
+        do {
+            let id = try client?.createSideChat(parentId: parentId)
+            if let id { freshSideChats.insert(id) }
+            refreshWorkspace()
+            return id
+        } catch {
+            NSLog("side chat failed: \(error)")
+            return nil
+        }
+    }
+
+    /// Fork `sourceId` into a side chat (its host copies the conversation).
+    func forkSideChat(sourceId: String) async throws -> String {
+        guard let client else { throw CoreError.Closed }
+        let id = try await client.forkSideChat(sourceId: sourceId)
+        await MainActor.run { refreshWorkspace() }
+        return id
     }
 
     // MARK: New session
@@ -687,6 +921,15 @@ final class AppModel {
         (try? await client?.githubBranches(repo: repo)) ?? []
     }
 
+    /// The worktree a new session starts in. Only a git project can make one:
+    /// the pick outlives a switch to a plain folder (where its chip is hidden)
+    /// and the host would refuse the run, so there it's left for the next git
+    /// project rather than sent.
+    static func worktreeSpec(draft: NewSessionDraft, project: ProjectView?) -> WorktreeSpec? {
+        guard draft.worktree, let project, project.gitDetected else { return nil }
+        return WorktreeSpec(repoPath: project.path, base: draft.branch ?? "HEAD", spaceId: project.id)
+    }
+
     /// Create the chat, open it, and send the first message.
     func createSession(draft: NewSessionDraft, text: String, images: [StagedImage]) -> String? {
         guard let client else { return nil }
@@ -700,10 +943,9 @@ final class AppModel {
         }
         let config = ChatConfig(harness: draft.harness, model: draft.model, reasoning: draft.effort, modelOptions: [:], sandbox: .workspaceWrite)
         do {
-            let chatId = try client.createSession(newSession: NewSession(target: target, config: config, branch: draft.worktree ? nil : draft.branch, cwd: nil, title: nil))
+            let worktree = Self.worktreeSpec(draft: draft, project: rawProjects.first { $0.id == draft.projectId })
+            let chatId = try client.createSession(newSession: NewSession(target: target, config: config, branch: worktree == nil ? draft.branch : nil, cwd: nil, title: nil))
             let handle = try client.openSession(chatId: chatId)
-            let project = rawProjects.first { $0.id == draft.projectId }
-            let worktree = draft.worktree ? project.map { WorktreeSpec(repoPath: $0.path, base: draft.branch ?? "HEAD", spaceId: $0.id) } : nil
             _ = try handle.send(request: SendRequest(text: text, attachments: images.map(\.outgoing), worktree: worktree, busy: .queue))
             noteDeliveryActivity()
             refreshWorkspace()

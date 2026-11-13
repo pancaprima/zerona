@@ -15,7 +15,26 @@ use zeron_rpc::{RpcError, RpcReply, RpcService, methods};
 
 use zeron_sync::DocsStore;
 
+pub mod acp_registry;
 pub mod agent_accounts;
+
+/// Which build this engine is: its git commit and when its executable was
+/// built (the file's modification time, in seconds), as
+/// `"<commit>.<seconds>"`. Read once, as the engine starts: a binary replaced
+/// on disk while it runs leaves its id as it was, so a client can compare it
+/// with `zeron-engine --build-id` of the binary there now.
+pub fn build_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        let built = std::env::current_exe()
+            .and_then(std::fs::metadata)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_secs());
+        format!("{}.{built}", env!("ZERON_GIT_COMMIT"))
+    })
+}
 pub mod auth;
 mod change_request_store;
 pub mod change_requests;
@@ -23,12 +42,14 @@ pub mod chat2_host;
 mod chat_persistence;
 mod cloud_accounts;
 pub mod cloud_client;
+pub mod commit_credit;
 pub mod credentials;
 pub mod deferred;
 pub mod desktop_notify;
 pub mod diff_sync;
 pub mod doc_host;
 mod fs_watch;
+mod git_tree;
 pub mod harness_updates;
 pub(crate) mod home_index;
 mod http_error;
@@ -36,9 +57,11 @@ pub mod instance_lock;
 pub mod local_import;
 pub mod managed;
 mod model_catalogs;
+pub mod plugins;
 pub mod profile;
 pub mod project_actions;
 pub mod registry;
+pub mod remote_terminals;
 pub mod repos;
 pub mod rpc;
 pub mod run_journal;
@@ -48,8 +71,10 @@ pub mod source_control;
 pub mod spaces;
 pub mod terminals;
 pub mod titles;
+pub mod tool_output;
 mod transcript_history;
 pub mod chat_media;
+mod update_trial;
 pub mod uploads;
 pub mod voice;
 pub mod workspace_files;
@@ -60,7 +85,9 @@ pub mod workspace_search;
 mod worktree_settings;
 
 pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
-pub use auth::{Auth, AuthConfig, AuthState, AuthUser, OrgMembership};
+pub use auth::{
+    Auth, AuthConfig, AuthState, AuthUser, OrgMembership, ScreenHint, SignInOptions,
+};
 pub use change_requests::{ChangeRequestCacheKey, CheckoutChangeRequests};
 pub use diff_sync::{
     CheckoutDiffSync, DiffFileTextPair, DiffSidecar, DiffSnapshot, TreeSnapshot, TurnSnapshot,
@@ -90,6 +117,7 @@ pub use workspace_host::{
     DEFAULT_ORG_ID, DEFAULT_USER_ID, WORKSPACE_DOC_ID, WorkspaceHost, WorkspaceHostConfig,
 };
 pub use workspace_search::WorkspaceSearch;
+pub use zeron_preview::Scope as PreviewScope;
 
 pub(crate) const LEGACY_UNKNOWN_DEVICE_NAME: &str = "unknown-device";
 
@@ -150,6 +178,8 @@ pub struct EngineCore {
     pub repos: Repos,
     pub workspace_files: WorkspaceFiles,
     pub terminals: Terminals,
+    /// I/O routing for terminals on other devices (direct link or relay).
+    pub remote_terminals: remote_terminals::RemoteTerminals,
     pub project_actions: ProjectActionsStore,
     pub previews: zeron_preview::PreviewService,
     pub change_requests: CheckoutChangeRequests,
@@ -163,6 +193,8 @@ pub struct EngineCore {
     pub viewport_focus: desktop_notify::ViewportFocus,
     /// Local→synced profile import (account-scoped runtimes only).
     pub local_import: Option<local_import::LocalImporter>,
+    /// Plugins under `{data}/plugins/` (the plugins contract).
+    pub plugins: plugins::Plugins,
     workspace_scope: WorkspaceScope,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
@@ -236,6 +268,7 @@ impl EngineCore {
     ) -> Result<Self, EngineError> {
         let data_dir = profile.device_root();
         std::fs::create_dir_all(data_dir)?;
+        update_trial::refuse_mid_update(data_dir)?;
         let legacy_uploads_root = profile.claim_legacy_uploads_root()?;
         let device_id = load_or_create_device_id(data_dir)?;
         // This device's harness enablement (Settings → Providers) rides the
@@ -268,11 +301,55 @@ impl EngineCore {
         )?;
         doc_host.set_workspace(workspace.clone());
         doc_host.set_sessions(sessions.clone());
+        let plugins = plugins::Plugins::new(data_dir, &device_id);
+        plugins.set_workspace(workspace.clone());
+        // A service's `zeron.folders()`: where this device's chats and
+        // projects are (the built-in Git service works in these alone).
+        {
+            let (workspace, device_id) = (workspace.clone(), device_id.clone());
+            plugins.set_folders(move || {
+                let chats = workspace.read_chats().unwrap_or_default();
+                let spaces = workspace.read_spaces().unwrap_or_default();
+                let mut folders: Vec<String> = chats
+                    .into_iter()
+                    .filter(|c| c.device_id == device_id)
+                    .filter_map(|c| c.cwd)
+                    .chain(spaces.into_iter().filter(|s| s.device_id == device_id).map(|s| s.path))
+                    .filter(|f| !f.is_empty())
+                    .collect();
+                folders.sort();
+                folders.dedup();
+                folders
+            });
+        }
+        // A plugin service's `zeron.notify`: as `PostNotification` posts.
+        let viewport_focus = desktop_notify::ViewportFocus::default();
+        {
+            let (data_dir, focus) = (data_dir.to_path_buf(), viewport_focus.clone());
+            plugins.set_notifier(move |source, title, body, session| {
+                let title: String = title.lines().next().unwrap_or_default().trim().chars().take(120).collect();
+                desktop_notify::post_for(&data_dir, &focus, source, &title, body, session).to_owned()
+            });
+        }
+        if let Some(edge) = &edge {
+            plugins.set_directory(Arc::new(plugins::keys::EdgeDirectory::new(
+                &edge.url,
+                edge.token.clone(),
+            )));
+        }
+        sessions.set_plugins(plugins.clone());
         sessions.set_doc_host(doc_host.clone());
-        match sessions.recover_stale() {
-            Ok(0) => {}
-            Ok(recovered) => tracing::info!(recovered, "stale sessions recovered on boot"),
-            Err(err) => tracing::error!(error = %err, "stale-session recovery failed"),
+        // A new version on trial may yet be undone, and recovering clears the
+        // journals' marks of what to resume, which a rollback doesn't restore.
+        // It waits for the commit (`update_trial`), with all other new work.
+        if zeron_update::transaction::in_trial() {
+            doc_host.hold_work();
+        } else {
+            match sessions.recover_stale() {
+                Ok(0) => {}
+                Ok(recovered) => tracing::info!(recovered, "stale sessions recovered on boot"),
+                Err(err) => tracing::error!(error = %err, "stale-session recovery failed"),
+            }
         }
         doc_host.spawn_transcript_salvage(profile.store_root().join("journals"));
         let repos = Repos::new(data_dir, &device_id);
@@ -301,6 +378,10 @@ impl EngineCore {
             local_device_name(&device_id),
         )
         .map_err(|e| EngineError::Other(e.to_string()))?;
+        previews.serve_streams(
+            terminals::link::SERVICE_PREFIX,
+            Arc::new(terminals::link::Service::new(terminals.clone())),
+        );
         let uploads = Uploads::from_root_with_fallback(
             profile.uploads_root(),
             legacy_uploads_root.as_deref(),
@@ -341,6 +422,12 @@ impl EngineCore {
         // the P2P service, which serves it to that device alone.
         let agent_accounts =
             AgentAccounts::with_callback_routes(agent_accounts_config, previews.callback_routes());
+        registry.set_account_environment(Arc::new(agent_accounts::MuseRunEnvironment(
+            agent_accounts.clone(),
+        )));
+        // Agents added from the ACP registry (this engine's own, under its
+        // data dir): harnesses before the update coordinator lists them.
+        acp_registry::start(data_dir, &registry);
         let harness_updates =
             harness_updates::HarnessUpdateCoordinator::new(data_dir, registry.clone());
         harness_updates.start();
@@ -356,6 +443,7 @@ impl EngineCore {
             turn_diff.note_turn_start(chat_id, cwd);
         }));
         let spaces_sync = SpacesSync::start(repos.clone(), workspace.clone(), &device_id);
+        plugins.start();
         Ok(Self {
             sessions,
             doc_host,
@@ -364,6 +452,7 @@ impl EngineCore {
             repos,
             workspace_files,
             terminals,
+            remote_terminals: Default::default(),
             project_actions,
             previews,
             change_requests,
@@ -374,13 +463,14 @@ impl EngineCore {
             harness_updates,
             device_id,
             local_import,
+            plugins,
             workspace_scope: profile.scope(),
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
             updater: std::sync::Mutex::new(None),
             updater_wake: std::sync::Mutex::new(None),
             cloud: std::sync::Mutex::new(None),
-            viewport_focus: desktop_notify::ViewportFocus::default(),
+            viewport_focus,
             _instance_lock: lock,
         })
     }
@@ -391,6 +481,7 @@ impl EngineCore {
 
     /// Attach the auth service (before building the RPC service / relays).
     pub fn set_auth(&self, auth: Auth) {
+        self.plugins.attach_auth(auth.clone());
         *self
             .auth
             .lock()
@@ -420,6 +511,7 @@ impl EngineCore {
     /// [`Self::dial_device`], and the doc host's queued-attachment transfers.
     pub fn set_links(&self, links: Arc<zeron_rpc::LinkCache>) {
         self.doc_host.set_links(links.clone());
+        self.plugins.set_links(links.clone());
         *self
             .links
             .lock()
@@ -514,8 +606,10 @@ impl EngineCore {
         )
         .with_auth(self.auth())
         .with_previews(self.previews.clone())
+        .with_remote_terminals(self.remote_terminals.clone())
         .with_harness_updates(self.harness_updates.clone())
-        .with_viewport_focus(self.viewport_focus.clone());
+        .with_viewport_focus(self.viewport_focus.clone())
+        .with_plugins(self.plugins.clone());
         if let Some(links) = self.links() {
             rpc = rpc.with_links(links);
         }
@@ -579,12 +673,23 @@ impl EngineCore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
+        self.plugins.shutdown();
         self.previews.shutdown().await;
         self.harness_updates.shutdown().await;
         // A run interruption transitions its chat to Idle, and Idle normally
         // releases the next queued row. Freeze first so quitting never starts
         // recovered work while the engine is being torn down.
         self.doc_host.pause_all_queues();
+        // Decided here, from the auth state at the stop, so every way an
+        // engine goes down (headless, background, in-process) agrees.
+        let auth = self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if auth.is_some_and(|auth| forgoes_revival(self.workspace_scope, &auth.state())) {
+            self.sessions.forgo_revival();
+        }
         self.sessions.shutdown().await;
         self.terminals.shutdown();
         self.sessions.stop_activity_projection().await;
@@ -836,6 +941,7 @@ impl Engine {
                 }
                 capabilities
             },
+            build: Some(crate::build_id().to_owned()),
         })
     }
 
@@ -922,6 +1028,13 @@ impl Engine {
             )?,
         };
         core.set_auth(auth.clone());
+        // Agents' commits credit Zeron (always on Cloud, else per the
+        // device's setting).
+        core.registry
+            .set_commit_credit(Arc::new(commit_credit::CommitCredit::open(
+                &config.data_dir,
+                runner::is_cloud_platform(),
+            )));
         // Cloud runner: the credential broker fills agent spawns' env (and
         // backs ListGithubRepos / CloneRepo); the heartbeat feeds idle sleep.
         // Attached before the host relay so relayed RPCs see the broker.
@@ -972,14 +1085,17 @@ impl Engine {
         }
         let preview_workspace = core.workspace.clone();
         let preview_device = core.device_id.clone();
-        let projects = Arc::new(move || {
-            preview_workspace
+        let preview_terminals = core.terminals.clone();
+        let projects = Arc::new(move || zeron_preview::Scope {
+            chats: preview_workspace
                 .read_chats()
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|chat| chat.device_id == preview_device)
-                .filter_map(|chat| chat.cwd.map(std::path::PathBuf::from))
-                .collect()
+                .filter_map(|chat| Some((chat.id, std::path::PathBuf::from(chat.cwd?))))
+                .collect(),
+            terminals: preview_terminals.chats(),
+            reserved_ports: zeron_harness::agent_ports::reserved(),
         });
         let preview_signaling = edge_enabled.then(|| zeron_preview::signaling::Config {
             edge_url: config.edge_url.clone(),
@@ -998,6 +1114,13 @@ impl Engine {
             let terminals = core.terminals.clone();
             Arc::new(move || !sessions.any_active() && !terminals.any_open())
         };
+        core.harness_updates.set_compatibility_feed(format!(
+            "{}/releases/harness-compatibility.json",
+            config.edge_url.trim_end_matches('/')
+        ));
+        // The release channel a macOS app install follows lives in the data
+        // dir (update-channel.json), so this report follows the app's choice.
+        zeron_update::channel::set_data_dir(&config.data_dir);
         let updater = zeron_update::Updater::spawn(config.edge_url.clone(), Some(quiescent));
         if let Some(mut token_changes) = edge.as_ref().and_then(EdgeConfig::token_changes) {
             let updater_for_tokens = updater.clone();
@@ -1029,6 +1152,15 @@ impl Engine {
             link_config.liveness = Some(Arc::new(move |device_id: &str| {
                 workspace_for_liveness.peer_liveness(device_id)
             }));
+            // Prove which device dials (its registered plugin key), so the
+            // peer's edge stamps it and the peer knows who's asking
+            // (`Caller::Peer{device}`); without a key, dials go unstamped.
+            let (proof_dir, proof_device) = (config.data_dir.clone(), core.device_id.clone());
+            link_config.caller_proof = Some(Arc::new(move |target: &str, conn_id: &str, ts: i64| {
+                let (key, signature) =
+                    plugins::signing::device_link_proof(&proof_dir, target, conn_id, ts)?;
+                Some(zeron_rpc::CallerProof { device: proof_device.clone(), key, signature })
+            }));
             let links = zeron_rpc::LinkCache::new(link_config);
             let links_for_presence = links.clone();
             core.workspace
@@ -1056,6 +1188,7 @@ impl Engine {
         tracing::info!(data_dir = %config.data_dir.display(), "engine starting");
 
         std::fs::create_dir_all(&config.data_dir)?;
+        update_trial::boot(&config.data_dir)?;
         // Cloud runner: runner.json wins; else ZERON_RUNNER_ENROLL enrolls
         // first (retrying network failures; a rejected code is fatal).
         if let Some(identity) = runner::bootstrap(&config.data_dir, &config.edge_url).await? {
@@ -1113,7 +1246,8 @@ impl Engine {
         runtime
             .core()
             .sessions
-            .set_ipc_token_file(zeron_rpc::ipc_auth::token_path(&config.data_dir));
+            .set_ipc_token_file(zeron_rpc::ipc_auth::agent_token_path(&config.data_dir));
+        update_trial::prove_and_commit(runtime.core(), &config);
 
         tokio::select! {
             result = shutdown_signal() => result?,
@@ -1143,6 +1277,16 @@ impl Engine {
         runtime.shutdown().await;
         Ok(())
     }
+}
+
+/// Whether a stopping engine's cut-off turns stay ended rather than revive on
+/// the next boot ([`EngineCore::shutdown`] asks): a synced engine whose
+/// account is signed out by the time it stops, whichever stop reached it
+/// first — the auth watcher, or the app's StopEngine right after its SignOut.
+/// Sign-out is the user ending the session, like a Stop. A local engine is
+/// signed out as a matter of course.
+pub(crate) fn forgoes_revival(scope: WorkspaceScope, auth: &AuthState) -> bool {
+    scope == WorkspaceScope::Synced && matches!(auth, AuthState::SignedOut)
 }
 
 async fn wait_for_signed_out(state: &mut tokio::sync::watch::Receiver<AuthState>) {
@@ -1187,8 +1331,10 @@ async fn shutdown_signal() -> std::io::Result<()> {
 /// port, not who can reach it.
 ///
 /// Every call mints a fresh bearer at `{data_dir}/ipc-token` (0600) that each
-/// handshake must present ([`zeron_rpc::ipc_auth`]); viewports, the CLI and
-/// `zeron mcp` read it at dial time. The caller owns `data_dir` (it holds the
+/// handshake must present ([`zeron_rpc::ipc_auth`]); viewports and the CLI
+/// read it at dial time. Agents' `zeron mcp` servers get the agent-scoped
+/// one (`{data_dir}/ipc-token-agent`), which reaches only their tools'
+/// methods ([`zeron_rpc::agent_allowed`]). The caller owns `data_dir` (it holds the
 /// [`InstanceLock`]), so rotating the file before binding cannot strand
 /// another engine's clients — and a client that sees the port open always
 /// finds the new token already published.
@@ -1197,11 +1343,11 @@ pub async fn serve_ipc(
     data_dir: &Path,
     service: std::sync::Arc<dyn zeron_rpc::RpcService>,
 ) -> std::io::Result<tokio::task::JoinHandle<()>> {
-    let token = zeron_rpc::ipc_auth::issue_token(data_dir)?;
+    let tokens = zeron_rpc::ipc_auth::issue_tokens(data_dir)?;
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     tracing::info!(port, "IPC server listening");
-    Ok(tokio::spawn(zeron_rpc::serve_ws_listener(
-        listener, service, token,
+    Ok(tokio::spawn(zeron_rpc::serve_ws_listener_scoped(
+        listener, service, tokens,
     )))
 }
 
@@ -1695,5 +1841,37 @@ fn replace_empty_device_id(temp_path: &Path, path: &Path) -> std::io::Result<()>
             Err(err) => return Err(err),
         }
         std::fs::hard_link(temp_path, path)
+    }
+}
+
+#[cfg(test)]
+mod revival_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_signed_out_synced_engine_forgoes_revival() {
+        assert!(forgoes_revival(
+            WorkspaceScope::Synced,
+            &AuthState::SignedOut
+        ));
+        let user = AuthUser {
+            id: "u".into(),
+            email: "u@example.com".into(),
+            name: None,
+        };
+        assert!(!forgoes_revival(
+            WorkspaceScope::Synced,
+            &AuthState::SignedIn {
+                user: user.clone(),
+                org_id: Some("o".into()),
+            }
+        ));
+        assert!(!forgoes_revival(
+            WorkspaceScope::Synced,
+            &AuthState::NeedsOrganization { user }
+        ));
+        for scope in [WorkspaceScope::Local, WorkspaceScope::Development] {
+            assert!(!forgoes_revival(scope, &AuthState::SignedOut));
+        }
     }
 }

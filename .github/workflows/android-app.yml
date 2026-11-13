@@ -32,125 +32,24 @@ concurrency:
   group: android-app-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  NDK_VERSION: 29.0.14206865
+  ZERON_ANDROID_ABIS: ${{ github.event_name == 'workflow_dispatch' && inputs.abis || 'arm64-v8a' }}
+
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 75
-    env:
-      GRADLE_ABIS: ${{ github.event_name == 'workflow_dispatch' && inputs.abis || 'arm64-v8a' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - name: JDK 17
-        run: |
-          echo "JAVA_HOME=${JAVA_HOME_17_X64}" >> "$GITHUB_ENV"
-          echo "PATH=${JAVA_HOME_17_X64}/bin:$PATH" >> "$GITHUB_ENV"
-          export JAVA_HOME="${JAVA_HOME_17_X64}"
-          export PATH="${JAVA_HOME_17_X64}/bin:$PATH"
-          java -version
-      - name: Android SDK command-line tools bootstrap
-        run: |
-          set -euo pipefail
-          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-          if [[ -z "$sdk_root" && -n "${ANDROID_NDK_HOME:-}" ]]; then
-            sdk_root="$(dirname "$(dirname "$ANDROID_NDK_HOME")")"
-          fi
-          if [[ -z "$sdk_root" ]]; then
-            sdk_root="/usr/local/lib/android/sdk"
-          fi
-          if [[ ! -d "$sdk_root" ]]; then
-            echo "Android SDK root is not a directory: $sdk_root" >&2
-            exit 1
-          fi
-          sdkmanager_bin=
-          if [[ -x "$sdk_root/cmdline-tools/latest/bin/sdkmanager" ]]; then
-            sdkmanager_bin="$sdk_root/cmdline-tools/latest/bin/sdkmanager"
-          else
-            while IFS= read -r -d '' candidate; do
-              if [[ -x "$candidate" ]]; then
-                sdkmanager_bin="$candidate"
-                break
-              fi
-            done < <(find "$sdk_root/cmdline-tools" -mindepth 3 -maxdepth 3 -path '*/bin/sdkmanager' -print0 2>/dev/null | sort -z)
-          fi
-          if [[ -z "$sdkmanager_bin" ]]; then
-            echo "sdkmanager not found under ${sdk_root}/cmdline-tools (expected latest/bin or */bin)" >&2
-            exit 1
-          fi
-          sdkmanager_bin="$(readlink -f "$sdkmanager_bin")"
-          sdk_tools_bin="$(dirname "$sdkmanager_bin")"
-          export ANDROID_HOME="$sdk_root"
-          export ANDROID_SDK_ROOT="$sdk_root"
-          export SDKMANAGER="$sdkmanager_bin"
-          export PATH="${sdk_tools_bin}:$PATH"
-          echo "ANDROID_HOME=$sdk_root" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
-          echo "SDKMANAGER=$sdkmanager_bin" >> "$GITHUB_ENV"
-          echo "$sdk_tools_bin" >> "$GITHUB_PATH"
-          echo "Android SDK root: $sdk_root"
-          echo "sdkmanager: $sdkmanager_bin"
-          "$SDKMANAGER" --version
-      - name: Android SDK licenses
-        run: |
-          set -euo pipefail
-          set +e
-          yes | "$SDKMANAGER" --licenses
-          pipe_ec=("${PIPESTATUS[@]}")
-          yes_ec=${pipe_ec[0]}
-          sdk_ec=${pipe_ec[1]}
-          set -euo pipefail
-          echo "Android SDK licenses: yes=${yes_ec} sdkmanager=${sdk_ec}"
-          if (( sdk_ec != 0 )); then
-            echo "sdkmanager --licenses failed (exit ${sdk_ec})" >&2
-            exit "$sdk_ec"
-          fi
-          case "$yes_ec" in
-            0|1|141) ;;
-            *)
-              echo "yes pipe producer failed unexpectedly (exit ${yes_ec})" >&2
-              exit "$yes_ec"
-              ;;
-          esac
-      - name: Android SDK platform 37 (compileSdk)
-        run: |
-          set -euo pipefail
-          "$SDKMANAGER" --install "platforms;android-37.0" "build-tools;36.0.0"
-          "$SDKMANAGER" --list_installed | grep -F 'platforms;android-37.0'
-          api37_dir=
-          for prop in "${ANDROID_HOME}/platforms"/*/source.properties; do
-            [[ -f "$prop" ]] || continue
-            api_line="$(grep -E '^[[:space:]]*AndroidVersion\.ApiLevel[[:space:]]*=[[:space:]]*37(\.0)?[[:space:]]*$' "$prop" | head -n1 || true)"
-            if [[ -n "$api_line" ]]; then
-              api37_dir="$(dirname "$prop")"
-              echo "AndroidVersion.ApiLevel (source.properties): $api_line"
-              break
-            fi
-          done
-          if [[ -z "$api37_dir" || ! -f "$api37_dir/android.jar" ]]; then
-            echo "API 37 platform not found under ${ANDROID_HOME}/platforms (no android.jar)" >&2
-            exit 1
-          fi
-          echo "compileSdk platform: $api37_dir"
-          ls -la "$api37_dir/android.jar"
-      - name: Android NDK 27.2.12479018
-        run: |
-          set -euo pipefail
-          ndk_rev="27.2.12479018"
-          ndk_home="${ANDROID_HOME}/ndk/${ndk_rev}"
-          if [[ -d "$ndk_home" && -f "$ndk_home/source.properties" ]]; then
-            echo "NDK ${ndk_rev} already present at $ndk_home"
-          else
-            echo "Installing NDK ${ndk_rev} via sdkmanager" >&2
-            "$SDKMANAGER" --install "ndk;${ndk_rev}"
-          fi
-          if [[ ! -d "$ndk_home" ]]; then
-            echo "NDK ${ndk_rev} missing after install: $ndk_home" >&2
-            exit 1
-          fi
-          export ANDROID_NDK_HOME="$ndk_home"
-          echo "ANDROID_NDK_HOME=$ndk_home" >> "$GITHUB_ENV"
-          echo "$ANDROID_NDK_HOME"
-          ls -la "$ANDROID_NDK_HOME"
-      - name: Rust toolchain
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+      - name: Android SDK packages
+        run: sdkmanager --install "platforms;android-37.0" "build-tools;37.0.0" "ndk;$NDK_VERSION"
+      - name: Rust toolchain (rust-toolchain.toml)
         run: |
           rustup show active-toolchain || rustup toolchain install
           rustup target add aarch64-linux-android x86_64-linux-android
@@ -158,103 +57,13 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - name: Install cargo-ndk
+      - name: build tools (cargo-ndk, rsvg-convert)
         run: |
-          if command -v cargo-ndk >/dev/null; then
-            echo "cargo-ndk already installed: $(command -v cargo-ndk)"
-          else
-            cargo install cargo-ndk --locked
-          fi
-      - name: Build mobile core for Android
-        run: |
-          ANDROID_ABIS="${GRADLE_ABIS//,/ }" REQUIRE_SO=1 \
-            scripts/android/build-core.sh "$GITHUB_WORKSPACE/target/android-core"
-      - name: Upload Kotlin bindings (small, for debugging)
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: android-kotlin-bindings
-          path: target/android-core/kotlin
-          if-no-files-found: ignore
-          retention-days: 7
-      - name: Gradle 9.3.1
-        run: |
-          curl -fsSL -o /tmp/gradle-9.3.1-bin.zip \
-            https://services.gradle.org/distributions/gradle-9.3.1-bin.zip
-          unzip -q /tmp/gradle-9.3.1-bin.zip -d /tmp
-          echo "GRADLE_HOME=/tmp/gradle-9.3.1" >> "$GITHUB_ENV"
-          echo "PATH=/tmp/gradle-9.3.1/bin:$PATH" >> "$GITHUB_ENV"
-          gradle --version
-      - name: Material3 / Compose dependency evidence
-        run: |
-          set -euo pipefail
-          CORE="$GITHUB_WORKSPACE/target/android-core"
-          GRADLE=(gradle -p apps/android --no-daemon -PzeronCoreDir="$CORE")
-          insight_must_resolve() {
-            local coord="$1"
-            local configuration="$2"
-            local version_marker="$3"
-            echo "=== dependencyInsight: $coord ($configuration) ==="
-            local out ec
-            set +e
-            out="$("${GRADLE[@]}" :app:dependencyInsight --dependency "$coord" --configuration "$configuration" --single-path 2>&1)"
-            ec=$?
-            set -e
-            printf '%s\n' "$out"
-            if (( ec != 0 )); then
-              echo "dependencyInsight failed for $coord on $configuration (exit $ec)" >&2
-              exit 1
-            fi
-            if grep -qi 'No dependencies matching given input' <<<"$out"; then
-              echo "dependencyInsight found no match for $coord on $configuration" >&2
-              exit 1
-            fi
-            if ! grep -qF -- "$version_marker" <<<"$out"; then
-              echo "dependencyInsight for $coord did not show expected version marker: $version_marker" >&2
-              exit 1
-            fi
-          }
-          echo "=== buildEnvironment (KGP pin) ==="
-          set +e
-          be_out="$("${GRADLE[@]}" buildEnvironment 2>&1)"
-          be_ec=$?
-          set -e
-          printf '%s\n' "$be_out"
-          if (( be_ec != 0 )); then
-            echo "buildEnvironment failed (exit $be_ec)" >&2
-            exit 1
-          fi
-          if ! grep -qF 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.20' <<<"$be_out"; then
-            echo "buildEnvironment did not show kotlin-gradle-plugin:2.2.20" >&2
-            exit 1
-          fi
-          insight_must_resolve "androidx.compose.material3:material3-android" debugCompileClasspath "1.5.0-beta02"
-          insight_must_resolve "androidx.compose.runtime:runtime-android" debugCompileClasspath "1.12.0"
-          insight_must_resolve "androidx.compose.ui:ui-android" debugCompileClasspath "1.12.0"
-          insight_must_resolve "androidx.compose.foundation:foundation-android" debugCompileClasspath "1.12.0"
-          insight_must_resolve "org.jetbrains.kotlin:kotlin-stdlib" debugRuntimeClasspath "2.2.20"
-          echo "=== AAR metadata (Google Maven) ==="
-          curl -fsSL -o /tmp/material3-android-1.5.0-beta02.aar \
-            https://dl.google.com/dl/android/maven2/androidx/compose/material3/material3-android/1.5.0-beta02/material3-android-1.5.0-beta02.aar
-          unzip -p /tmp/material3-android-1.5.0-beta02.aar \
-            META-INF/com/android/build/gradle/aar-metadata.properties | tee /tmp/aar-metadata.properties
-          grep -q 'minCompileSdk=37' /tmp/aar-metadata.properties
-          grep -q 'minAndroidGradlePluginVersion=9.1.0' /tmp/aar-metadata.properties
-      - name: Assemble debug APK
-        run: |
-          gradle -p apps/android :app:assembleDebug \
-            -PzeronCoreDir="$GITHUB_WORKSPACE/target/android-core" \
-            -PzeronAbis="$GRADLE_ABIS" \
-            --no-daemon --stacktrace
-      - name: APK details
-        run: |
-          apk="apps/android/app/build/outputs/apk/debug/app-debug.apk"
-          ls -l "$apk"
-          unzip -l "$apk" 'lib/*/libzeron_mobile.so'
-          if ! unzip -l "$apk" 'lib/arm64-v8a/libc++_shared.so' | grep -q 'libc++_shared.so'; then
-            echo "missing lib/arm64-v8a/libc++_shared.so in APK" >&2
-            exit 1
-          fi
+          cargo install cargo-ndk --locked
+          sudo apt-get update -q && sudo apt-get install -y -q librsvg2-bin
+      - name: assemble debug APK
+        working-directory: apps/android
+        run: ./gradlew :app:assembleDebug -PzeronVersionCode="${{ github.run_number }}" --console=plain --no-configuration-cache
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: zerona-android-debug
@@ -286,10 +95,9 @@ jobs:
           if (( ${#missing[@]} > 0 )); then
             echo "Private release build on main requires GitHub Actions secrets (values not shown):" >&2
             printf '  - %s\n' "${missing[@]}" >&2
-            echo "Configure them in repository settings, then re-run workflow_dispatch on refs/heads/main." >&2
             exit 1
           fi
-      - name: Assemble signed release APK (private)
+      - name: Decode release keystore
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         env:
           ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
@@ -298,10 +106,19 @@ jobs:
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          gradle -p apps/android :app:assembleRelease \
-            -PzeronCoreDir="$GITHUB_WORKSPACE/target/android-core" \
-            -PzeronAbis="$GRADLE_ABIS" \
-            --no-daemon --stacktrace
+          keystore="$RUNNER_TEMP/zerona-release.keystore"
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_BASE64" | base64 -d > "$keystore"
+          chmod 600 "$keystore"
+          {
+            echo "ZERON_ANDROID_KEYSTORE=$keystore"
+            echo "ZERON_ANDROID_KEYSTORE_PASSWORD=$ANDROID_RELEASE_STORE_PASSWORD"
+            echo "ZERON_ANDROID_KEY_ALIAS=$ANDROID_RELEASE_KEY_ALIAS"
+            echo "ZERON_ANDROID_KEY_PASSWORD=$ANDROID_RELEASE_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+      - name: Assemble signed release APK (private)
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        working-directory: apps/android
+        run: ./gradlew :app:assembleRelease -PzeronVersionCode="${{ github.run_number }}" --console=plain --no-configuration-cache
       - name: Verify release APK signature (apksigner)
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         env:
@@ -313,11 +130,7 @@ jobs:
             echo "Release APK not found: $apk" >&2
             exit 1
           fi
-          apksigner_bin="${ANDROID_HOME}/build-tools/36.0.0/apksigner"
-          if [[ ! -x "$apksigner_bin" ]]; then
-            echo "apksigner not found: $apksigner_bin" >&2
-            exit 1
-          fi
+          apksigner_bin="${ANDROID_HOME}/build-tools/37.0.0/apksigner"
           set +e
           cert_out="$("$apksigner_bin" verify --print-certs "$apk" 2>&1)"
           verify_ec=$?
@@ -330,7 +143,6 @@ jobs:
           digest_line="$(grep -m1 -E 'SHA-256 digest:' <<<"$cert_out" || true)"
           if [[ -z "$digest_line" ]]; then
             echo "apksigner did not report an SHA-256 digest in --print-certs output" >&2
-            printf '%s\n' "$cert_out"
             exit 1
           fi
           actual="${digest_line#*: }"
@@ -340,20 +152,19 @@ jobs:
           expected="${ANDROID_RELEASE_CERT_SHA256//[[:space:]]/}"
           expected_lc="${expected,,}"
           expected_lc="${expected_lc//:/}"
-          if [[ -z "$expected_lc" ]]; then
-            echo "ANDROID_RELEASE_CERT_SHA256 secret is empty" >&2
-            exit 1
-          fi
           if [[ "$actual_lc" != "$expected_lc" ]]; then
             echo "Release APK signer SHA-256 does not match ANDROID_RELEASE_CERT_SHA256" >&2
             exit 1
           fi
           echo "Release APK signature verified (SHA-256 matches ANDROID_RELEASE_CERT_SHA256)."
-      - name: Upload private release APK
+      - name: Upload signed release APK
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: zerona-android-release-private
+          name: zerona-android-release
           path: apps/android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 30
+      - name: Remove release keystore
+        if: always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        run: rm -f "$RUNNER_TEMP/zerona-release.keystore"

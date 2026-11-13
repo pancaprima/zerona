@@ -1,7 +1,7 @@
 .gradle/
-build/
+.kotlin/
 local.properties
-.idea/
+/app/build/
+/build/
 *.iml
-.DS_Store
-app/src/main/assets/fonts/
+.idea/

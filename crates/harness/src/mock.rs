@@ -5,7 +5,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
+    AccessMode, AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
     UserInputQuestion,
 };
 
@@ -106,6 +106,7 @@ fn fanout_settle(i: usize) -> Vec<AgentEvent> {
             is_error: failed,
             output: None,
             diff: None,
+            exit_code: None,
         },
         fanout_tag(
             i,
@@ -156,6 +157,12 @@ fn question_script() -> Vec<UserInputQuestion> {
     ]
 }
 
+const MOCK_PLAN: &str = "Here's the plan. Nothing has changed yet.\n\n\
+1. Add `AccessMode` to the run request and the chat's config.\n\
+2. Map each mode onto the agent's approval policy and sandbox.\n\
+3. Ask the person for anything the mode does not cover.\n\n\
+Turn plan mode off to start.";
+
 #[async_trait]
 impl Harness for MockHarness {
     fn id(&self) -> HarnessId {
@@ -170,8 +177,27 @@ impl Harness for MockHarness {
     fn steering_mode(&self) -> SteeringMode {
         SteeringMode::StepBoundary
     }
+    /// Only the long-tool runtime (`ZERON_MOCK_LONG_TOOL`) stops a turn in
+    /// place, as Claude's and Codex's do.
+    fn stops_turn_in_place(&self) -> bool {
+        long_tool_mode()
+    }
+    /// (`ZERON_MOCK_STEER_WAITS=1`: a steer waits for the command instead,
+    /// as every steer did before, for timing one against the other.)
+    fn steer_stops_tool(&self) -> bool {
+        long_tool_mode()
+            && !std::env::var("ZERON_MOCK_STEER_WAITS")
+                .ok()
+                .is_some_and(|v| !v.is_empty() && v != "0")
+    }
     fn reasoning_levels(&self) -> &[ReasoningLevel] {
         &[ReasoningLevel::Medium]
+    }
+    fn access_modes(&self) -> &[AccessMode] {
+        &AccessMode::ALL
+    }
+    fn supports_plan(&self) -> bool {
+        true
     }
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
         Ok(vec![
@@ -272,6 +298,81 @@ impl Harness for MockHarness {
                 rx.recv().await.map(|event| (Ok(event), rx))
             });
             return Ok(stream.boxed());
+        }
+
+        // Plan mode proposes and changes nothing; a mode short of full access
+        // asks before the script's command, the way a real agent's approval
+        // reaches the person.
+        if request.plan || !request.access.is_full_access() {
+            let request_input = controls.request_input;
+            let plan = request.plan;
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+            tokio::spawn(async move {
+                let pause = delay.max(std::time::Duration::from_millis(50));
+                let send = |text: &str| {
+                    let _ = tx.send(AgentEvent::TextDelta { text: text.into() });
+                };
+                if plan {
+                    tokio::time::sleep(pause).await;
+                    send(MOCK_PLAN);
+                } else {
+                    send("I'll run the test suite first.\n\n");
+                    tokio::time::sleep(pause).await;
+                    let question = crate::approval::command("Mock", "cargo test --workspace");
+                    let answers = request_input(vec![question.clone()]).await.unwrap_or_default();
+                    if crate::approval::approved(&question, &answers) {
+                        let _ = tx.send(AgentEvent::ToolCall {
+                            id: "mock-approved-tool".into(),
+                            call: zeron_proto::ToolCall::Exec {
+                                command: "cargo test --workspace".into(),
+                            },
+                        });
+                        tokio::time::sleep(pause).await;
+                        let _ = tx.send(AgentEvent::ToolResult {
+                            id: "mock-approved-tool".into(),
+                            is_error: false,
+                            output: Some("test result: ok. 128 passed; 0 failed".into()),
+                            diff: None,
+                            exit_code: None,
+                        });
+                        send("All 128 tests pass.");
+                    } else {
+                        send("Understood, I won't run it.");
+                    }
+                }
+                let _ = tx.send(AgentEvent::Done {
+                    status: DoneStatus::Completed,
+                    result: None,
+                    error: None,
+                    session_id: None,
+                });
+            });
+            let stream = futures::stream::unfold(rx, |mut rx| async move {
+                rx.recv().await.map(|event| (Ok(event), rx))
+            });
+            return Ok(stream.boxed());
+        }
+
+        // Dev/testing knob: `ZERON_MOCK_BACKGROUND=1` starts three background
+        // processes that outlive the turn — the only data-side way to fill the
+        // background tray. The runtime parks like a real agent's: the
+        // processes print output, a host stop ends one, later messages are
+        // answered in place, and a teardown takes them all.
+        if std::env::var("ZERON_MOCK_BACKGROUND")
+            .ok()
+            .is_some_and(|v| !v.is_empty() && v != "0")
+        {
+            return Ok(background_run(controls, delay));
+        }
+
+        // Dev/testing knob: `ZERON_MOCK_LONG_TOOL=1` is a runtime with real
+        // processes, for timing steers against a blocking command.
+        if long_tool_mode() {
+            return Ok(long_tool_run(
+                request.prompt.clone(),
+                request.attachments.clone(),
+                controls,
+            ));
         }
 
         // Dev/testing knob: a `/fanout N` prompt spawns N subagents at once,
@@ -464,6 +565,7 @@ impl Harness for MockHarness {
                         is_error: false,
                         output: None,
                         diff: None,
+                        exit_code: None,
                     },
                 ]
             })
@@ -502,6 +604,7 @@ impl Harness for MockHarness {
                     is_error: false,
                     output: None,
                     diff: None,
+                    exit_code: None,
                 };
                 let done = AgentEvent::Done {
                     status: DoneStatus::Completed,
@@ -667,6 +770,7 @@ impl Harness for MockHarness {
                         is_error: false,
                         output: None,
                         diff: None,
+                        exit_code: None,
                     },
                 ]
             })
@@ -723,6 +827,7 @@ impl Harness for MockHarness {
                         is_error: false,
                         output: None,
                         diff: None,
+                        exit_code: None,
                     });
                     events.push(AgentEvent::TextDelta {
                         text: format!("Update {} written.\n\n", active + 1),
@@ -816,6 +921,399 @@ impl Harness for MockHarness {
             })
             .boxed())
     }
+}
+
+/// The background mode's processes: id, command, description, how long ago
+/// it started, and the lines it prints in turn.
+const BACKGROUND_PROCESSES: [(&str, &str, &str, i64, &[&str]); 3] = [
+    (
+        "mock-bg-dev",
+        "pnpm --filter web dev --port 5173",
+        "Start the web dev server",
+        754,
+        &[
+            "  VITE v6.2.1  ready in 412 ms",
+            "  \u{279c}  Local:   http://localhost:5173/",
+            "  \u{279c}  Network: use --host to expose",
+            "12:41:07 [vite] hmr update /src/routes/settings.tsx",
+            "12:41:19 [vite] hmr update /src/components/Composer.tsx, /src/styles/composer.css",
+            "12:41:32 [vite] page reload src/main.tsx",
+        ],
+    ),
+    (
+        "mock-bg-watch",
+        "cargo watch -x 'test -p zeron-doc'",
+        "Re-run the doc tests on change",
+        187,
+        &[
+            "[Running 'cargo test -p zeron-doc']",
+            "   Compiling zeron-doc v0.2.129 (/work/crates/doc)",
+            "    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.81s",
+            "     Running unittests src/lib.rs (target/debug/deps/zeron_doc-3f1c)",
+            "test result: ok. 412 passed; 0 failed; 0 ignored; finished in 1.92s",
+            "[Finished running. Exit status: 0]",
+        ],
+    ),
+    (
+        "mock-bg-logs",
+        "tail -f logs/api.log | grep --line-buffered -E 'WARN|ERROR'",
+        "Watch the API log for errors",
+        41,
+        &[
+            "WARN  sync::relay  reconnecting to device room (attempt 2)",
+            "WARN  sync::relay  device room rejoined after 1.4s",
+            "ERROR api::uploads  chunk 7 of 12 timed out; retrying",
+        ],
+    ),
+];
+
+/// `ZERON_MOCK_BACKGROUND`: one turn that starts [`BACKGROUND_PROCESSES`],
+/// then a parked runtime that keeps them running (each prints its script
+/// once, a line per tick).
+fn background_run(
+    controls: RunControls,
+    delay: std::time::Duration,
+) -> BoxStream<'static, Result<AgentEvent, HarnessError>> {
+    let RunControls {
+        mut steering,
+        interrupt,
+        turn,
+        ..
+    } = controls;
+    let pause = delay.max(std::time::Duration::from_millis(120));
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+    tokio::spawn(async move {
+        let done = || AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: None,
+        };
+        let _ = tx.send(AgentEvent::TextDelta {
+            text:
+                "I'll keep the dev server, the doc tests and the API log running while we work.\n\n"
+                    .into(),
+        });
+        let now = chrono::Utc::now();
+        let mut listed = Vec::new();
+        for (id, command, description, ago, lines) in BACKGROUND_PROCESSES {
+            tokio::time::sleep(pause).await;
+            let _ = tx.send(AgentEvent::ToolCall {
+                id: format!("{id}-call"),
+                call: zeron_proto::ToolCall::Exec {
+                    command: command.into(),
+                },
+            });
+            let _ = tx.send(AgentEvent::ToolResult {
+                id: format!("{id}-call"),
+                is_error: false,
+                output: Some(format!("Command running in background with ID: {id}")),
+                diff: None,
+                exit_code: None,
+            });
+            listed.push(zeron_proto::BackgroundTask {
+                id: id.into(),
+                command: command.into(),
+                description: Some(description.into()),
+                started_at: now - chrono::Duration::seconds(ago),
+            });
+            for line in &lines[..lines.len() / 2] {
+                turn.append_background_output(id, &format!("{line}\n"));
+            }
+            turn.set_background_processes(listed.clone());
+            turn.set_background(listed.len());
+        }
+        tokio::time::sleep(pause).await;
+        let _ = tx.send(AgentEvent::TextDelta {
+            text: "All three are up. Ask me to stop any of them, or stop them from the tray."
+                .into(),
+        });
+        let _ = tx.send(done());
+
+        // Parked: the processes print, stop when asked, and the runtime
+        // answers whatever comes next.
+        let mut printed: Vec<usize> = BACKGROUND_PROCESSES
+            .iter()
+            .map(|(.., lines)| lines.len() / 2)
+            .collect();
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(1600));
+        loop {
+            tokio::select! {
+                _ = interrupt.cancelled() => break,
+                id = turn.background_stop_requested() => {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    listed.retain(|task| task.id != id);
+                    turn.set_background_processes(listed.clone());
+                    turn.set_background(listed.len());
+                }
+                _ = tick.tick() => {
+                    for (ix, (id, .., lines)) in BACKGROUND_PROCESSES.iter().enumerate() {
+                        if listed.iter().any(|task| task.id == *id) && printed[ix] < lines.len() {
+                            let line = lines[printed[ix]];
+                            printed[ix] += 1;
+                            turn.append_background_output(id, &format!("{line}\n"));
+                        }
+                    }
+                }
+                message = steering.recv() => {
+                    let Some(_) = message else { break };
+                    let _ = tx.send(AgentEvent::Steered {
+                        assistant_message_id: None,
+                        next_assistant_message_id: None,
+                    });
+                    tokio::time::sleep(pause).await;
+                    let running = listed.len();
+                    let _ = tx.send(AgentEvent::TextDelta {
+                        text: format!(
+                            "Noted. {running} background process{} still running.",
+                            if running == 1 { " is" } else { "es are" }
+                        ),
+                    });
+                    let _ = tx.send(done());
+                }
+            }
+        }
+        turn.set_background_processes(Vec::new());
+        turn.set_background(0);
+        if interrupt.is_cancelled() {
+            let _ = tx.send(AgentEvent::Done {
+                status: DoneStatus::Interrupted,
+                result: None,
+                error: None,
+                session_id: None,
+            });
+        }
+    });
+    futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|event| (Ok(event), rx))
+    })
+    .boxed()
+}
+
+/// What the long-tool runtime answers a prompt: its words, and the files it
+/// came with as attachments (the images among them by name), so a test can
+/// see what reached the agent as an attachment and not only as text.
+fn heard(words: &str, attached: &[String]) -> String {
+    if attached.is_empty() {
+        return format!("Heard: {words}\n\n");
+    }
+    let names: Vec<&str> = attached
+        .iter()
+        .map(|p| p.rsplit(['/', '\\']).next().unwrap_or(p))
+        .collect();
+    let images = attached
+        .iter()
+        .filter(|p| {
+            let p = p.to_ascii_lowercase();
+            [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+                .iter()
+                .any(|e| p.ends_with(e))
+        })
+        .count();
+    format!(
+        "Heard: {words}\n\n[attachments: {} ({images} image{}): {}]\n\n",
+        attached.len(),
+        if images == 1 { "" } else { "s" },
+        names.join(", ")
+    )
+}
+
+/// `ZERON_MOCK_LONG_TOOL=1` (Unix: it runs `sleep`).
+fn long_tool_mode() -> bool {
+    cfg!(unix)
+        && std::env::var("ZERON_MOCK_LONG_TOOL")
+            .ok()
+            .is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// `ZERON_MOCK_LONG_TOOL`: a runtime with real processes. Its first turn
+/// starts a background `sleep 600` that outlives every turn, then runs a
+/// foreground `sleep` (`ZERON_MOCK_TOOL_SECS`, 120 by default) as a
+/// blocking command; so does any later prompt naming "long". A steer that
+/// arrives while the command runs waits for it to finish (a step-boundary
+/// agent's), then is answered `Heard: <prompt>`. A host stop
+/// ([`crate::TurnControl::stop_turn`]) kills the foreground command alone
+/// and ends the turn in place; a teardown takes everything. With
+/// `ZERON_MOCK_PID_DIR`, the processes' ids go to `<first prompt>.bg.pid`
+/// and `<first prompt>.fg.pid` there.
+fn long_tool_run(
+    first: String,
+    first_attachments: Vec<String>,
+    controls: RunControls,
+) -> BoxStream<'static, Result<AgentEvent, HarnessError>> {
+    let RunControls {
+        mut steering,
+        interrupt,
+        turn,
+        ..
+    } = controls;
+    let secs: u64 = std::env::var("ZERON_MOCK_TOOL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120);
+    let pid_dir = std::env::var_os("ZERON_MOCK_PID_DIR").map(std::path::PathBuf::from);
+    // (Named for the runtime's first prompt, so runtimes don't share files.)
+    let slug: String = first
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .take(40)
+        .collect();
+    let note_pid = move |name: &str, pid: Option<u32>| {
+        if let (Some(dir), Some(pid)) = (&pid_dir, pid) {
+            let _ = std::fs::write(dir.join(format!("{slug}.{name}")), pid.to_string());
+        }
+    };
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+    tokio::spawn(async move {
+        let done = |status: DoneStatus| AgentEvent::Done {
+            status,
+            result: None,
+            error: None,
+            session_id: None,
+        };
+        let say = |text: String| AgentEvent::TextDelta { text };
+        let mut background: Option<tokio::process::Child> = None;
+        let mut calls = 0usize;
+        let mut prompt = Some((first, first_attachments));
+        let mut first_turn = true;
+        'turns: loop {
+            // Parked between turns: the next prompt comes by the mailbox.
+            let (words, attached) = match prompt.take() {
+                Some(next) => next,
+                None => {
+                    tokio::select! {
+                        _ = interrupt.cancelled() => break 'turns,
+                        message = steering.recv() => {
+                            let Some(message) = message else { break 'turns };
+                            let _ = tx.send(AgentEvent::Steered {
+                                assistant_message_id: None,
+                                next_assistant_message_id: None,
+                            });
+                            (message.prompt, message.attachments)
+                        }
+                    }
+                }
+            };
+            let long = first_turn || words.contains("long");
+            if !first_turn {
+                let _ = tx.send(say(heard(&words, &attached)));
+            }
+            if first_turn {
+                first_turn = false;
+                calls += 1;
+                let id = format!("mock-long-bg-{calls}");
+                let _ = tx.send(AgentEvent::ToolCall {
+                    id: id.clone(),
+                    call: zeron_proto::ToolCall::Exec {
+                        command: "sleep 600 &".into(),
+                    },
+                });
+                background = tokio::process::Command::new("sleep")
+                    .arg("600")
+                    .spawn()
+                    .ok();
+                let pid = background.as_ref().and_then(|c| c.id());
+                note_pid("bg.pid", pid);
+                let _ = tx.send(AgentEvent::ToolResult {
+                    id,
+                    is_error: false,
+                    output: Some(format!(
+                        "Command running in background, pid {}",
+                        pid.unwrap_or(0)
+                    )),
+                    diff: None,
+                    exit_code: None,
+                });
+                turn.set_background_processes(vec![zeron_proto::BackgroundTask {
+                    id: "mock-long-bg".into(),
+                    command: "sleep 600".into(),
+                    description: Some("A background process that outlives the turn".into()),
+                    started_at: chrono::Utc::now(),
+                }]);
+                turn.set_background(1);
+            }
+            if !long {
+                let _ = tx.send(done(DoneStatus::Completed));
+                continue;
+            }
+            calls += 1;
+            let id = format!("mock-long-fg-{calls}");
+            let _ = tx.send(AgentEvent::ToolCall {
+                id: id.clone(),
+                call: zeron_proto::ToolCall::Exec {
+                    command: format!("sleep {secs}"),
+                },
+            });
+            let Ok(mut child) = tokio::process::Command::new("sleep")
+                .arg(secs.to_string())
+                .spawn()
+            else {
+                let _ = tx.send(done(DoneStatus::Errored));
+                continue;
+            };
+            note_pid("fg.pid", child.id());
+            // Steers that come while the command runs wait for it.
+            let mut held: Vec<(String, Vec<String>)> = Vec::new();
+            let stopped = loop {
+                tokio::select! {
+                    _ = interrupt.cancelled() => {
+                        let _ = child.kill().await;
+                        break 'turns;
+                    }
+                    _ = turn.stop_requested() => {
+                        let _ = child.kill().await;
+                        break true;
+                    }
+                    _ = child.wait() => break false,
+                    message = steering.recv() => match message {
+                        Some(message) => held.push((message.prompt, message.attachments)),
+                        None => {
+                            let _ = child.kill().await;
+                            break 'turns;
+                        }
+                    },
+                }
+            };
+            let _ = tx.send(AgentEvent::ToolResult {
+                id,
+                is_error: stopped,
+                output: Some(if stopped {
+                    "Interrupted".into()
+                } else {
+                    String::new()
+                }),
+                diff: None,
+                exit_code: (!stopped).then_some(0),
+            });
+            if stopped {
+                // Steers the stopped turn held are cancelled with it, as
+                // Claude's `cancel_queued` does.
+                let _ = tx.send(done(DoneStatus::Interrupted));
+                continue;
+            }
+            for (words, attached) in held {
+                let _ = tx.send(AgentEvent::Steered {
+                    assistant_message_id: None,
+                    next_assistant_message_id: None,
+                });
+                let _ = tx.send(say(heard(&words, &attached)));
+            }
+            let _ = tx.send(say("The command finished.".into()));
+            let _ = tx.send(done(DoneStatus::Completed));
+        }
+        if let Some(mut child) = background.take() {
+            let _ = child.kill().await;
+        }
+        turn.set_background_processes(Vec::new());
+        turn.set_background(0);
+        if interrupt.is_cancelled() {
+            let _ = tx.send(done(DoneStatus::Interrupted));
+        }
+    });
+    futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|event| (Ok(event), rx))
+    })
+    .boxed()
 }
 
 #[cfg(test)]

@@ -47,9 +47,11 @@ fn chat(id: &str, device_id: &str) -> Chat {
         harness_session_cwd: None,
         harness_session_harness: None,
         parent_chat_id: None,
+        child_kind: None,
         space_id: None,
         last_seen_at: None,
         room_gen: None,
+        sleep: None,
     }
 }
 
@@ -121,11 +123,13 @@ async fn two_clients_converge_and_stream_live_updates() {
             last_turn_outcome: None,
             terminal_activity: None,
             running_subagents: 0,
+            background_tasks: Vec::new(),
             chat_id: "chat-1".into(),
             device_id: "dev-a".into(),
             status: SessionStatus::Working,
             started_at: Some(ts(3_000)),
             updated_at: ts(3_500),
+            waiting: None,
         })
         .unwrap();
     }
@@ -433,6 +437,7 @@ async fn churn_stays_bounded_no_history_growth() {
                 last_turn_outcome: None,
                 terminal_activity: None,
                 running_subagents: 0,
+                background_tasks: Vec::new(),
                 chat_id: "chat-1".into(),
                 device_id: "dev-a".into(),
                 status: if i % 2 == 0 {
@@ -442,6 +447,7 @@ async fn churn_stays_bounded_no_history_growth() {
                 },
                 started_at: Some(ts(i)),
                 updated_at: ts(i + 1),
+                waiting: None,
             })
             .unwrap();
         }

@@ -1,120 +1,140 @@
-# Zerona for Android
+# Zeron for Android
 
-Kotlin + Jetpack Compose shell around the same Rust mobile core as iOS (`crates/mobile`).
-The session screen uses a **native transcript painter** (`LayoutFrame.display` / `RowDisplay`)
-hosted in `AndroidView`, with M3b composer send/queue/steer and demo or live sign-in.
+A Jetpack Compose viewport onto the zeron mesh, built on the same Rust mobile
+core as the iOS app (`crates/mobile`). **Rust decides what to paint and
+where; Kotlin paints, scrolls and handles gestures.** The transcript's text
+measurement, markdown layout, prefix-sum virtualization and display lists are
+the exact code iOS runs — see [`docs/mobile-rewrite.md`](../../docs/mobile-rewrite.md).
 
-## CI build
+The UI is Material 3 Expressive (`MaterialExpressiveTheme`, expressive motion,
+flexible app bars, shape-morphing loading indicators, connected button groups,
+segmented lists) themed with Zeron's own palette and Geist type.
 
-The **Android app** workflow builds `libzeron_mobile.so`, UniFFI Kotlin bindings, copies
-Geist fonts from `crates/ui/assets/fonts`, and runs Gradle `assembleDebug`. Download the
-`zerona-android-debug` artifact from Actions.
+## Build & run
 
-**Pull requests and pushes to `main`** stay debug-only (same checks as before).
-
-**Private signed release APK (manual, `main` only):** In GitHub Actions, open **Android app** →
-**Run workflow**, choose branch **`main`**, optionally set ABIs, then run. After the debug
-build and tests succeed, the workflow builds `:app:assembleRelease` using repository secrets,
-verifies the APK with `apksigner`, checks the signer SHA-256 against
-`ANDROID_RELEASE_CERT_SHA256`, and uploads **`zerona-android-release-private`**
-(`app-release.apk`). Release signing never runs on pull requests or non-`main` refs.
-
-Required GitHub Actions secrets (names only — set values in repo settings, never commit them):
-
-| Secret | Purpose |
-|--------|---------|
-| `ANDROID_RELEASE_KEYSTORE_BASE64` | Base64-encoded release keystore (decoded to a temp path on the runner) |
-| `ANDROID_RELEASE_STORE_PASSWORD` | Keystore password |
-| `ANDROID_RELEASE_KEY_ALIAS` | Key alias |
-| `ANDROID_RELEASE_KEY_PASSWORD` | Key password |
-| `ANDROID_RELEASE_CERT_SHA256` | Expected signer cert SHA-256 (colons optional; case-insensitive compare) |
-
-**Signing key warning:** The release key is the app’s permanent install/update identity on
-device. Back up the keystore and passwords in a user-controlled encrypted store. Losing the
-key or rotating it can force uninstall (and data loss) before sideloading a build signed with
-a new key.
-
-**M0 toolchain (Material3 Expressive pilot):** AGP **9.1.1**, Gradle **9.3.1**, JDK **17**,
-`compileSdk` **37** (`platforms;android-37.0` on CI), `targetSdk` **35**, `minSdk` **26**.
-Compose BOM **2026.08.00** (Compose **1.12.0**) with explicit `material3:1.5.0-beta02`.
-Built-in Kotlin (AGP 9); `org.jetbrains.kotlin.android` is not applied. AGP **9.1.1**
-ships **kotlin-gradle-plugin 2.2.10** by default; the root `buildscript` classpath pins
-**KGP / Compose compiler plugin 2.2.20** (Material3’s transitive **kotlin-stdlib 2.2.20**
-does not upgrade the compiler). CI runs `buildEnvironment` plus `dependencyInsight` on
-`material3-android`, `runtime-android`, `ui-android`, `foundation-android`, and
-`kotlin-stdlib`, and checks the published `material3-android` AAR metadata before
-`assembleDebug`.
-
-## Sideload
+Requires JDK 21, the Android SDK (platform 37, NDK 29.0.14206865), and Rust
+with `cargo install cargo-ndk` and
+`rustup target add aarch64-linux-android x86_64-linux-android`.
 
 ```sh
-adb install -r app-debug.apk
+cd apps/android
+./gradlew :app:installDebug
 ```
 
-## Local Gradle (after `scripts/android/build-core.sh`)
+The `buildCore` task runs `scripts/android/build-core.sh`, which builds
+`crates/mobile` for Android (`jniLibs`) and generates its Kotlin bindings into
+`target/android-core/`. `-PzeronSkipCore` reuses the last build while
+iterating on Kotlin; `ZERON_ANDROID_ABIS=arm64-v8a` builds one ABI.
+`scripts/android/gen-icons.sh` rasterizes the shared tool/file SVG icons
+(needs `rsvg-convert`). The Geist fonts are read straight from the iOS app's
+`Fonts/` folder, so both platforms measure and draw the same bytes.
+
+## Releases
+
+`.github/workflows/android.yml` (run by `ci.yml`) builds a release APK and
+Google Play App Bundle (`.aab`, arm64, the core at the `mobile-dist` profile)
+whenever the app or the Rust core changes: pull requests that touch the app or
+the mobile core (or carry the `ci:full` label) get it as workflow artifacts,
+and pushes to `main` publish the APK to
+`zeron.sh/releases/zeron-android-arm64.apk` — the website's Android download —
+with a copy per build (`zeron-<version>-<build>-android-arm64.apk`) and `.sha256`s.
+
+The version is the workspace's (`Cargo.toml`); the build number grows with each
+run. Publishing needs the upload key in repository secrets
+(`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`,
+`ANDROID_KEY_PASSWORD`) so each build installs over the last; without them the
+APK is debug-signed and not published. Locally, `ZERON_ANDROID_KEYSTORE` (and
+the three variables beside it) signs `assembleRelease` the same way.
+
+### Google Play testing
+
+Every Android workflow run also saves an `android-aab` artifact (bundle and
+SHA-256 checksum, retained for 90 days). Builds from `main` or a manual run use
+the release key; pull requests use a debug key and cannot upload to Play.
+The APK and bundle share the same version code, `1000 + GITHUB_RUN_NUMBER`.
+Start a **new run**, rather than rerunning an uploaded build, to get a new code.
+
+For the first release, download `android-aab` from Actions and upload the `.aab`
+in Play Console → Test and release → Testing → Open testing. Complete the app's
+required declarations, signing setup, and review before opening the test.
+
+To enable subsequent automatic uploads:
+
+1. Enable the Google Play Android Developer API in a Google Cloud project.
+2. Create a service account and grant it access to **Zeron only** in Play Console
+   → Users and permissions, with app read access and permission to release to
+   testing tracks. It does not need production, financial, or account admin access.
+3. Store its JSON key in the repository secret `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`.
+4. Set repository variable `PLAY_UPLOAD_ENABLED=true`. Pushes to `main` that
+   trigger the Android workflow will then upload the signed bundle to open testing
+   (`beta`). `PLAY_TRACK=internal` selects internal testing instead.
+5. The default `PLAY_RELEASE_STATUS=draft` leaves the uploaded release ready in
+   Console. Once the app's initial setup/review is complete, set it to `completed`
+   to roll future uploads out to testers, subject to Google's review.
+
+For a manual build/upload, run **Android** on `main`, check `upload_play`, and
+choose `beta` (open testing) or `internal`, plus `draft` or `completed`.
+Manual runs leave the website download unchanged. Only testing tracks are
+accepted; this workflow does not release to production.
+
+The Play upload job is serialized. Avoid editing a release in Console during
+an upload. If Play rejects a release, the signed artifact remains downloadable
+and the workflow reports the error. Missing credentials never fall back to a
+debug-signed Play upload.
+
+## Layout
+
+```
+core/        AppModel (owns CoreClient, republishes snapshots as flows),
+             CredentialStore, Fonts + AndroidMeasurer (Minikin fallback
+             measurement for glyphs Geist lacks)
+design/      ZeronTheme (Material 3 Expressive), transcript palette
+transcript/  TranscriptState (layout engine + viewport: anchoring, follow the
+             tail), Transcript (virtualized rows over LayoutFrame), RowModel
+             (canvas painter for Rust display lists, streaming veil, fades),
+             Widgets (copy, disclosures, tool rail, shimmer, images…)
+terminal/    TerminalView (a shell on the chat's host: paints the Rust
+             emulator's frames, IME and hardware keys, scrollback fling,
+             pinch to resize, selection), TerminalGlyphs (box drawing, blocks)
+ui/          Sign-in and the welcome pages, sessions (a Material 3 bottom
+             app bar with the New session FAB), session + composer,
+             companions (subagents, side chats, terminals: chips above the
+             composer and a sheet), subagent transcripts, terminal + key bar,
+             new session (Cloud too), search, settings, and Cloud: Providers,
+             an agent's accounts, Cloud, Billing, GitHub, Cloud projects.
+             TabletShell: large screens (≥ 700dp wide) put the sessions
+             sidebar beside the open session and its companions in an
+             inspector column (iPad's split); Settings is a dialog there.
+```
+
+The core links C++ (`libc++_shared.so` ships beside it: `build-core.sh` passes
+`--link-libcxx-shared` to cargo-ndk).
+
+## Launch extras
+
+Mirrors the iOS launch arguments:
 
 ```sh
-gradle -p apps/android :app:assembleDebug \
-  -PzeronCoreDir=../../target/android-core \
-  -PzeronAbis=arm64-v8a
+adb shell am start -n sh.zeron.android/.MainActivity \
+  --ez demo true --es route chat:chat-veil
 ```
 
-**Local signed release APK** (optional; same env names as CI — export in your shell, do not
-commit values). Gradle decodes `ANDROID_RELEASE_KEYSTORE_BASE64` into a temporary file under
-`$RUNNER_TEMP` on Actions or the JVM temp directory locally:
+| Extra | Effect |
+| --- | --- |
+| `--ez demo true` | Offline demo workspace (Rust `DemoHost`) |
+| `--ez fast true` / `--ez longreply true` | Demo stream speed / reply length |
+| `--ez big true` / `--ez huge true` | Demo transcripts with 120 / 600 turns |
+| `--es route chat:<id>` / `new` / `search` / `settings` (`more`) / `archived` | Open a screen at launch (with nobody signed in, on the demo) |
+| `--es route cloud` / `cloud:billing` / `cloud:repos` / `billing` / `providers[:cloud\|:<device id>]` / `accounts:cloud:<harness>` / `accounts:device:<id>:<harness>` / `new:cloud` / `welcome[:<step>]` | Cloud pages, a new session set to Cloud, the welcome pages |
+| `--ez cloud true` | Offer Cloud in the demo (its pages read the demo's Cloud) |
+| `--es companion companions` / `terminal` / `side-chat:<id>` / `subagent:<tool id>` / `model-picker` | With `route chat:<id>`, open the companions sheet, a terminal, a side chat, a subagent or the model picker over it (`model-picker` also works with `route new`) |
+| `--ez terminal-demo true` | The opened terminal types a short script (screenshots) |
+| `--ez signedout true` | Clear stored credentials |
+| `--es wallpaper <path>` / `none` | Set (or clear) the wallpaper from a file the app can read, e.g. `adb push art.jpg /data/local/tmp/ && adb shell run-as sh.zeron.android cp /data/local/tmp/art.jpg files/` then `--es wallpaper /data/user/0/sh.zeron.android/files/art.jpg` |
+| `--es wallpaper-effect <none\|dither\|ascii\|halftone\|scanlines>` | Wallpaper effect |
 
-```sh
-export ANDROID_RELEASE_KEYSTORE_BASE64='…'
-export ANDROID_RELEASE_STORE_PASSWORD='…'
-export ANDROID_RELEASE_KEY_ALIAS='…'
-export ANDROID_RELEASE_KEY_PASSWORD='…'
+## Zerona fork
 
-gradle -p apps/android :app:assembleRelease \
-  -PzeronCoreDir=../../target/android-core \
-  -PzeronAbis=arm64-v8a
-```
-
-Output: `apps/android/app/build/outputs/apk/release/app-release.apk`. Missing any of the
-four signing variables fails `assembleRelease` with an explicit error; `assembleDebug` and
-`:app:testDebugUnitTest` do not require them.
-
-## Unit tests (JVM)
-
-```sh
-gradle -p apps/android :app:testDebugUnitTest \
-  -PzeronCoreDir=../../target/android-core
-```
-
-Pure helpers (UTF-16 slice/`isValidRange`, per-scalar advance aggregation, link hit-test, anchor/follow, cache keys, streaming prefixes, viewport scale, image reference/decode planning, message action/copy/link menu models, design tokens/contrast/composer presentation, read-only model label formatting) live under `app/src/test` (182 JVM `@Test` method annotations in 23 classes — static inventory counted by `selfcheck-native-transcript.sh`, not executed native/device tests). `assembleDebug` also runs `testDebugUnitTest` (see `app/build.gradle.kts`). Static wiring checks: `apps/android/scripts/selfcheck-native-transcript.sh` (no Gradle).
-
-### Design refresh helpers (no Gradle)
-
-Calm v1 tokens (`ui/theme/ZeronaColorTokens.kt`, `Contrast.kt`), composer policy (`ui/ComposerPresentation.kt`), motion accessibility policy (`ui/theme/ZeronaMotionPolicy.kt`), and matching unit tests compile on the VPS without the Android SDK:
-
-```sh
-python3 scripts/android/test-design-helpers.py
-```
-
-Optional: `--cache-dir` (or `ZERONA_JVM_CACHE`, default `~/.cache/zerona-jvm`), `GRADLE_USER_HOME` (default `~/.gradle`) for the Kotlin compiler glob, `--compiler-classpath`, `--trove-classpath`, `--stdlib`, `--annotations`, `--junit-classpath`. `PaletteBackgroundTest` and full Compose UI still require `:app:testDebugUnitTest` on CI.
-
-**M1–M3 Expressive motion (shell):** `MaterialExpressiveTheme` + `MotionScheme.expressive()` in `ui/theme/Theme.kt`; ornamental gating via `Settings.Global.ANIMATOR_DURATION_SCALE` (`ZeronaOrnamentalMotionProvider` in `ui/theme/ZeronaMotion.kt`, shared `CompositionLocal`); initial loading via `ui/ExpressiveLoading.kt` (`LoadingIndicator` when animator scale &gt; 0, else static decorative ring — not an indeterminate spinner). Navigation, composer, sessions tactility, and Latest appearance consume theme spatial/effects specs (no app-owned spatial tween durations). Native transcript / `ValueAnimator` paths unchanged (M4). JVM helper runner: **93** tests including `ZeronaMotionPolicyTest` (8 methods) and `RowStreamMotionPolicyTest` (10 methods); does not validate on-device motion, Compose compile, or animation frames.
-
-## Manual transcript checks (device)
-
-1. **Demo → Transcript lab** — lazy `layoutFixtureMarkdown()` via `setDebugEntries` (widgets from laid-out fixture only). Includes a **user attachment list** demo row, a **Markdown `![]()`** assistant row (`LAB_DEMO_IMAGE_REFERENCE`, lab gradient — not `readAttachment`), and a plain `[.png](…)` link on that row for Copy link (links are not promoted to image widgets). Use top-bar **Replay streaming** for scripted fixture prefixes (`a-stream`); composer locked; live host tool streams need a real session.
-2. **Demo session** — open any demo chat; scroll a long reply; confirm no duplicate full messages per row.
-3. **Font scale** — system display size 85% / 130%; relayout matches paint.
-4. **Code block** — horizontal scroll inside row; copy button copies payload.
-5. **Links & images** — tap http/https open in browser; `javascript:` ignored. Core emits **image widgets** only for Markdown `![]()` with local absolute or `pending://` references (not `https`, relatives, or plain `[label](path)` links). Long-press for **Copy message**, **Select text** (Activity-scoped selectable `TextView` with handles — not cross-row Canvas selection), **Copy link**, and **View source** when whole-message text differs from the visible block and row `copyText` differs from painted text (`messageText` / per-row `copyText` slices — not guaranteed full original bytes).
-6. **Tools** — disclosure, toggle, working/spinner rows in **Transcript lab** (fixture markdown) or a **live session** with tool rows (not every demo chat).
-7. **Composer** — send, queue/steer chips while typing during a turn, rotation, switch session.
-8. **Scroll-to-latest** — long transcript scrolled far up shows bottom **Latest** control; tap jumps to bottom; new messages while reading history stay put; after jump, streaming follows tail; keyboard open/close and rotation; short transcript hides control.
-
-Visual golden comparison is not automated on Android CI yet (`assembleDebug` only).
-
-## Known gaps
-
-- Markdown `![]()` with remote/relative/`file:` sources stay links (by design). Device verification pending for host `readAttachment` thumbnails and lab Markdown image row. Agent `Visual`: placeholder; `setVisualSource` wired for future scripts.
-- Real host attachment thumbnails: manual device test pending (signed-in session).
-- Math glyphs on API &lt; 31: labeled placeholder (real glyphs need API 31+ `drawGlyphs`).
-- Tool rail / shimmer simplified vs iOS.
+- **Application id:** `sh.zeron.zerona` (Kotlin namespace stays `sh.zeron.android`).
+- **Release signing:** GitHub Actions secrets `ANDROID_RELEASE_*` via `.github/workflows/android-app.yml` (decoded to `ZERON_ANDROID_KEYSTORE` for Gradle).
+- **FCM:** `apps/android/app/google-services.json` (package `sh.zeron.zerona`) plus the `sh.zeron.android.fcm` package.

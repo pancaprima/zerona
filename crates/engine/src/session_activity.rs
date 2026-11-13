@@ -174,9 +174,11 @@ fn project(
             started_at: None,
             updated_at: activity.updated_at,
             running_subagents: 0,
+            background_tasks: Vec::new(),
             last_completed_turn: None,
             last_turn_outcome: None,
             terminal_activity: None,
+            waiting: None,
         });
         row.terminal_activity = Some(activity.clone());
         // OSC 7501 has no heartbeat requirement. The PTY owner supplies the
@@ -248,9 +250,11 @@ mod tests {
             started_at: Some(now),
             updated_at: now,
             running_subagents: 0,
+            background_tasks: Vec::new(),
             last_completed_turn: Some("previous-turn".into()),
             last_turn_outcome: None,
             terminal_activity: None,
+            waiting: None,
         };
         let activity = TerminalActivity {
             terminal_id: "pty".into(),

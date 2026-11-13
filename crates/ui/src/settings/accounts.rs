@@ -1029,6 +1029,11 @@ impl AccountsPage {
         cx.notify();
     }
 
+    /// Whether a dialog [`Self::dismiss_on_escape`] would close is open.
+    pub(crate) fn has_escape_surface(&self) -> bool {
+        self.api_key.is_some() || self.login.is_some()
+    }
+
     /// Escape that reached Settings unclaimed cancels an open login first,
     /// so it never closes Settings under the dialog. Returns whether it did.
     pub(crate) fn dismiss_on_escape(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1334,7 +1339,6 @@ impl AccountsPage {
                     account
                         .usage_windows
                         .iter()
-                        .take(2)
                         .map(|window| render_usage_meter(window, theme)),
                 )
                 .into_any_element()
@@ -2039,6 +2043,7 @@ impl Render for AccountsPage {
             HarnessId::Pi => (crate::icons::PI_MARK, None),
             HarnessId::Opencode => (crate::icons::OPENCODE_MARK, None),
             HarnessId::Antigravity => (crate::icons::ANTIGRAVITY_MARK, None),
+            HarnessId::Muse => (crate::icons::MUSE_MARK, Some(crate::icons::muse_brand())),
             _ => (
                 crate::icons::CLAUDE_MARK,
                 Some(crate::icons::claude_brand()),
@@ -2542,6 +2547,7 @@ mod tests {
             switchable: true,
             saved_at: None,
             provider: provider.map(str::to_string),
+            codex_reset_credits: None,
         };
         let mut snapshot = AgentAccountsSnapshot {
             accounts: vec![
@@ -2590,6 +2596,7 @@ mod tests {
 
     fn poll(status: AgentLoginStatus, message: Option<&str>, url: Option<&str>) -> AgentLoginPoll {
         AgentLoginPoll {
+            code: None,
             status,
             message: message.map(str::to_string),
             url: url.map(str::to_string),
@@ -2694,6 +2701,7 @@ mod tests {
             switchable,
             saved_at: None,
             provider: Some("openai".into()),
+            codex_reset_credits: None,
         };
         window
             .update(cx, |page, _, cx| {
@@ -2768,6 +2776,7 @@ mod tests {
                         switchable: true,
                         saved_at: None,
                         provider: None,
+                        codex_reset_credits: None,
                     }],
                     warnings: vec![],
                 });
@@ -2842,6 +2851,7 @@ mod tests {
             plan_label: None,
             active,
             usage_windows: vec![],
+            codex_reset_credits: None,
             usage_fetched_at: None,
             usage_error: None,
             display_name: None,
