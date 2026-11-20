@@ -455,7 +455,7 @@ export class RegistryRoom implements DurableObject {
   private async dropRunner(userId: string, room: string, drop: RunnerDrop): Promise<void> {
     const [kind, id] = [room.slice(0, room.indexOf(":")), room.slice(room.indexOf(":") + 1)];
     const ns = kind === "chat" ? this.env.CHAT_ROOMS : this.env.DEVICE_ROOMS;
-    const stub = ns.get(ns.idFromName(kind === "chat" ? `chat2/${id}` : `d2/${id}`));
+    const stub = ns.get(ns.idFromName(kind === "chat" ? `chat2/${id}` : `d3/${id}`));
     const reply = await stub.fetch(
       new Request(`https://room${RUNNER_DROP_PATH}`, {
         method: "POST",
