@@ -2959,6 +2959,7 @@ async fn a_steer_reaches_a_warm_started_run() {
             message_id: None,
             attachments: vec![],
             config: None,
+            immediate: false,
         })
         .await
         .unwrap();
