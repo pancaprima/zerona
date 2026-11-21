@@ -32,6 +32,9 @@ env:
 
 jobs:
   zgx-macos:
+    # Fork-only (pancaprima/zerona): zgx-macos fails the same way on upstream GitHub-hosted macOS
+    # (Metal/GPU, transcript timing). zgx-linux stays the blocking signal.
+    continue-on-error: true
     runs-on: macos-latest
     timeout-minutes: 120
     steps:

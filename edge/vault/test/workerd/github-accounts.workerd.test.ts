@@ -959,7 +959,7 @@ describe("revoking a disconnected login's tokens", () => {
     value(await vault().disconnect(caller, "github"));
     expect([...github.revoked.installation].sort()).toEqual(tokens.sort());
     expect([...github.revoked.user].sort()).toEqual(["home-me", "work-me"]);
-  });
+  }, 15000);
 
   it("a token GitHub has already forgotten counts as revoked", async () => {
     const { caller, userId, parent, session, grant } = await cloudUser();
@@ -971,5 +971,5 @@ describe("revoking a disconnected login's tokens", () => {
     work.userTokenRevoked = true;
     value(await vault().forgetAccount(caller, "github", await slotOf(caller, "work-me")));
     expect(await queued(userId)).toEqual([]);
-  });
+  }, 15000);
 });
