@@ -23,7 +23,7 @@ impl PlatformMeasurer for FixedFallback {
 }
 
 fn font(name: &str) -> Vec<u8> {
-    std::fs::read(format!("{}/../ui/assets/fonts/{name}.ttf", env!("CARGO_MANIFEST_DIR"))).unwrap()
+    std::fs::read(format!("{}/../../assets/fonts/{name}.ttf", env!("CARGO_MANIFEST_DIR"))).unwrap()
 }
 
 pub(crate) fn text_system() -> Arc<TextSystem> {
@@ -164,9 +164,11 @@ fn messages_the_agent_sent_show_as_one_line_naming_the_recipient() {
         subagent_ref: None,
         subagent_status: None,
         subagent_tail: None,
+        preview_paths: Vec::new(),
         exit_code: None,
         output_truncated: false,
         output_lines: None,
+        review: None,
     };
     let mut w = worker(390.0);
     w.input = TranscriptInput {
@@ -737,9 +739,11 @@ fn study01_table_and_tool_rows_emit_no_prose_card() {
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
+                preview_paths: Vec::new(),
                 exit_code: None,
                 output_truncated: false,
                 output_lines: None,
+                review: None,
             }],
             created_at: 0,
             device_id: String::new(),
@@ -774,6 +778,7 @@ fn study01_prose_card_preserves_copy_text_and_code_scroller_geometry() {
 #[test]
 fn question_chip_reads_what_was_answered() {
     let question = |id: &str, header: &str| zeron_proto::UserInputQuestion {
+        note: None,
         id: id.into(),
         header: header.into(),
         question: format!("{header}?"),
@@ -1252,9 +1257,11 @@ fn running_subagent_shows_a_spinner_after_its_spawn_resolves() {
         subagent_ref: Some("sub-1".into()),
         subagent_status: Some(status),
         subagent_tail: None,
+        preview_paths: Vec::new(),
         exit_code: None,
         output_truncated: false,
         output_lines: None,
+        review: None,
     };
     let frame_for = |status: SubagentStatus| {
         let mut w = worker(390.0);

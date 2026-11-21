@@ -1,8 +1,25 @@
-import { AUTH_USER_HEADER, ROOM_KIND_HEADER, RUNNER_ACCOUNT_HEADER, RUNNER_DEVICE_HEADER, type Env } from "./env";
+import {
+  AUTH_ORG_HEADER,
+  AUTH_USER_HEADER,
+  ROOM_KIND_HEADER,
+  RUNNER_ACCOUNT_HEADER,
+  RUNNER_DEVICE_HEADER,
+  RUNNER_EPOCH_HEADER,
+  type Env
+} from "./env";
+import type { RunnerDrop } from "./runner-revocation";
 
 /** Canonical chat identity comes from the authenticated route, never a
- * sender-supplied query. Also used by the workerd routing fixture. */
-export function chatRoute(request: Request, env: Pick<Env, "CHAT_ROOMS">, userId: string): Promise<Response> | Response | undefined {
+ * sender-supplied query. Also used by the workerd routing fixture. `runner`:
+ * a Cloud runner its session's reach admitted, at that epoch
+ * (runner-revocation.ts). */
+export function chatRoute(
+  request: Request,
+  env: Pick<Env, "CHAT_ROOMS">,
+  userId: string,
+  orgId?: string,
+  runner?: RunnerDrop
+): Promise<Response> | Response | undefined {
   const url = new URL(request.url);
   const parts = url.pathname.split("/").filter(Boolean);
   const id = /^[A-Za-z0-9_-]{1,128}$/;
@@ -33,7 +50,14 @@ export function chatRoute(request: Request, env: Pick<Env, "CHAT_ROOMS">, userId
   // Worker-controlled runner identity: never passed through from a caller.
   headers.delete(RUNNER_DEVICE_HEADER);
   headers.delete(RUNNER_ACCOUNT_HEADER);
+  headers.delete(RUNNER_EPOCH_HEADER);
+  if (runner) {
+    headers.set(RUNNER_DEVICE_HEADER, runner.device);
+    headers.set(RUNNER_EPOCH_HEADER, String(runner.epoch));
+  }
   headers.set(AUTH_USER_HEADER, userId);
+  headers.delete(AUTH_ORG_HEADER);
+  if (orgId) headers.set(AUTH_ORG_HEADER, orgId);
   const room = env.CHAT_ROOMS.get(env.CHAT_ROOMS.idFromName(`chat2/${chat}`));
   return room.fetch(new Request(url, { method: request.method, body: request.body, headers }));
 }

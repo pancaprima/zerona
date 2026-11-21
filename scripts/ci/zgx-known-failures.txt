@@ -1,0 +1,22 @@
+# Tests in apps/zgx known to fail, which scripts/ci/test-zgx.sh lets through so
+# its CI job (zgx-tests.yml) gates everything else. Every other failure fails the
+# job. A known one that passes again is reported: then delete its line.
+#
+#   rust: <test path>     `cargo test --bin zeron-zgx` (skipped, exact name)
+#   tests: <test name>    `cargo test --test '*'`, apps/zgx/tests/*.rs (skipped,
+#                         exact name)
+#   luau: <test name>     `zgx test ui` (run; its FAIL line accepted)
+#
+# Zerona fork (pancaprima/zerona): the entries below fail the same way on upstream
+# zeronsh/zeron CI on GitHub-hosted runners (Metal/GPU, microphone, transcript-return
+# and fold-easing timing); listed by Prima's decision for the v0.3.12 sync PR #51; delete each once it passes.
+rust: dictation::tests::dictation_levels_follow_the_microphone_at_slot_rate_while_listening
+rust: visuals_tests::scenes_and_shaders_render_on_the_gpu_thread
+rust: transcript_paint_tests::a_long_thread_opened_and_scrolled_draws_what_a_whole_repaint_draws
+luau: long messages open folded, never at their whole height first; a click eases them
+luau: a chat scrolled up comes back to the same message at the same height
+luau: a chat scrolled up comes back there when its newest rows come first
+luau: a chat scrolled to its bottom by hand comes back at its bottom: it opens with its newest rows first
+luau: a chat scrolled to its bottom by hand comes back at its bottom: a reply landed and it opens with its newest rows first
+luau: a chat scrolled to its bottom comes back at its bottom as the host opens it (slow_open, reply_away)
+luau: a chat scrolled to its bottom comes back at its bottom as the host opens it (slow_open, tail_first, reply_away)
