@@ -1,6 +1,6 @@
 # Zerona
 
-Control your coding agents (Claude Code, Codex, Cursor, Devin, Grok, Hermes, Pi, Antigravity) locally by default, with optional multi-device sync.
+Control your coding agents (Claude Code, Codex, Cursor, OpenCode, Devin, Grok, Hermes, Pi, Antigravity, Muse Code, fx) locally by default, with optional multi-device sync.
 
 This repository is a **fork** of [zeronsh/zeron](https://github.com/zeronsh/zeron) maintained by pancaprima. It keeps upstream sync and auth contracts (`edge.zeron.sh`, `zeron://`, `ZERON_*` env vars) so you can still use the shared backend while shipping fork-specific features:
 
@@ -15,11 +15,11 @@ This repository is a **fork** of [zeronsh/zeron](https://github.com/zeronsh/zero
 
 Download the latest release for your platform from [GitHub Releases](https://github.com/pancaprima/zerona/releases/latest):
 
-- **macOS** — `zeron-<version>-macos-arm64.dmg`
+- **macOS** (Apple silicon, macOS 13+) — `zeron-<version>-macos-arm64.dmg`
 - **Windows** — `zeron-<version>-windows-x86_64-setup.exe`
 - **Linux** — `zeron-<version>-linux-<arch>.tar.gz`, then run its `install.sh`
 
-No account or network connection is needed; sessions stay on your device. The app updates itself.
+No account or network connection is needed; sessions stay on your device. The desktop app is built on [zgx](https://zgx.zeron.sh) (native Rust with a hot-reloading Luau UI supporting plugins, templates, and themes) and updates itself.
 
 ## Headless (CLI)
 
@@ -58,6 +58,6 @@ Zerona is derived from [zeronsh/zeron](https://github.com/zeronsh/zeron) under t
 
 ---
 
-Developing or curious how it works? [Ask DeepWiki](https://deepwiki.com/zeronsh/zeron) or check out [ARCHITECTURE.md](ARCHITECTURE.md).
+Developing or curious how it works? [Ask DeepWiki](https://deepwiki.com/zeronsh/zeron), read [ARCHITECTURE.md](ARCHITECTURE.md), or see [CONTRIBUTORS.md](CONTRIBUTORS.md) and [apps/zgx/README.md](apps/zgx/README.md).
 
 Licensed under the [MIT License](LICENSE).
