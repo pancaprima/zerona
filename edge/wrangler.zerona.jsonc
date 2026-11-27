@@ -1,5 +1,5 @@
 // Zerona/Prima edge deploy config (CI: wrangler deploy -c wrangler.zerona.jsonc).
-// No routes: workers.dev only. Mirrors edge/wrangler.jsonc production except CARD_IMAGES and BROWSER are intentionally unbound (optional at runtime). Other bindings’ Cloudflare resources must exist before first deploy.
+// No routes: workers.dev only. Deploy zerona-vault first (VAULT service binding). Mirrors edge/wrangler.jsonc production except CARD_IMAGES and BROWSER are intentionally unbound (optional at runtime). Other bindings’ Cloudflare resources must exist before first deploy.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "zerona-edge",
@@ -32,6 +32,8 @@
   "ratelimits": [
     { "name": "CARD_READS", "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } }
   ],
+  // Credential vault (edge/vault, wrangler.zerona.jsonc). No routes; binding only.
+  "services": [{ "binding": "VAULT", "service": "zerona-vault", "entrypoint": "VaultApi" }],
   "r2_buckets": [
     { "binding": "BLOBS", "bucket_name": "zerona-blobs" },
     { "binding": "RELEASES", "bucket_name": "zerona-releases" }
