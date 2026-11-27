@@ -20,3 +20,10 @@ luau: a chat scrolled to its bottom by hand comes back at its bottom: it opens w
 luau: a chat scrolled to its bottom by hand comes back at its bottom: a reply landed and it opens with its newest rows first
 luau: a chat scrolled to its bottom comes back at its bottom as the host opens it (slow_open, reply_away)
 luau: a chat scrolled to its bottom comes back at its bottom as the host opens it (slow_open, tail_first, reply_away)
+
+# v0.3.20 sync PR #52 (Prima's decision): same failures on upstream CI (zeronsh/zeron zgx-linux job 140300093265).
+rust: transcript_scroll_tests::a_synced_chat_scrolled_up_from_its_end_passes_through_every_message
+tests: a_reload_keeps_the_project_editor_open
+luau: Tab and Shift+Tab go through the scopes, each listing its own kind; the arrows move the light within it
+luau: a click on the launcher's blank room keeps it; a click on a row inserts it
+luau: an @ pick goes out as Zeron's file mention
