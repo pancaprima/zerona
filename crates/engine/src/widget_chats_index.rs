@@ -178,7 +178,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use zeron_proto::{AccessMode, ChatConfig, SandboxLevel};
+    use zeron_proto::{AccessMode, ChatConfig, HarnessId, SandboxLevel};
 
     static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
 
