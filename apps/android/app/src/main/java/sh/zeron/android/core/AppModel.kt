@@ -133,6 +133,9 @@ class AppModel(private val app: Application) {
     private val _pendingChatId = MutableStateFlow<String?>(null)
     val pendingChatId: StateFlow<String?> = _pendingChatId.asStateFlow()
 
+    private var activeCredentials: Credentials? = null
+    private var pendingConversationLink: ConversationDeepLink? = null
+
     private val sessionPushPrefs = PushPrefs(done = true, input = true, failed = true)
 
     /** App-wide snackbars ("Archived · Undo", open failures) shown by the shell. */
@@ -240,6 +243,41 @@ class AppModel(private val app: Application) {
         _pendingChatId.value = chatId
     }
 
+    fun handleConversationDeepLink(rawUrl: String) {
+        val link = ConversationDeepLinkParser.parse(rawUrl)
+        if (link == null) {
+            toast("Invalid conversation link")
+            return
+        }
+        val creds = activeCredentials ?: credentials.stored()
+        if (creds == null || creds is Credentials.Demo) {
+            pendingConversationLink = link
+            toast("Sign in to open this conversation")
+            return
+        }
+        deliverConversationDeepLink(link, creds)
+    }
+
+    private fun deliverConversationDeepLink(link: ConversationDeepLink, creds: Credentials) {
+        when (creds) {
+            is Credentials.WorkOs -> {
+                if (ConversationDeepLinkParser.matchesWorkspace(link.workspace, creds.userId, creds.orgId, isDev = false)) {
+                    openChatFromNotification(link.chatId)
+                } else {
+                    toast("This link belongs to a different workspace")
+                }
+            }
+            is Credentials.Dev -> {
+                if (ConversationDeepLinkParser.matchesWorkspace(link.workspace, creds.userId, creds.orgId, isDev = true)) {
+                    openChatFromNotification(link.chatId)
+                } else {
+                    toast("This link belongs to a different workspace")
+                }
+            }
+            is Credentials.Demo -> toast("Sign in to open this conversation")
+        }
+    }
+
     fun clearPendingChatFromNotification() {
         _pendingChatId.value = null
     }
@@ -331,6 +369,14 @@ class AppModel(private val app: Application) {
             cloud.refresh()
             backfillProfile()
             tryRegisterStoredFcmToken()
+            activeCredentials = credentials
+            if (credentials !is Credentials.Demo) {
+                val deferred = pendingConversationLink
+                if (deferred != null) {
+                    pendingConversationLink = null
+                    deliverConversationDeepLink(deferred, credentials)
+                }
+            }
             true
         } catch (e: Exception) {
             Log.e("Zeron", "core start failed", e)
@@ -428,6 +474,8 @@ class AppModel(private val app: Application) {
      * the `.owner` marker still keeps a different account out of it.
      */
     private fun signOutLocally(forget: Boolean) {
+        activeCredentials = null
+        pendingConversationLink = null
         unregisterFcmPushTargetIfNeeded()
         clearPendingChatFromNotification()
         voice.stop()

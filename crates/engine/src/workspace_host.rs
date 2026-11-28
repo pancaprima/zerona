@@ -254,6 +254,8 @@ struct WorkspaceHostInner {
     registry_base: Mutex<Option<RegistryBase>>,
     /// Kind versions the lists were last published at (see `publish_lists`).
     published: Mutex<Option<PublishedVersions>>,
+    /// Byte length of the last written `widget-chats.json` (observability only).
+    index_written: Mutex<Option<u64>>,
     #[cfg(test)]
     snapshot_saves: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
@@ -471,6 +473,7 @@ impl WorkspaceHost {
                 local_unsaved: AtomicBool::new(false),
                 registry_base: Mutex::new(None),
                 published: Mutex::new(None),
+                index_written: Mutex::new(None),
                 #[cfg(test)]
                 snapshot_saves: std::sync::atomic::AtomicUsize::new(0),
                 #[cfg(test)]
@@ -1706,7 +1709,28 @@ impl WorkspaceHostInner {
         // Retain the latest value even with no subscribers, but don't wake
         // every list for unrelated registry/presence changes.
         match chats {
-            Some(Ok(chats)) => publish_if_changed(&self.chats_tx, chats),
+            Some(Ok(chats)) => {
+                match crate::widget_chats_index::write_chats_index(
+                    self.store.path(),
+                    &self.config.device_id,
+                    &self.config.user_id,
+                    &self.config.org_id,
+                    self.config.local_only,
+                    &chats,
+                ) {
+                    Ok(true) => {
+                        if let Ok(bytes) = std::fs::read(self.store.path().join("widget-chats.json"))
+                        {
+                            *lock(&self.index_written) = Some(bytes.len() as u64);
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::debug!(%error, "widget chats index export failed");
+                    }
+                }
+                publish_if_changed(&self.chats_tx, chats);
+            }
             Some(Err(err)) => {
                 failed = true;
                 tracing::warn!(error = %err, "registry read failed");

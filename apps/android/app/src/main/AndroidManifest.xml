@@ -51,6 +51,13 @@
                 <data android:host="signed-in" />
                 <data android:host="cloud" />
             </intent-filter>
+            <!-- Conversation deep links: zeron://open/chat/<chat_id>?workspace=<locator>. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="zeron" android:host="open" android:pathPrefix="/chat/" />
+            </intent-filter>
         </activity>
         <provider
             android:name="androidx.core.content.FileProvider"
