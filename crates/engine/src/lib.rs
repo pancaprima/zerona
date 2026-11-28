@@ -94,6 +94,7 @@ pub mod voice;
 pub mod workspace_files;
 pub mod workspace_content_search;
 pub mod workspace_content_index;
+mod widget_chats_index;
 pub mod workspace_host;
 pub mod workspace_search;
 mod worktree_settings;
