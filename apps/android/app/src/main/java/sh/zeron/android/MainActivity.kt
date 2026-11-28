@@ -149,7 +149,15 @@ class MainActivity : ComponentActivity() {
         }
         val data = intent?.data ?: return
         if (data.scheme != "zeron") return
-        if (data.host == "callback") model.handleCallback(data.toString()) else model.browser.links.tryEmit(data)
+        when (data.host) {
+            "callback" -> model.handleCallback(data.toString())
+            "open" -> {
+                model.handleConversationDeepLink(data.toString())
+                // Clear intent data so activity recreation does not re-open the chat.
+                intent.data = null
+            }
+            else -> model.browser.links.tryEmit(data)
+        }
     }
 
     override fun onResume() {

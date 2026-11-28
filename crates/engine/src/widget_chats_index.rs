@@ -9,7 +9,7 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use zeron_notify::links::{conversation_link, workspace_locator_of};
-use zeron_proto::{Chat, HarnessId};
+use zeron_proto::Chat;
 
 const INDEX_FILE: &str = "widget-chats.json";
 
